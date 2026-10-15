@@ -142,7 +142,7 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
 | R-7 | **Practise live v1** by default (`v1-live-mirror` caps, live-parity mode). The `practice` profile is still built and selectable. |
 | Q-Y8 | Lab-Claude merges a PR after the reviewer routed in section 3.9 has accepted it; UI-only PRs merge on Yu's acceptance alone. Yu can veto or revert any merge. Q-N12 (Nuance's agreement to the routing) is still open. |
 
-**Bet Angel on Yu's Betfair account:** never used (Yu, 2026-10-15). The suite and betangel-research are the only order sources Yu's account has had, so no shared-order or shared-limit interaction with Bet Angel needs handling.
+**Bet Angel on Yu's Betfair account:** never used (Yu, 2026-10-15), so the design needs no handling for orders or limits shared with Bet Angel. If Bet Angel is ever installed against the account, that needs a fresh review first.
 
 ### 2.3 Hard constraints (lab rules and agreements)
 
