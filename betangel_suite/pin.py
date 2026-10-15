@@ -1,0 +1,228 @@
+"""The betangel-research pin: deps-clone lookup, per-file hashes, sys.path append, origin check (DESIGN.md 3.5).
+
+pin/betangel-research.json names one upstream commit and the sha256 of every file the engine loads from
+it: the 25 modules of the verified import closure (section 4.1) and the experiment contract that holds the
+month roles. tools/vendor_research.py writes it on a pin bump; nothing else does.
+
+activate() runs once per process, after the guard is armed and before betangel_research is imported. It
+hashes the pinned files in ~/.local/share/betangel-suite/deps/betangel-research-<sha12>/ (no git runs),
+refuses pin_mismatch on any difference, refuses a deps tree holding bytecode caches (Python would load a
+stale .pyc beside a matching .py) or anything Python would import in preference to a pinned .py (an
+extension module such as paper.cpython-313-darwin.so, a .pyc, or a package directory named like a pinned
+module), refuses any sys.path entry inside ~/betangel-research (the moving deploy
+clone), and only then APPENDS the deps directory to sys.path, so the standard library can never be
+shadowed. assert_origins() then checks that every loaded betangel_research module came from that directory.
+
+Standard library only.
+"""
+
+import hashlib
+import importlib.machinery
+import json
+import os
+import re
+import stat
+import sys
+
+from . import guard, roots
+from .errors import SuiteError
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PIN_FILE = os.path.join(REPO_ROOT, "pin", "betangel-research.json")
+REPO = "cambridgetcg/betangel-research"
+PYTHON_FLOOR = "3.11"
+PIN_KEYS = frozenset({"schema_version", "repo", "commit", "python_floor", "files"})
+MAX_PIN_BYTES = 64 << 10
+
+# The engine's import closure at the pin (section 4.1), as files, plus the month-role contract.
+PINNED_FILES = (
+    "betangel_research/__init__.py",
+    "betangel_research/evaluation.py",
+    "betangel_research/stream.py",
+    "betangel_research/temporal.py",
+    "betangel_research/betfair/__init__.py",
+    "betangel_research/betfair/book.py",
+    "betangel_research/betfair/config.py",
+    "betangel_research/betfair/constants.py",
+    "betangel_research/betfair/errors.py",
+    "betangel_research/betfair/filters.py",
+    "betangel_research/betfair/journal.py",
+    "betangel_research/betfair/lifecycle.py",
+    "betangel_research/betfair/paper.py",
+    "betangel_research/betfair/paths.py",
+    "betangel_research/betfair/pnl.py",
+    "betangel_research/betfair/receipts.py",
+    "betangel_research/betfair/schemas.py",
+    "betangel_research/betfair/secret.py",
+    "betangel_research/betfair/ticks.py",
+    "betangel_research/betfair/validate.py",
+    "betangel_research/betfair/backtest/__init__.py",
+    "betangel_research/betfair/backtest/archive.py",
+    "betangel_research/betfair/backtest/contract.py",
+    "betangel_research/betfair/backtest/market_index.py",
+    "betangel_research/betfair/backtest/path_guard.py",
+    "research/experiments/backtest-p0-bsp-v1.json",
+)
+PACKAGE_DIRS = ("betangel_research", "betangel_research/betfair", "betangel_research/betfair/backtest")
+# Files the import system would load instead of (or as well as) a hashed .py: extension modules for any
+# interpreter and sourceless bytecode.
+SHADOW_SUFFIXES = tuple(sorted(set(importlib.machinery.EXTENSION_SUFFIXES) | set(importlib.machinery.BYTECODE_SUFFIXES)
+                               | {".so", ".dylib", ".pyc"}))
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+_ACTIVE = None
+
+
+def load(path=PIN_FILE):
+    """The pin as a dict, after strict checks; SuiteError(pin_invalid) otherwise."""
+    data = _read_regular(path, MAX_PIN_BYTES)
+    if data is None:
+        raise SuiteError("pin_invalid")
+    try:
+        pin = json.loads(data.decode("utf-8"), object_pairs_hook=_no_duplicates, parse_constant=_no_constant)
+    except (ValueError, UnicodeDecodeError):
+        pin = None
+    if (not isinstance(pin, dict) or set(pin) != PIN_KEYS or type(pin["schema_version"]) is not int
+            or pin["schema_version"] != 1 or pin["repo"] != REPO
+            or pin["python_floor"] != PYTHON_FLOOR or not isinstance(pin["commit"], str)
+            or not _COMMIT_RE.fullmatch(pin["commit"]) or not isinstance(pin["files"], dict)
+            or set(pin["files"]) != set(PINNED_FILES)
+            or not all(isinstance(v, str) and _SHA256_RE.fullmatch(v) for v in pin["files"].values())):
+        raise SuiteError("pin_invalid")
+    return pin
+
+
+def deps_dir(pin, home_dir=None):
+    return os.path.join(roots.deps_root(home_dir), "betangel-research-" + pin["commit"][:12])
+
+
+def file_hashes(tree):
+    """{relpath: sha256} of PINNED_FILES under tree; each must be a regular file, not a symlink."""
+    hashes = {}
+    for relpath in PINNED_FILES:
+        data = _read_regular(os.path.join(tree, relpath), None)
+        if data is None:
+            raise SuiteError("pin_mismatch")
+        hashes[relpath] = hashlib.sha256(data).hexdigest()
+    return hashes
+
+
+def verify(pin, deps):
+    """Refuse unless deps is a real directory holding exactly the pinned bytes and no bytecode caches."""
+    try:
+        info = os.lstat(deps)
+    except OSError:
+        info = None
+    if info is None or not stat.S_ISDIR(info.st_mode):
+        raise SuiteError("deps_missing")
+    for package in PACKAGE_DIRS:
+        try:
+            package_info = os.lstat(os.path.join(deps, package))
+        except OSError:
+            package_info = None
+        if package_info is None or not stat.S_ISDIR(package_info.st_mode):
+            raise SuiteError("pin_mismatch")
+        if os.path.lexists(os.path.join(deps, package, "__pycache__")):
+            raise SuiteError("deps_bytecode_present")
+        _refuse_shadows(deps, package)
+    if file_hashes(deps) != pin["files"]:
+        raise SuiteError("pin_mismatch")
+
+
+def _refuse_shadows(deps, package):
+    """SuiteError(deps_shadow_present) for an entry of one package directory that could shadow a pinned module."""
+    stems = {relpath[len(package) + 1:-3] for relpath in PINNED_FILES
+             if relpath.endswith(".py") and os.path.dirname(relpath) == package}
+    try:
+        names = os.listdir(os.path.join(deps, package))
+    except OSError:
+        names = None
+    if names is None:
+        raise SuiteError("pin_mismatch")
+    for name in names:
+        if name.endswith(SHADOW_SUFFIXES):
+            raise SuiteError("deps_shadow_present")
+        if name in stems:           # a directory book/ (a package) is imported before book.py
+            try:
+                kind = os.lstat(os.path.join(deps, package, name)).st_mode
+            except OSError:
+                kind = None
+            if kind is None or not stat.S_ISREG(kind):
+                raise SuiteError("deps_shadow_present")
+
+
+def activate(*, home_dir=None, pin_path=PIN_FILE):
+    """Verify the deps clone and append it to sys.path; return its path. Idempotent."""
+    global _ACTIVE
+    guard.require_armed()
+    if _ACTIVE is not None:
+        return _ACTIVE
+    if any(name == "betangel_research" or name.startswith("betangel_research.") for name in sys.modules):
+        raise SuiteError("upstream_imported_early")
+    pin = load(pin_path)
+    deps = deps_dir(pin, home_dir)
+    verify(pin, deps)
+    refuse_research_on_path(home_dir)
+    sys.path.append(deps)
+    _ACTIVE = deps
+    return deps
+
+
+def refuse_research_on_path(home_dir=None):
+    """SuiteError(research_clone_on_path) if any sys.path entry lies in ~/betangel-research."""
+    research = roots.research_clone(home_dir)
+    forms = (research, os.path.realpath(research))
+    for entry in sys.path:
+        if not isinstance(entry, str) or not entry:
+            continue
+        resolved = os.path.realpath(os.path.abspath(entry))
+        if any(roots.within(candidate, form) for candidate in (os.path.normpath(os.path.abspath(entry)), resolved)
+               for form in forms):
+            raise SuiteError("research_clone_on_path")
+
+
+def assert_origins(deps):
+    """Every loaded betangel_research module must come from the deps directory."""
+    real = os.path.realpath(deps)
+    for name, module in list(sys.modules.items()):
+        if name == "betangel_research" or name.startswith("betangel_research."):
+            origin = getattr(module, "__file__", None)
+            if not isinstance(origin, str) or not roots.within(os.path.realpath(origin), real):
+                raise SuiteError("upstream_origin_mismatch")
+
+
+def _read_regular(path, limit):
+    """Bytes of a regular file opened without following a final symlink, or None."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or (limit is not None and info.st_size > limit):
+            return None
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _no_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
+
+
+def _no_constant(name):
+    raise ValueError("non-finite number")

@@ -1,0 +1,37 @@
+#!/bin/sh
+# The only way to run the suite (DESIGN.md 3.6): a fixed interpreter in isolated mode (-I), without
+# site-packages (-S) or bytecode (-B), with the network switch on and nothing else from the caller's
+# environment. The SSH checks run first, because env -i drops SSH_CONNECTION and SSH_ORIGINAL_COMMAND.
+# They catch accidents, not a determined same-user process.
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+HOME="${HOME:?}"
+VIA_SSH=0
+case "${1:-}" in
+  ssh-session)   # only as the viewer key's forced command: inside SSH, with no requested command
+    [ -n "${SSH_CONNECTION:-}" ] || { echo "refused:ssh_session_outside_ssh" >&2; exit 2; }
+    [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || { echo "refused:ssh_original_command" >&2; exit 2; }
+    VIA_SSH=1 ;;
+  open|serve)
+    [ -z "${SSH_CONNECTION:-}" ] || { echo "refused:open_over_ssh" >&2; exit 2; } ;;
+esac
+for a in "$@"; do
+  [ "$a" != "--print-url" ] || [ -z "${SSH_CONNECTION:-}" ] || { echo "refused:print_url_over_ssh" >&2; exit 2; }
+done
+# Phase 0: betangel_suite/roots.py has STATE_ROOT_AGREED = False, so every command uses the state root's
+# tmp/ and nothing is created under ~/betangel-data. When the flag flips, the default branch becomes
+# "$HOME/betangel-data/suite.noindex/tmp" (created 0700 after the run-marker check); _launch.py refuses
+# a TMPDIR that does not match roots.tmp_dir() (tmpdir_mismatch), so the two cannot drift apart.
+case "${1:-}" in
+  test|uisnap|vendor) TMP="$HOME/.local/state/betangel-suite/tmp" ;;
+  *)                  TMP="$HOME/.local/state/betangel-suite/tmp" ;;
+esac
+# Python 3.13 is primary; `bin/suite test --py311` runs the same tests on the 3.11 floor.
+PY=/opt/homebrew/bin/python3.13
+if [ "${1:-}" = test ] && [ "${2:-}" = --py311 ]; then
+  PY=/opt/homebrew/bin/python3.11
+fi
+exec /usr/bin/env -i HOME="$HOME" USER="${USER:-}" LANG=en_GB.UTF-8 PATH=/usr/bin:/bin \
+  TMPDIR="$TMP" SQLITE_TMPDIR="$TMP" SUITE_VIA_SSH="$VIA_SSH" \
+  BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 \
+  "$PY" -I -S -B "$ROOT/bin/_launch.py" "$@"
