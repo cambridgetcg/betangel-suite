@@ -1,6 +1,8 @@
 """betangel-suite tests (DESIGN.md section 11). Synthetic only: nothing here reads ~/betangel-data.
 
-Run them with `bin/suite test` (python3.13) or `bin/suite test --py311`. Importing this package arms the
+Run them with `bin/suite test` (python3.13) or `bin/suite test --py311`; add --heavy for the heavy tier (HEAVY
+below) and -j N for N worker interpreters (default 3; -j 1 runs every module in the runner itself). A worker runs
+whole modules, so a class's shared server and fixtures never split. Importing this package arms the
 guard in test mode (bin/_launch.py already has, when run through bin/suite) and appends the pinned deps
 clone through betangel_suite.pin, so tests may import test-only oracles from betangel_research.
 
@@ -19,11 +21,22 @@ import subprocess
 import sys
 import tempfile
 
-from betangel_suite import guard, pin, roots
+from betangel_suite import cli, guard, pin, roots
 
 guard.arm("test")
 DEPS = pin.activate()
 roots.ensure_dir(os.environ["TMPDIR"])       # guard.arm checked that it lies in the state root
+
+# The heavy tier (DESIGN.md 11; `bin/suite test --heavy`): size, stress, performance and real-swift tests only.
+# Boundary and security tests (I-1..I-8, I-16..I-19, the HTTP group 6) always run in the fast tier.
+HEAVY = cli.test_tier() == "heavy"
+HEAVY_ONLY = "heavy tier: run with bin/suite test --heavy"
+# The longest modules (measured), which bin/suite test's parallel run starts first (cli._run_workers); a scheduling
+# hint only. In the heavy tier the real uisnap run (about 70 s) and the 60 s grace come first.
+SLOW_FIRST = (("tests.test_uisnap", "tests.test_viewing_e2e") if HEAVY else ()) + (
+    "tests.test_http_security", "tests.test_hygiene", "tests.test_engine_process", "tests.test_session_process",
+    "tests.test_synthetic", "tests.test_integration_ui", "tests.test_uisnap", "tests.test_stage",
+    "tests.test_session_state")
 
 ROOT = guard.REPO_ROOT
 LAUNCHER = guard.LAUNCHER

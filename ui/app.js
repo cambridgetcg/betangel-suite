@@ -5,6 +5,12 @@
 // token in the module variable below only: never in storage, a cookie or the URL. Then stream frames
 // and render them. A 401 anywhere ends the session: "session ended, run suite open again".
 //
+// One controller tab (DESIGN.md 9.2 item 8): the session query says whether this tab controls the replay. A
+// read-only tab shows the READ-ONLY chip and a "Take control" button (claim_control), keeps every command
+// control disabled and sends no command key, but still selects runners and moves its own ladder. The role is
+// asked after bootstrap, on every stream connection and every ROLE_POLL_MS, and a not_controller answer to
+// any command makes the tab read-only at once.
+//
 // The page title is the static "betangel-suite" from index.html; nothing here ever sets it. There are
 // no credential fields. In Node (the tests) this module only exports its pure parts and does not boot.
 
@@ -25,6 +31,23 @@ export const SPEEDS_X100 = Object.freeze([25, 50, 100, 200, 500, 1000, 3000, 600
 export const ACTIONS = Object.freeze([
   'toggle_play', 'speed_up', 'speed_down', 'select_prev', 'select_next', 'centre_ltp', 'stop', 'toggle_help',
 ]);
+
+// The actions that send a command: a read-only tab (DESIGN.md 9.2 item 8) never sends them.
+export const COMMAND_ACTIONS = Object.freeze(['toggle_play', 'speed_up', 'speed_down', 'stop']);
+
+// How often a tab asks whether it is still the controller (another tab may have claimed control).
+export const ROLE_POLL_MS = 2000;
+
+// Whether a key's action runs: help always; nothing else once the session ended; no command while read-only.
+export function actionAllowed(action, state) {
+  if (action === 'toggle_help') {
+    return true;
+  }
+  if (state.ended) {
+    return false;
+  }
+  return !(state.readOnly && COMMAND_ACTIONS.includes(action));
+}
 
 // DESIGN.md 8.3, the Phase 0b subset. Keys are KeyboardEvent.key values; a key maps to one action.
 export const KEYMAP = Object.freeze([
@@ -145,6 +168,7 @@ function boot() {
     inplay: $('badge-inplay'), invalid: $('invalid'), countdown: $('countdown'), clock: $('clock'),
     pausedReason: $('paused-reason'), play: $('play'), seed: $('seed'), open: $('open'), stop: $('stop'),
     helpToggle: $('help-toggle'), help: $('help'), helpList: $('help-list'), conn: $('conn'), note: $('note'),
+    role: $('role'), claim: $('claim'),
     gridBody: $('grid-body'), ladderRunner: $('ladder-runner'), ladderCanvas: $('ladder'),
     speeds: Array.from(document.querySelectorAll('button.speed')),
   };
@@ -160,6 +184,8 @@ function boot() {
   let countdownLevel = '';
   let stream = null;
   let ended = false;
+  let controller = null;            // null until the engine says; then whether this tab controls the replay
+  let roleAsked = false;
 
   const setText = (node, text) => {
     if (node.textContent !== text) {
@@ -171,13 +197,23 @@ function boot() {
     node.disabled = !on;
   });
 
+  // The controller role (DESIGN.md 9.2 item 8): command controls only for the controller tab.
+  function applyRole(isController) {
+    controller = isController;
+    const readOnly = !ended && controller === false;
+    ui.role.hidden = !readOnly;
+    ui.claim.hidden = !readOnly;
+    ui.claim.disabled = !readOnly;
+    setEnabled(!ended && sessionToken !== null && !readOnly);
+  }
+
   function endSession() {
     ended = true;
     sessionToken = null;
     if (stream !== null) {
       stream.stop();
     }
-    setEnabled(false);
+    applyRole(controller);
     setText(ui.conn, SESSION_ENDED);
     ui.conn.classList.add('ended');
   }
@@ -195,8 +231,41 @@ function boot() {
     }
     const result = await api.command(name, args);
     if (!ended) {
+      if (!result.ok && result.code === 'not_controller') {
+        applyRole(false);                       // another tab claimed control
+      }
       setNote(result.ok ? name + ': ok' : name + ': ' + safeCode(result.code));
     }
+  }
+
+  // Ask the engine whether this tab is the controller (one query at a time).
+  async function refreshRole() {
+    if (ended || sessionToken === null || roleAsked) {
+      return;
+    }
+    roleAsked = true;
+    try {
+      const result = await api.query('session');
+      if (!ended && result.ok && typeof result.reply.controller === 'boolean') {
+        applyRole(result.reply.controller);
+      }
+    } finally {
+      roleAsked = false;
+    }
+  }
+
+  async function claimControl() {
+    if (ended || controller !== false) {
+      return;
+    }
+    ui.claim.disabled = true;
+    const result = await api.command('claim_control', {});
+    if (ended) {
+      return;
+    }
+    setNote(result.ok ? 'claim_control: ok' : 'claim_control: ' + safeCode(result.code));
+    applyRole(result.ok ? true : controller);
+    refreshRole();
   }
 
   const grid = createGrid(ui.gridBody, document, {
@@ -341,6 +410,7 @@ function boot() {
     send('open_market', { seed: seed });
   });
   ui.stop.addEventListener('click', () => handlers.stop());
+  ui.claim.addEventListener('click', () => claimControl());
   ui.helpToggle.addEventListener('click', () => handlers.toggle_help());
   ui.helpList.replaceChildren(...KEYMAP.map((entry) => {
     const item = document.createElement('li');
@@ -360,7 +430,7 @@ function boot() {
       return;                                   // a focused button handles its own activation
     }
     const action = keyAction(event);
-    if (action === null || (ended && action !== 'toggle_help')) {
+    if (action === null || !actionAllowed(action, { ended: ended, readOnly: controller === false })) {
       return;
     }
     event.preventDefault();
@@ -378,7 +448,7 @@ function boot() {
   // Pause unless watched (DESIGN.md 8.6, I-19): a hidden page asks the engine to pause.
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden' && !ended && sessionToken !== null && view.frame !== null
-        && !view.paused) {
+        && !view.paused && controller !== false) {
       send('pause', {});
     }
   });
@@ -430,11 +500,16 @@ function boot() {
       return;
     }
     sessionToken = result.token;
-    setEnabled(true);
+    applyRole(controller);
+    refreshRole();
+    window.setInterval(refreshRole, ROLE_POLL_MS);
     stream = createStreamClient({
       fetchImpl: (url, init) => window.fetch(url, init),
       getToken: () => sessionToken,
-      onConnect: () => resetSequence(view),
+      onConnect: () => {
+        resetSequence(view);
+        refreshRole();
+      },
       onMessage: (msg) => {
         if (applyMessage(view, msg, window.performance.now())) {
           scheduleRender();

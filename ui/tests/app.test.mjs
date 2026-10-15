@@ -240,6 +240,11 @@ test('boot: strip the fragment, bootstrap, stream, render, command, and end on 4
     if (url === '/api/v1/command') {
       return json(200, { ok: true });
     }
+    if (url === '/api/v1/query') {                   // the controller role (control.test.mjs covers read-only)
+      assert.deepEqual(JSON.parse(init.body), { query: 'session', args: {} });
+      assert.equal(init.headers.Authorization, 'Bearer ' + TOKEN);
+      return json(200, { ok: true, controller: true, market: null });
+    }
     if (url === '/api/v1/stream') {
       streams += 1;
       if (streams > 1 || shutdown) {
@@ -305,6 +310,9 @@ test('boot: strip the fragment, bootstrap, stream, render, command, and end on 4
     assert.ok(byId.get('ladder').drawCalls > 0, 'the ladder was drawn');
     assert.ok(byId.get('help-list').children.length > 0);
     assert.equal(byId.get('play').disabled, false);
+    assert.ok(requests.some((r) => r.url === '/api/v1/query'), 'the tab asked for its role');
+    assert.equal(byId.get('role').hidden, true, 'the controller tab is not read-only');
+    assert.equal(byId.get('claim').hidden, true);
     assert.equal(byId.get('conn').textContent, 'connected');
     const visible = () => [...byId.values()].map((el) => el.textContent).join(' ');
     assert.equal(/\blive\b/i.test(visible()), false, 'the page never says live (DESIGN.md 8.4)');

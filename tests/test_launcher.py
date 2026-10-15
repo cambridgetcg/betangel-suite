@@ -7,9 +7,11 @@ refusal is reached before anything newer is needed.
 
 import ast
 import importlib.util
+import io
 import os
 import re
 import subprocess
+import sys
 import types
 import unittest
 
@@ -83,7 +85,7 @@ class InterpreterPolicyTests(unittest.TestCase):
 
     def test_guard_mode_is_engine_for_every_command_but_test_and_vendor(self):
         for command in cli.COMMANDS:
-            expected = command if command in ("test", "vendor") else "engine"
+            expected = command if command in ("test", "vendor", "release", "uisnap") else "engine"
             self.assertEqual(cli.guard_mode(command), expected, command)
         for other in ("", "frobnicate", "Test", "vendor "):
             self.assertEqual(cli.guard_mode(other), "engine", other)
@@ -103,11 +105,16 @@ class InterpreterPolicyTests(unittest.TestCase):
                                  ast.unparse(node))
 
     def test_py311_flag_must_match_the_interpreter(self):
-        self.assertEqual(cli.parse_test_args(["--py311", "-v", "-k", "guard"], (3, 11, 17)), (2, "guard"))
-        self.assertEqual(cli.parse_test_args([], (3, 13, 16)), (1, None))
+        self.assertEqual(cli.parse_test_args(["--py311", "-v", "-k", "guard"], (3, 11, 17)),
+                         (2, "guard", "fast", cli.TEST_JOBS))
+        self.assertEqual(cli.parse_test_args([], (3, 13, 16)), (1, None, "fast", cli.TEST_JOBS))
+        self.assertEqual(cli.parse_test_args(["--heavy", "-j", "1"], (3, 13, 16)), (1, None, "heavy", 1))
+        self.assertEqual(cli.parse_test_args(["--py311", "-j", "4", "--heavy"], (3, 11, 0)), (1, None, "heavy", 4))
         for args, version in ((["--py311"], (3, 13, 16)), ([], (3, 11, 17)), (["-k"], (3, 13, 0)),
                               (["-x"], (3, 13, 0)), (["-v", "-v"], (3, 13, 0)), (["-v", "--py311"], (3, 11, 0)),
-                              (["-k", "-v"], (3, 13, 0))):
+                              (["-k", "-v"], (3, 13, 0)), (["--heavy", "--heavy"], (3, 13, 0)), (["-j"], (3, 13, 0)),
+                              (["-j", "0"], (3, 13, 0)), (["-j", "5"], (3, 13, 0)), (["-j", "2", "-j", "2"], (3, 13, 0)),
+                              (["-j", "x"], (3, 13, 0)), (["--heavy=1"], (3, 13, 0))):
             with self.assertRaises(SuiteError, msg=args) as caught:
                 cli.parse_test_args(args, version)
             self.assertEqual(caught.exception.code, "bad_arguments")
@@ -125,10 +132,12 @@ class LauncherTests(unittest.TestCase):
         home = make_home(self)
         before = tree_listing(home)
         for command in cli.COMMANDS:
-            if command in ("test", "vendor", "serve", "open", "stop"):
-                continue
+            if command in ("test", "vendor", "serve", "open", "stop", "release", "ssh-session", "uisnap"):
+                continue                # ssh-session (Phase 0c): tests/test_session_process.py; uisnap: tests/test_uisnap.py
             env = {"SSH_CONNECTION": SSH} if command == "ssh-session" else {}
             self.assertEqual(self.suite(home, command, **env), (2, "", "refused:not_implemented\n"), command)
+        # release is built (Phase 0c, tests/test_release.py): without its tag it refuses before anything else.
+        self.assertEqual(self.suite(home, "release"), (2, "", "refused:bad_arguments\n"))
         self.assertEqual(tree_listing(home), before)
 
     def test_unknown_and_missing_commands(self):
@@ -227,6 +236,43 @@ class StateRootFlagTests(unittest.TestCase):
         suite_tmp = os.path.join(roots.suite_root(home), "tmp")
         self.assertEqual(self.launch(home, suite_tmp, "selfcheck"), (2, "refused:not_implemented\n"))
         self.assertEqual(self.launch(home, roots.tmp_dir("test", home), "vendor"), (2, "refused:bad_arguments\n"))
+
+
+class ParallelRunnerTests(unittest.TestCase):
+    """bin/suite test's worker interpreters (cli._run_workers, cli.test_worker): whole modules in children of the
+    runner (the guard's runner_argv_ok), each module's output, then one summary in unittest's words."""
+
+    def run_workers(self, modules, count, pattern=None):
+        saved = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            passed = cli._run_workers(modules, count, 1, pattern)
+            return passed, sys.stderr.getvalue()
+        finally:
+            sys.stderr = saved
+
+    def test_modules_run_whole_in_workers_with_one_summary(self):
+        modules = ["tests.test_layout", "tests.test_roots"]
+        count = unittest.TestLoader().loadTestsFromNames(modules).countTestCases()
+        passed, output = self.run_workers(modules, 2)
+        self.assertTrue(passed, output)
+        self.assertRegex(output, r"\nRan %d tests in [0-9.]+s \(2 modules, 2 workers\)\n\nOK\n\Z" % count)
+
+    def test_a_failing_module_fails_the_run_and_a_pattern_narrows_it(self):
+        passed, output = self.run_workers(["tests.test_layout", "tests.test_no_such_module"], 2)
+        self.assertFalse(passed)
+        self.assertRegex(output, r"\nFAILED \(errors=1\)\n\Z")
+        passed, output = self.run_workers(["tests.test_layout", "tests.test_roots"], 2, pattern="zzz_no_such_test")
+        self.assertTrue(passed, output)
+        self.assertRegex(output, r"\nRan 0 tests in [0-9.]+s \(2 modules, 2 workers\)\n\nOK\n\Z")
+
+    def test_the_modules_of_a_suite(self):
+        loader = unittest.TestLoader()
+        suite = loader.loadTestsFromNames(["tests.test_roots", "tests.test_layout"])
+        self.assertEqual(cli._test_modules(suite), ["tests.test_roots", "tests.test_layout"])
+        self.assertEqual(cli._test_modules(unittest.TestSuite()), [])
+        stray = unittest.FunctionTestCase(lambda: None)        # a test from outside tests.*: the run stays serial
+        self.assertIsNone(cli._test_modules(unittest.TestSuite([suite, stray])))
 
 
 if __name__ == "__main__":

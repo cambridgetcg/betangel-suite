@@ -43,7 +43,24 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           --is-inside-work-tree (paths.is_inside_git_worktree, used by config.validate_config) and
           /usr/bin/open http://127.0.0.1:<permitted port>/#c=<code>; after seal(), none. A bare "git"
           must come through subprocess with a search path of /usr/bin and /bin only.
-  vendor  before seal(), exactly the four git argvs tools/vendor_research.py runs; after, none.
+  vendor  before seal(), exactly the four git argvs tools/vendor_research.py runs; after, none. Its writes may
+          also go under ~/.local/share/betangel-suite/deps and this checkout's pin/, plus one os.mkdir of the
+          share dir itself; nowhere else in the share dir (its app/ belongs to release).
+  release (bin/suite release, betangel_suite/release.py; I-18) before seal(), only git with RELEASE_GIT_PREFIX
+          and -C this checkout's own root (never the deploy clone or a release copy): the filter-driver
+          config query, status, rev-parse of
+          refs/tags/<tag>^{commit}, refs/heads/main^{commit} or <id>^{tree}, merge-base --is-ancestor and
+          archive --format=tar <id>, with no user or system git config (release_argv_ok); after, none. Its
+          writes may also go under ~/.local/share/betangel-suite/app (the release copies) and nowhere else
+          in the share dir.
+  uisnap  (bin/suite uisnap, DESIGN.md 11) before seal(), exactly one argv: the Command Line Tools' swiftc with
+          the fixed build flags of uisnap_build_argv, compiling <state>/uisnap/build/<sha256>/uisnap.swift to
+          uisnap in the same directory; after seal(), exactly one: the binary registered before seal() with
+          permit_uisnap_binary (that path in the build layout, with no arguments), still a regular file of this
+          user that nobody else can write and still with the sha256 it had then, so a binary swapped, replaced
+          by a symlink or by a script afterwards is never started. Both need an explicit environment of HOME,
+          LANG, TMPDIR, PATH=/usr/bin:/bin and the network switch only (uisnap_argv_ok). No git, no
+          /usr/bin/open, nothing else, in either phase.
   test    the test runner never seals. It may start /opt/homebrew/bin/python3.13 or 3.11 (or this
           interpreter) with -I -S -B, /bin/sh on this checkout's bin/suite, and /usr/bin/git only as
           git -C <dir under TMPDIR> [-c <test identity key>=...] <local subcommand> with relative operands,
@@ -61,8 +78,10 @@ Standard library only.
 """
 
 import fcntl
+import hashlib
 import os
 import re
+import stat
 import sys
 import threading
 
@@ -73,7 +92,7 @@ FORBID_NETWORK_ENV = "BETANGEL_BETFAIR_FORBID_NETWORK"
 STRAY_PREFIXES = ("BETFAIR", "BETANGEL_BETFAIR_")
 PINNED_ENV = (FORBID_NETWORK_ENV, "TMPDIR", "SQLITE_TMPDIR")
 ALLOWED_VERSIONS = ((3, 11), (3, 13))                # I-14; bin/_launch.py holds the same tuple
-MODES = ("engine", "test", "vendor")
+MODES = ("engine", "test", "vendor", "uisnap", "release")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LAUNCHER = os.path.join(REPO_ROOT, "bin", "suite")
 GIT = "/usr/bin/git"
@@ -90,6 +109,28 @@ TEST_GIT_OPTIONS = frozenset({"-q", "--quiet", "--template=", "-f", "-A", "--", 
 TEST_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
 TEST_GIT_ENV_EXTRA = frozenset({"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
                                 "GIT_TERMINAL_PROMPT"})
+# bin/suite uisnap (uisnap_argv_ok): the Command Line Tools' swiftc and SDK, the build directory layout under the
+# state root, and the only environment keys its two children may get.
+SWIFTC = "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+SWIFT_SDK = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+UISNAP_TARGET = "arm64-apple-macos14.0"
+UISNAP_BUILD_PARTS = ("uisnap", "build")             # <state>/uisnap/build/<source sha256>/{uisnap.swift,uisnap}
+UISNAP_SOURCE_NAME = "uisnap.swift"
+UISNAP_BINARY_NAME = "uisnap"
+UISNAP_MODULE_CACHE = "module-cache"                 # <state>/uisnap/build/module-cache, shared by every build
+UISNAP_ENV_KEYS = frozenset({"HOME", "LANG", "TMPDIR", "PATH", FORBID_NETWORK_ENV})
+MAX_BINARY_BYTES = 256 << 20                         # the registered uisnap binary is hashed at every spawn
+_UISNAP_DIR_RE = re.compile(r"[0-9a-f]{64}")
+# bin/suite release (release_argv_ok): local git on this checkout only, no hooks, fsmonitor, attributes file,
+# transport or index write; tag names as release.tag_ok narrows them further.
+RELEASE_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                      "-c", "core.attributesFile=/dev/null", "--no-optional-locks")
+RELEASE_GIT_ENV_EXTRA = frozenset({"GIT_TERMINAL_PROMPT"})
+# release.py refuses a repository whose own config (includes too) defines a filter driver: git status would run its
+# clean command and git archive its smudge command, as this user and outside the guard (release_git_filter).
+RELEASE_FILTER_QUERY = ("config", "--includes", "--null", "--get-regexp", r"^filter\.")
+RELEASE_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 _NETWORK = {
     "socket.connect": "network_refused", "socket.connect_ex": "network_refused",
@@ -139,8 +180,14 @@ class _State:
     def __init__(self, mode, tmp_root):
         home = roots.home()
         found = list(roots.write_roots(home))
-        if mode == "vendor":
-            found += [roots.share_dir(home), os.path.join(REPO_ROOT, "pin")]
+        if mode == "vendor":                # deps/ and the pin, not the share dir: its app/ is release's alone
+            found += [roots.deps_root(home), os.path.join(REPO_ROOT, "pin")]
+        # vendor may also create the share dir itself, with one os.mkdir of exactly that path (_check).
+        self.mkdir_only = (roots.share_dir(home),) if mode == "vendor" else ()
+        self.uisnap_binary = None           # (path, sha256) from permit_uisnap_binary, uisnap mode only
+        self.app_root = roots.app_dir(home)
+        if mode == "release":
+            found.append(self.app_root)
         self.mode = mode
         self.sealed = False
         self.roots = tuple(found)
@@ -152,6 +199,7 @@ class _State:
         self.research = roots.research_clone(home)
         self.deps_root = roots.deps_root(home)
         self.interpreters = frozenset(TEST_INTERPRETERS + (sys.executable,))
+        self.uisnap_build = os.path.join(roots.state_dir(home), *UISNAP_BUILD_PARTS)
         self.ports = set()
         self.unix_paths = set()
         self.unix_connects = set()
@@ -245,6 +293,26 @@ def permit_unix_connect(path):
                 or os.path.dirname(os.path.normpath(path)) != state.run_dir):
             raise SuiteError("connect_permit_invalid")
         state.unix_connects.add(os.path.normpath(path))
+
+
+def permit_uisnap_binary(path):
+    """uisnap mode, before seal(), once: the one binary the sealed guard may start, pinned by its sha256 now.
+
+    path must have the build layout (<build root>/<64 hex>/uisnap, uisnap_argv_ok) and be a regular file (not a
+    symlink) owned by this user, executable by it and writable by nobody else. At each spawn after seal() the
+    file at path must still be such a file with the same sha256 (_uisnap_binary_ok).
+    """
+    with _LOCK:
+        state = _require_unsealed()
+        if state.mode != "uisnap":
+            raise SuiteError("guard_mode_conflict")
+        if (state.uisnap_binary is not None or not isinstance(path, str)
+                or not _uisnap_path_ok(path, state.uisnap_build)):
+            raise GuardRefusal("subprocess_refused")
+        digest = _binary_digest(path)
+        if digest is None:
+            raise GuardRefusal("subprocess_refused")
+        state.uisnap_binary = (path, digest)
 
 
 def _require_armed():
@@ -349,6 +417,8 @@ def _check(state, event, args):
     elif event == "sqlite3.connect":
         _check_sqlite(state, args[0])
     else:
+        if event == "os.mkdir" and _single_mkdir_ok(state, args[0], args[2]):
+            return
         for path_index, fd_index, follow in _MUTATIONS[event]:
             _check_write(state, args[path_index], -1 if fd_index is None else args[fd_index], follow)
 
@@ -400,10 +470,16 @@ def _check_spawn(state, event, args):
     if state.mode == "test":
         if runner_argv_ok(argv, names, state.interpreters, LAUNCHER, state.tmp_root):
             return
+    elif state.mode == "uisnap":
+        if uisnap_argv_ok(argv, names, state.uisnap_build, state.sealed) and (
+                not state.sealed or _uisnap_binary_ok(state, argv[0])):
+            return
     elif not state.sealed:
         if state.mode == "engine" and engine_argv_ok(argv, state.roots, state.ports):
             return
         if state.mode == "vendor" and vendor_argv_ok(argv, state.research, state.deps_root):
+            return
+        if state.mode == "release" and release_argv_ok(argv, names, REPO_ROOT, state.research, state.app_root):
             return
     raise GuardRefusal("subprocess_refused")
 
@@ -428,6 +504,73 @@ def engine_argv_ok(argv, write_roots, ports):
     return False
 
 
+def uisnap_build_argv(directory):
+    """The one swiftc argv bin/suite uisnap runs: directory/uisnap.swift to directory/uisnap (DESIGN.md 11).
+
+    directory is <state>/uisnap/build/<sha256 of the source>; the clang module cache is shared beside it.
+    """
+    return [SWIFTC, "-swift-version", "5", "-O", "-target", UISNAP_TARGET, "-sdk", SWIFT_SDK,
+            "-module-cache-path", os.path.join(os.path.dirname(directory), UISNAP_MODULE_CACHE),
+            "-o", os.path.join(directory, UISNAP_BINARY_NAME), os.path.join(directory, UISNAP_SOURCE_NAME)]
+
+
+def uisnap_argv_ok(argv, env, build_root, sealed):
+    """bin/suite uisnap's children: before seal() only the swiftc build argv, after it only the built binary.
+
+    Both name a directory <build_root>/<64 hex> (normalised, absolute, its real path inside build_root's) and
+    need an explicit environment with only UISNAP_ENV_KEYS and PATH=/usr/bin:/bin; the binary takes no argument
+    (its URL arrives on stdin). This is the shape only: after seal() the hook also requires the file that
+    permit_uisnap_binary registered, unchanged (_uisnap_binary_ok).
+    """
+    if env is None or not set(env) <= UISNAP_ENV_KEYS or env.get("PATH") != "/usr/bin:/bin":
+        return False
+    if sealed:
+        return len(argv) == 1 and _uisnap_path_ok(argv[0], build_root)
+    directory = os.path.dirname(argv[-1])
+    return argv == uisnap_build_argv(directory) and _uisnap_dir_ok(directory, build_root)
+
+
+def _uisnap_path_ok(path, build_root):
+    """<build_root>/<64 hex>/uisnap, by its text and its directory's real path."""
+    return os.path.basename(path) == UISNAP_BINARY_NAME and _uisnap_dir_ok(os.path.dirname(path), build_root)
+
+
+def _uisnap_dir_ok(directory, build_root):
+    return (os.path.isabs(directory) and os.path.normpath(directory) == directory
+            and os.path.dirname(directory) == build_root and bool(_UISNAP_DIR_RE.fullmatch(os.path.basename(directory)))
+            and roots.within(os.path.realpath(directory), os.path.realpath(build_root)))
+
+
+def _uisnap_binary_ok(state, path):
+    """After seal(): path is the binary permit_uisnap_binary registered, still the same file content."""
+    return (state.uisnap_binary is not None and path == state.uisnap_binary[0]
+            and _binary_digest(path) == state.uisnap_binary[1])
+
+
+def _binary_digest(path):
+    """sha256 (hex) of a regular file owned by this user, executable by it and writable by nobody else, opened
+    without following a final symlink; None otherwise. Reads only (the hook passes its own read-only open)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022
+                or not info.st_mode & stat.S_IXUSR or info.st_size > MAX_BINARY_BYTES):
+            return None
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def vendor_argv_ok(argv, research, deps_root):
     """The four git argvs of tools/vendor_research.py: cat-file -e, clone, checkout --detach, remote remove."""
     prefix = list(VENDOR_GIT_PREFIX)
@@ -446,6 +589,48 @@ def vendor_argv_ok(argv, research, deps_root):
         return partial(rest[1]) and bool(_SHA_RE.fullmatch(rest[5]))
     if len(rest) == 5 and rest[0] == "-C" and rest[2:] == ["remote", "remove", "origin"]:
         return partial(rest[1])
+    return False
+
+
+def release_argv_ok(argv, env, repo, research, app_root):
+    """The git argvs of bin/suite release (release.py), on repo (this checkout's own root) only.
+
+    RELEASE_GIT_PREFIX -C <repo>, then exactly one of: status --porcelain=v1 -z --untracked-files=all;
+    RELEASE_FILTER_QUERY (config --includes --null --get-regexp ^filter\\., read only);
+    rev-parse --verify --quiet refs/tags/<tag>^{commit} | refs/heads/main^{commit} | <id>^{tree};
+    merge-base --is-ancestor <id> <id>; archive --format=tar <id>. Every subcommand is local (no fetch, no
+    remote archive). The environment must be explicit, with no user or system git config and no other GIT_*
+    variable. repo must not lie in the deploy clone or the app root (a release copy is never a source).
+    """
+    if env is None or any(env.get(key) != value for key, value in TEST_GIT_ENV.items()):
+        return False
+    if any(key.startswith("GIT_") and key not in TEST_GIT_ENV and key not in RELEASE_GIT_ENV_EXTRA for key in env):
+        return False
+    if not (isinstance(repo, str) and os.path.isabs(repo) and os.path.normpath(repo) == repo):
+        return False
+    forbidden = (research, os.path.realpath(research), app_root, os.path.realpath(app_root))
+    if any(roots.within(place, other) for place in (repo, os.path.realpath(repo)) for other in forbidden):
+        return False
+    prefix = list(RELEASE_GIT_PREFIX) + ["-C", repo]
+    if argv[:len(prefix)] != prefix:
+        return False
+    rest = argv[len(prefix):]
+    if rest == ["status", "--porcelain=v1", "-z", "--untracked-files=all"] or rest == list(RELEASE_FILTER_QUERY):
+        return True
+    if len(rest) == 4 and rest[:3] == ["rev-parse", "--verify", "--quiet"]:
+        revision = rest[3]
+        if revision == "refs/heads/main^{commit}":
+            return True
+        if revision.endswith("^{tree}"):
+            return bool(_OBJECT_ID_RE.fullmatch(revision[:-len("^{tree}")]))
+        if revision.startswith("refs/tags/") and revision.endswith("^{commit}"):
+            tag = revision[len("refs/tags/"):-len("^{commit}")]
+            return bool(RELEASE_TAG_RE.fullmatch(tag)) and ".." not in tag
+        return False
+    if len(rest) == 4 and rest[:2] == ["merge-base", "--is-ancestor"]:
+        return all(_OBJECT_ID_RE.fullmatch(item) for item in rest[2:])
+    if len(rest) == 3 and rest[:2] == ["archive", "--format=tar"]:
+        return bool(_OBJECT_ID_RE.fullmatch(rest[2]))
     return False
 
 
@@ -508,6 +693,15 @@ def _check_sqlite(state, database):
     if text.startswith("file:"):
         raise GuardRefusal("write_outside_roots")      # the suite opens no URI filenames
     _check_write(state, text, -1, True)
+
+
+def _single_mkdir_ok(state, path, dir_fd):
+    """vendor only: os.mkdir of exactly the share dir (absolute, no dir_fd). Nothing may be written in it then
+    except under its deps/, a write root of that mode."""
+    if not state.mkdir_only or isinstance(path, int) or dir_fd not in (None, -1):
+        return False
+    text = os.fsdecode(os.fspath(path))
+    return os.path.isabs(text) and os.path.normpath(text) == text and text in state.mkdir_only
 
 
 def _check_write(state, path, dir_fd, follow):

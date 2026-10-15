@@ -46,7 +46,7 @@ TV_DIVISOR = 2                      # PRO historical basis (paper.py traded_volu
 COMMAND_TIMEOUT_S = 5.0
 SEED_MAX = 2 ** 31 - 1
 PAUSE_REASONS = ("ready", "user", "stop", "not_watched", "run_marker", "end_of_market", "takeover", "control")
-END_REASONS = ("stopped", "run_marker", "engine_failed")
+END_REASONS = ("stopped", "run_marker", "engine_failed", "abandoned", "max_session")    # the last two: api/lifetime.py
 COMMANDS = ("open_market", "play", "pause", "set_speed", "stop")     # what the actor implements in Phase 0b
 _NS_PER_MS_X100 = 100_000_000       # ns per ms, times the 100 of speed_x100
 

@@ -4,6 +4,7 @@ Roots, under the home directory taken from $HOME (bin/suite passes the caller's 
 
     ~/.local/state/betangel-suite/            0700  config, prefs, run/, tmp/, install-salt (Phase 0)
     ~/.local/share/betangel-suite/deps/       read-only pinned upstream code (written only by the vendor tool)
+    ~/.local/share/betangel-suite/app/        release copies <tag>/ and the current symlink (written only by release)
     ~/betangel-data/suite.noindex/            0700  the suite root, ONLY once STATE_ROOT_AGREED is True
 
 STATE_ROOT_AGREED stays False until Nuance agrees the suite root (Q-N3). While it is False nothing may be
@@ -66,6 +67,11 @@ def share_dir(home_dir=None):
 
 def deps_root(home_dir=None):
     return os.path.join(share_dir(home_dir), "deps")
+
+
+def app_dir(home_dir=None):
+    """The read-only release copies (DESIGN.md 3.7, 8.6); not in write_roots(): only guard mode release writes here."""
+    return os.path.join(share_dir(home_dir), "app")
 
 
 def run_dir(home_dir=None):

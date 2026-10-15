@@ -22,6 +22,9 @@ export const COMMANDS = Object.freeze([
   'set_prefs', 'export_csv',
 ]);
 
+// DESIGN.md 9.1, the read-only queries (only session is answered in Phase 0).
+export const QUERIES = Object.freeze(['session', 'catalogue', 'journal', 'green_up_preview']);
+
 export const SESSION_ENDED = 'session ended, run suite open again';
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{16,256}$/;
@@ -363,6 +366,23 @@ export function createApi({ fetchImpl, getToken, onUnauthorized, fillRandom }) {
       }
       const token = result.reply.token;
       return typeof token === 'string' && TOKEN_RE.test(token) ? { ok: true, token: token } : { ok: false, code: 'bad_reply' };
+    },
+
+    // One read-only query (DESIGN.md 9.1): {ok, reply} or {ok:false, code}. The session query says whether
+    // this tab is the controller (9.2 item 8).
+    async query(name, args = {}) {
+      if (!QUERIES.includes(name)) {
+        return { ok: false, code: 'unknown_query' };
+      }
+      const token = getToken();
+      if (token === null) {
+        return { ok: false, code: 'no_session' };
+      }
+      const result = await post(ROUTES.query, { query: name, args: args }, token);
+      if (result.status === 401) {
+        onUnauthorized();
+      }
+      return result;
     },
 
     // One command from the closed enum, with a fresh nonce: {ok, reply} or {ok:false, code}.

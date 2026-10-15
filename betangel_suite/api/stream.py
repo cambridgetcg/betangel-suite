@@ -4,7 +4,8 @@ One JSON object per line, each line one HTTP/1.1 chunk, Content-Type application
 
     {"t": "frame", "seq": n, "clock": {...}, "market": {...}, "runners": [...]}    the engine's frames
     {"t": "hb", "seq": n, "paused": bool}       when no line went out for HEARTBEAT_S (paused or idle)
-    {"t": "end", "seq": n, "reason": str}       last line: stopped, run_marker, engine_failed or superseded
+    {"t": "end", "seq": n, "reason": str}       last line: stopped, run_marker, engine_failed, abandoned,
+                                                max_session (api/lifetime.py) or superseded
 
 seq in hb and end is the seq of the last frame sent on this stream (0 before the first). A slow reader
 skips frames (each frame is the whole state), never lines out of order. The stream ends when the engine

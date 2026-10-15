@@ -4,19 +4,27 @@ The engine binds an AF_UNIX stream socket at an absolute path directly in the 07
 (~/.local/state/betangel-suite/run/), permitted through guard.permit_unix_socket before seal(), and
 tightens it to 0600. Each connection must come from this uid, checked with the kernel's peer credentials
 (LOCAL_PEERCRED, which macOS getpeereid(3) is built on); any other peer is closed with control_peer_refused.
-A peer sends one line of strict JSON, {"command": <one of attach, new_code, pause, stop>}, at most
-MAX_LINE bytes, and gets one line back:
+A peer sends one line of strict JSON, {"command": <routes.CONTROL_ARGS key>, ...that command's exact extra
+keys}, at most MAX_LINE bytes, and gets one line back:
 
-    attach    a takeover: pause, invalidate every earlier code and token, {"ok": true, "port": n, "code": c}
-    new_code  a fresh single-use code, {"ok": true, "port": n, "code": c}
-    pause     pause the clock, {"ok": true}
-    stop      end the engine, {"ok": true}
+    attach            open's takeover: pause, invalidate every earlier code and token,
+                      {"ok": true, "port": n, "code": c}
+    new_code          a fresh single-use code, {"ok": true, "port": n, "code": c}
+    pause             pause the clock, {"ok": true}
+    stop              end the engine, {"ok": true}
+    attach_viewer     ssh-session's takeover (as attach), which also starts a terminal viewer:
+                      {"ok": true, "port": n, "code": c, "viewer": g}
+    viewer_code       {"viewer": g}: a fresh code for that viewer (Enter), {"ok": true, "port": n, "code": c}
+    viewer_heartbeat  {"viewer": g}: the viewer is there (every 15 s), {"ok": true}
+    viewer_away       {"viewer": g}: stdin EOF or a failed write; pause, keep the session for the grace period
 
-Only open and ssh-session ask for a code, and they hand it to /usr/bin/open or the viewer's terminal; this
-module never prints or logs one. The client side (request) connects through guard.permit_unix_connect,
-the only connect the guard allows. stop (stop_main) needs no engine: with none running it prints
-not_running. It never checks the run marker, because it only reduces activity (DESIGN.md 3.9 rule 6).
-Standard library only.
+The viewer commands answer {"ok": false, "code": "superseded"} once a later takeover has replaced viewer g
+(api/lifetime.py). Only open and ssh-session ask for a code, and they hand it to /usr/bin/open, the caller's
+stdout (open --print-url) or the viewer's terminal; this module never prints or logs one. The client side
+(request) connects through guard.permit_unix_connect, the only connect the guard allows; a sealed client
+(ssh-session's attached viewer) keeps the permit it got before seal(). stop (stop_main) needs no engine:
+with none running it prints not_running. It never checks the run marker, because it only reduces activity
+(DESIGN.md 3.9 rule 6). Standard library only.
 """
 
 import fcntl
@@ -31,7 +39,7 @@ import time
 
 from .. import guard, roots
 from ..errors import SuiteError
-from .routes import CONTROL_COMMANDS
+from .routes import CONTROL_ARGS, viewer_ok
 
 SOCKET_NAME = "control.sock"
 LOCK_NAME = "engine.lock"
@@ -103,7 +111,7 @@ def engine_running(home_dir=None):
 # --- the server side -----------------------------------------------------------------------------
 
 class ControlServer:
-    """run/control.sock for a running engine; handler(command) -> reply dict."""
+    """run/control.sock for a running engine; handler(command, args) -> reply dict (args: the extra keys)."""
 
     def __init__(self, path, handler, *, expected_uid=None):
         check_path(path)
@@ -177,11 +185,21 @@ class ControlServer:
             request = json.loads(data.decode("utf-8"), object_pairs_hook=_no_duplicates, parse_constant=_no_constant)
         except (ValueError, UnicodeDecodeError, RecursionError, AttributeError):
             request = None
-        if (not isinstance(request, dict) or set(request) != {"command"}
-                or request["command"] not in CONTROL_COMMANDS):
+        if not request_ok(request):
             return {"ok": False, "code": "control_bad_request"}
-        reply = self._handler(request["command"])
+        args = {key: value for key, value in request.items() if key != "command"}
+        reply = self._handler(request["command"], args)
         return reply if isinstance(reply, dict) else {"ok": False, "code": "control_failed"}
+
+
+def request_ok(request):
+    """A request object with a known command and exactly that command's extra keys, each a valid viewer."""
+    if not isinstance(request, dict) or not isinstance(request.get("command"), str):
+        return False
+    extra = CONTROL_ARGS.get(request["command"])
+    if extra is None or set(request) != {"command", *extra}:
+        return False
+    return all(viewer_ok(request[key]) for key in extra)
 
 
 def _read_line(connection):
@@ -197,17 +215,19 @@ def _read_line(connection):
     return data.split(b"\n", 1)[0]
 
 
-# --- the client side (open, stop) ----------------------------------------------------------------
+# --- the client side (open, ssh-session, stop) ---------------------------------------------------
 
-def request(command, home_dir=None, *, timeout=CONNECTION_TIMEOUT_S):
+def request(command, home_dir=None, *, timeout=CONNECTION_TIMEOUT_S, args=None):
     """Send one control command to the running engine; the reply dict, or None when no engine answers."""
-    if command not in CONTROL_COMMANDS:
+    line = {"command": command, **({} if args is None else args)}
+    if not request_ok(line):
         raise SuiteError("control_bad_request")
     path = socket_path(home_dir)
     if not os.path.lexists(path):
         return None                     # no engine (an engine always has its socket)
     check_path(path)
-    guard.permit_unix_connect(path)
+    if not guard.is_sealed():
+        guard.permit_unix_connect(path)     # once sealed, only a path permitted before seal() connects
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         sock.settimeout(timeout)
@@ -215,7 +235,7 @@ def request(command, home_dir=None, *, timeout=CONNECTION_TIMEOUT_S):
             sock.connect(path)
         except (FileNotFoundError, ConnectionRefusedError):
             return None
-        sock.sendall(json.dumps({"command": command}).encode("ascii") + b"\n")
+        sock.sendall(json.dumps(line).encode("ascii") + b"\n")
         data = b""
         while b"\n" not in data and len(data) <= 4 * MAX_LINE:
             part = sock.recv(4 * MAX_LINE)

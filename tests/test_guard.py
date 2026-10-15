@@ -45,8 +45,12 @@ def parse(path):
 
 
 def environment_uses(tree, keys, names):
-    """Every environment access in tree that is not a fixed-key lookup (NoOffSwitchTests)."""
+    """Every environment access in tree that is not a fixed-key lookup (NoOffSwitchTests).
+
+    keys are the allowed key values. A key given by name must be a module constant of tree (module_constants), and
+    its string value is what is compared, so neither a rebound name nor a local of the same name passes."""
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    constants = module_constants(tree)
     problems = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and any(alias.name in names for alias in node.names):
@@ -56,13 +60,42 @@ def environment_uses(tree, keys, names):
         elif isinstance(node, ast.Name) and node.id in names:
             problems.append("uses a bare " + node.id)
         elif isinstance(node, ast.Attribute) and node.attr in names:
-            problem = _environ_use(node, parents, keys)
+            problem = _environ_use(node, parents, keys, constants)
             if problem:
                 problems.append(problem)
     return problems
 
 
-def _environ_use(node, parents, keys):
+def module_constants(tree):
+    """{name: string} for each top-level `NAME = "literal"` of tree whose name is bound nowhere else in it (no other
+    assignment, deletion, parameter, import, global, except or loop name, at any depth)."""
+    bound = {}
+    for node in ast.walk(tree):
+        names = []
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names = [node.id]
+        elif isinstance(node, ast.arg):
+            names = [node.arg]
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [(alias.asname or alias.name).split(".")[0] for alias in node.names]
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names = list(node.names) * 2                    # never a constant
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names = [node.name]
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = [node.name]
+        for name in names:
+            bound[name] = bound.get(name, 0) + 1
+    constants = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+                and bound.get(node.targets[0].id) == 1):
+            constants[node.targets[0].id] = node.value.value
+    return constants
+
+
+def _environ_use(node, parents, keys, constants):
     if not (node.attr == "environ" and isinstance(node.value, ast.Name) and node.value.id == "os"):
         return "uses " + ast.unparse(node)
     parent, key = parents.get(node), None
@@ -80,8 +113,13 @@ def _environ_use(node, parents, keys):
         return "iterates os.environ"
     if key is None:
         return "uses os.environ as " + type(parent).__name__
-    name = key.value if isinstance(key, ast.Constant) else getattr(key, "id", None)
-    return None if name in keys else "reads key %r" % (name,)
+    if isinstance(key, ast.Constant):
+        value = key.value
+    elif isinstance(key, ast.Name) and key.id in constants:
+        value = constants[key.id]
+    else:
+        return "reads key %s (not a literal or a module constant)" % ast.unparse(key)
+    return None if value in keys else "reads key %r" % (value,)
 
 
 def arm_outcome(case, home, env=None, flags=("-I", "-S", "-B")):
@@ -168,27 +206,35 @@ class NoOffSwitchTests(unittest.TestCase):
 
     PUBLIC = {"GuardRefusal", "arm", "seal", "armed_mode", "is_sealed", "require_armed", "require_mode",
               "permit_loopback_port", "permit_unix_socket", "permit_unix_connect", "engine_argv_ok", "vendor_argv_ok",
-              "runner_argv_ok", "runner_git_ok"}
+              "runner_argv_ok", "runner_git_ok", "release_argv_ok", "uisnap_build_argv", "uisnap_argv_ok",
+              "permit_uisnap_binary"}
 
     def test_guard_public_callables_are_exactly_these(self):
         public = {name for name, value in vars(guard).items()
                   if callable(value) and not name.startswith("_") and getattr(value, "__module__", "") == guard.__name__}
         self.assertEqual(public, self.PUBLIC)
 
-    ENV_KEYS = {"HOME", "TMPDIR", "SQLITE_TMPDIR", "PATH", "FORBID_NETWORK_ENV"}
+    # The allowed keys are values: a key given by name is resolved to its module constant (environment_uses).
+    ENV_KEYS = {"HOME", "TMPDIR", "SQLITE_TMPDIR", "PATH", "BETANGEL_BETFAIR_FORBID_NETWORK"}
+    # SUITE_VIA_SSH (cli.VIA_SSH_ENV, Phase 0c) is bin/suite's validated SSH flag: it can only refuse a command, and
+    # only cli.py may read it.
+    MODULE_ENV_KEYS = {os.path.join("betangel_suite", "cli.py"): {"SUITE_VIA_SSH"}}
     ENV_NAMES = {"environ", "environb", "getenv", "getenvb"}
 
     def test_environment_reads_are_fixed_key_lookups_only(self):
         # An allowlist, not a search for known shapes: os.environ may appear only as os.environ.get(KEY, ...)
-        # or os.environ[KEY] with KEY one of ENV_KEYS, plus the one stray-variable scan in guard.arm. So
-        # `"X" in os.environ`, .items(), .copy(), dict(os.environ), os.environb, os.getenv, an imported
-        # environ and getattr(os, "environ") all fail it.
+        # or os.environ[KEY] with KEY one of ENV_KEYS (a literal, or a module constant holding one), plus the one
+        # stray-variable scan in guard.arm. So `"X" in os.environ`, .items(), .copy(), dict(os.environ),
+        # os.environb, os.getenv, an imported environ and getattr(os, "environ") all fail it.
+        from betangel_suite import cli
+        self.assertEqual((guard.FORBID_NETWORK_ENV, cli.VIA_SSH_ENV), ("BETANGEL_BETFAIR_FORBID_NETWORK", "SUITE_VIA_SSH"))
         sources = [os.path.join(ROOT, "betangel_suite", name) for name in os.listdir(os.path.join(ROOT, "betangel_suite"))
                    if name.endswith(".py")]
         sources += [os.path.join(ROOT, "bin", "_launch.py"), os.path.join(ROOT, "tools", "vendor_research.py")]
         for path in sources:
             name = os.path.relpath(path, ROOT)
-            for problem in environment_uses(parse(path), self.ENV_KEYS, self.ENV_NAMES):
+            keys = self.ENV_KEYS | self.MODULE_ENV_KEYS.get(name, set())
+            for problem in environment_uses(parse(path), keys, self.ENV_NAMES):
                 self.fail("%s: %s" % (name, problem))
 
     def test_the_allowlist_rule_catches_off_switch_shapes(self):
@@ -196,10 +242,22 @@ class NoOffSwitchTests(unittest.TestCase):
                        "x = os.environ.items()\n", "x = os.getenv('HOME')\n", "x = os.environb\n",
                        "from os import environ\n", "x = getattr(os, 'environ')\n", "x = os.environ.get('OFF')\n",
                        "x = os.environ['OFF']\n", "x = any(k == 'OFF' for k in os.environ)\n",
-                       "x = posix.environ\n", "x = os.environ.setdefault('HOME', '')\n"):
-            self.assertTrue(environment_uses(ast.parse(source), self.ENV_KEYS, self.ENV_NAMES), source)
-        self.assertEqual(environment_uses(ast.parse("x = os.environ.get('HOME', '')\ny = os.environ['TMPDIR']\n"),
+                       "x = posix.environ\n", "x = os.environ.setdefault('HOME', '')\n",
+                       # an allowed name holding another key, a rebound or local name, an attribute: never a key
+                       'VIA_SSH_ENV = "SUITE_GUARD_OFF"\nif os.environ.get(VIA_SSH_ENV) == "1":\n    pass\n',
+                       'KEY = "HOME"\nKEY = "OFF"\nx = os.environ.get(KEY)\n',
+                       'KEY = "HOME"\ndef f(KEY="OFF"):\n    return os.environ.get(KEY)\n',
+                       'KEY = "HOME"\ndef f():\n    KEY = "OFF"\n    return os.environ[KEY]\n',
+                       'KEY = "HOME"\nfor KEY in ("OFF",):\n    pass\nx = os.environ.get(KEY)\n',
+                       "x = os.environ.get(guard.FORBID_NETWORK_ENV)\n", "x = os.environ.get(UNDEFINED)\n"):
+            self.assertTrue(environment_uses(ast.parse(source), self.ENV_KEYS | {"SUITE_VIA_SSH"}, self.ENV_NAMES),
+                            source)
+        self.assertEqual(environment_uses(ast.parse("x = os.environ.get('HOME', '')\ny = os.environ['TMPDIR']\n"
+                                                    'KEY = "PATH"\nz = os.environ.get(KEY)\n'),
                                           self.ENV_KEYS, self.ENV_NAMES), [])
+        via_ssh = 'VIA_SSH_ENV = "SUITE_VIA_SSH"\nx = os.environ.get(VIA_SSH_ENV, "")\n'
+        self.assertEqual(environment_uses(ast.parse(via_ssh), self.ENV_KEYS | {"SUITE_VIA_SSH"}, self.ENV_NAMES), [])
+        self.assertTrue(environment_uses(ast.parse(via_ssh), self.ENV_KEYS, self.ENV_NAMES), "only cli.py reads it")
 
     def test_the_hook_is_installed_unconditionally(self):
         tree = parse(os.path.join(ROOT, "betangel_suite", "guard.py"))
@@ -226,8 +284,9 @@ class NoOffSwitchTests(unittest.TestCase):
                 imported |= {alias.name for alias in node.names}
             elif isinstance(node, ast.ImportFrom):
                 imported |= {"%s%s.%s" % ("." * node.level, node.module or "", alias.name) for alias in node.names}
-        self.assertEqual(imported, {"fcntl", "os", "re", "sys", "threading", "posix", "sqlite3", "sqlite3.dbapi2",
-                                    "..roots", ".errors.SuiteError"})
+        # hashlib and stat (Phase 0c): the uisnap binary's sha256 and file checks (permit_uisnap_binary).
+        self.assertEqual(imported, {"fcntl", "hashlib", "os", "re", "stat", "sys", "threading", "posix", "sqlite3",
+                                    "sqlite3.dbapi2", "..roots", ".errors.SuiteError"})
 
     def test_config_has_no_key_about_the_guard(self):
         for key in config.DEFAULTS:
@@ -748,6 +807,165 @@ attempt("write_outside", lambda: write(os.path.join(home, "outside.txt")))
         for name in ("write_data_home", "mkdir_data_root", "write_outside"):
             self.assertEqual(results[name], "write_outside_roots", name)
         self.assertEqual(os.listdir(roots.data_home(home)), ["suite.noindex"])
+
+
+
+class ReleaseModeTests(unittest.TestCase):
+    """bin/suite release (guard mode release, I-18): its own git argvs on this checkout only, then nothing; writes
+    also under the app root, nowhere else in the share dir. Nothing here runs git on a real repository: allowed
+    shapes are checked through the pure predicate, and the live child only meets refusals."""
+
+    REPO = "/h/betangel-suite"
+    RESEARCH = "/h/betangel-research"
+    APP = "/h/.local/share/betangel-suite/app"
+    ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", FORBID: "1", "PATH": "/usr/bin:/bin"}
+    COMMIT = "0a1b2c3d4e5f" * 3 + "0a1b"
+    TREE = "f" * 40
+
+    def ok(self, rest, env=None, repo=None):
+        repo = self.REPO if repo is None else repo
+        argv = list(guard.RELEASE_GIT_PREFIX) + ["-C", repo] + list(rest)
+        return guard.release_argv_ok(argv, self.ENV if env is None else env, repo, self.RESEARCH, self.APP)
+
+    def test_release_argv_shapes(self):
+        for rest in (["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                     ["rev-parse", "--verify", "--quiet", "refs/tags/v0.1.0^{commit}"],
+                     ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"],
+                     ["rev-parse", "--verify", "--quiet", self.COMMIT + "^{tree}"],
+                     ["rev-parse", "--verify", "--quiet", "e" * 64 + "^{tree}"],
+                     ["merge-base", "--is-ancestor", self.COMMIT, self.TREE],
+                     ["archive", "--format=tar", self.COMMIT],
+                     ["config", "--includes", "--null", "--get-regexp", "^filter\\."]):
+            self.assertTrue(self.ok(rest), rest)
+        for rest in (["fetch"], ["pull"], ["push"], ["ls-remote", "origin"], ["status"], ["status", "--porcelain"],
+                     ["rev-parse", "--verify", "--quiet", "refs/tags/-x^{commit}"],
+                     ["rev-parse", "--verify", "--quiet", "refs/tags/a..b^{commit}"],
+                     ["rev-parse", "--verify", "--quiet", "refs/tags/v1"],
+                     ["rev-parse", "--verify", "--quiet", "refs/heads/other^{commit}"],
+                     ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"],
+                     ["rev-parse", "refs/heads/main^{commit}"],
+                     ["merge-base", "--is-ancestor", "v1", "main"],
+                     ["archive", "--format=tar", "v1"], ["archive", "--format=zip", self.COMMIT],
+                     ["archive", "--remote=https://example.invalid/x", "--format=tar", self.COMMIT],
+                     ["archive", "--format=tar", "--output=/h/x.tar", self.COMMIT],
+                     ["archive", "--format=tar", self.COMMIT, "--exec=/bin/sh"],
+                     ["clone", self.REPO, "/h/x"], ["worktree", "add", "/h/x"], ["submodule", "update"],
+                     ["tag", "v1"], ["config", "core.fsmonitor", "/bin/sh"], [],
+                     # only the exact read-only filter query: no other key, write, file or edit
+                     ["config", "--null", "--get-regexp", "^filter\\."],
+                     ["config", "--includes", "--null", "--get-regexp", "."],
+                     ["config", "--includes", "--null", "--get-regexp", "^filter\\.", "x"],
+                     ["config", "--file", "/h/x", "--includes", "--null", "--get-regexp", "^filter\\."],
+                     ["config", "--add", "filter.x.clean", "/bin/sh"], ["config", "--edit"]):
+            self.assertFalse(self.ok(rest), rest)
+        status = ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+        for repo in (self.RESEARCH, self.RESEARCH + "/sub", self.APP + "/v1", "relative", "/h/x/../betangel-suite"):
+            self.assertFalse(self.ok(status, repo=repo), repo)
+        argv = list(guard.RELEASE_GIT_PREFIX) + ["-C", "/h/other"] + status
+        self.assertFalse(guard.release_argv_ok(argv, self.ENV, self.REPO, self.RESEARCH, self.APP))
+        self.assertFalse(guard.release_argv_ok(["/usr/bin/git", "-C", self.REPO] + status, self.ENV, self.REPO,
+                                               self.RESEARCH, self.APP))
+        self.assertFalse(guard.release_argv_ok(["git"] + list(guard.RELEASE_GIT_PREFIX[1:]) + ["-C", self.REPO] + status,
+                                               self.ENV, self.REPO, self.RESEARCH, self.APP))
+        self.assertFalse(guard.release_argv_ok(list(guard.RELEASE_GIT_PREFIX) + ["-C", self.REPO] + status, None,
+                                               self.REPO, self.RESEARCH, self.APP))      # an inherited environment
+        for change in ({"GIT_CONFIG_GLOBAL": None}, {"GIT_CONFIG_NOSYSTEM": None}, {"GIT_CONFIG_GLOBAL": "/h/.gitconfig"},
+                       {"GIT_DIR": self.RESEARCH + "/.git"}, {"GIT_WORK_TREE": self.RESEARCH}, {"GIT_CONFIG_COUNT": "1"},
+                       {"GIT_SSH_COMMAND": "ssh"}, {"GIT_EXEC_PATH": "/x"}, {"GIT_AUTHOR_NAME": "x"}):
+            env = {key: value for key, value in dict(self.ENV, **change).items() if value is not None}
+            self.assertFalse(self.ok(status, env=env), change)
+        self.assertTrue(self.ok(status, env=dict(self.ENV, GIT_TERMINAL_PROMPT="0")))
+
+    def test_release_is_its_own_mode(self):
+        from betangel_suite import cli
+        self.assertIn("release", guard.MODES)
+        self.assertEqual(cli.guard_mode("release"), "release")
+
+    def test_release_mode_writes_and_spawns(self):
+        home = make_home(self)
+        setup = "os.makedirs(roots.deps_root(), mode=0o700)\nos.makedirs(roots.state_dir(), exist_ok=True)\n"
+        results = checks(self, home, mode="release", setup=setup, body="""
+import subprocess
+home = os.environ["HOME"]
+app = roots.app_dir()
+def write(path):
+    with open(path, "w") as handle:
+        handle.write("x")
+env = {"HOME": home, "PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+       guard.FORBID_NETWORK_ENV: "1", "TMPDIR": os.environ["TMPDIR"]}
+prefix = list(guard.RELEASE_GIT_PREFIX)
+def run(argv, run_env=env):
+    subprocess.run(argv, env=run_env, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+attempt("mkdir_app", lambda: os.mkdir(app, 0o700))
+attempt("write_app", lambda: write(os.path.join(app, "x")))
+attempt("symlink_in_app", lambda: os.symlink("x", os.path.join(app, "current")))
+attempt("rename_in_app", lambda: os.rename(os.path.join(app, "current"), os.path.join(app, "current2")))
+attempt("chmod_in_app", lambda: os.chmod(os.path.join(app, "x"), 0o400))
+attempt("write_share", lambda: write(os.path.join(roots.share_dir(), "x")))
+attempt("write_deps", lambda: write(os.path.join(roots.deps_root(), "x")))
+attempt("rename_into_deps", lambda: os.rename(os.path.join(app, "x"), os.path.join(roots.deps_root(), "x")))
+attempt("write_outside", lambda: write(os.path.join(home, "outside.txt")))
+attempt("write_data_home", lambda: write(os.path.join(roots.data_home(), "x")))
+attempt("git_without_prefix", lambda: run(["/usr/bin/git", "-C", guard.REPO_ROOT, "status"]))
+attempt("git_fetch", lambda: run(prefix + ["-C", guard.REPO_ROOT, "fetch"]))
+attempt("git_other_repo", lambda: run(prefix + ["-C", home, "archive", "--format=tar", "0" * 40]))
+attempt("git_research", lambda: run(prefix + ["-C", roots.research_clone(), "archive", "--format=tar", "0" * 40]))
+attempt("git_inherited_env", lambda: run(prefix + ["-C", guard.REPO_ROOT, "archive", "--format=tar", "0" * 40], None))
+attempt("shell", lambda: subprocess.run("true", shell=True))
+guard.seal()
+attempt("git_after_seal", lambda: run(prefix + ["-C", guard.REPO_ROOT, "archive", "--format=tar", "0" * 40]))
+""")
+        for name in ("mkdir_app", "write_app", "symlink_in_app", "rename_in_app", "chmod_in_app"):
+            self.assertEqual(results[name], "ok", name)
+        for name in ("write_share", "write_deps", "rename_into_deps", "write_outside"):
+            self.assertEqual(results[name], "write_outside_roots", name)
+        self.assertEqual(results["write_data_home"], "state_root_not_agreed")
+        for name in ("git_without_prefix", "git_fetch", "git_other_repo", "git_research", "git_inherited_env", "shell",
+                     "git_after_seal"):
+            self.assertEqual(results[name], "subprocess_refused", name)
+        self.assertEqual(os.listdir(roots.deps_root(home)), [])
+        self.assertEqual(sorted(os.listdir(roots.share_dir(home))), ["app", "deps"])
+        self.assertFalse(os.path.lexists(os.path.join(home, "outside.txt")))
+
+    def test_other_modes_cannot_write_the_app_root(self):
+        home = make_home(self)
+        setup = "os.makedirs(roots.app_dir(), mode=0o700)\nos.makedirs(roots.state_dir(), exist_ok=True)\n"
+        for mode in ("engine", "test", "vendor", "uisnap"):
+            results = checks(self, home, mode=mode, setup=setup if mode == "engine" else "", body="""
+attempt("write_app", lambda: open(os.path.join(roots.app_dir(), "x"), "w").close())
+attempt("symlink_app", lambda: os.symlink("x", os.path.join(roots.app_dir(), "current")))
+attempt("mkdir_app_tag", lambda: os.mkdir(os.path.join(roots.app_dir(), "v1")))
+""")
+            self.assertEqual(results, {"write_app": "write_outside_roots", "symlink_app": "write_outside_roots",
+                                       "mkdir_app_tag": "write_outside_roots"}, mode)
+        self.assertEqual(os.listdir(roots.app_dir(home)), [])
+
+    def test_vendor_writes_only_its_deps_the_pin_and_the_share_dir_itself(self):
+        # vendor may create ~/.local/share/betangel-suite (one mkdir of exactly that path) and write under its
+        # deps/; nothing else in the share dir, so never app/ (release copies, app/current).
+        home = make_home(self)
+        results = checks(self, home, mode="vendor", body="""
+share = roots.share_dir()
+def write(path):
+    with open(path, "w") as handle:
+        handle.write("x")
+attempt("mkdir_share_unnormalised", lambda: os.mkdir(share + "/../betangel-suite"))
+attempt("mkdir_share", lambda: os.mkdir(share, 0o700))
+attempt("mkdir_deps", lambda: os.mkdir(roots.deps_root(), 0o700))
+attempt("write_deps", lambda: write(os.path.join(roots.deps_root(), "x")))
+attempt("mkdir_app", lambda: os.mkdir(roots.app_dir(), 0o700))
+attempt("write_share", lambda: write(os.path.join(share, "x")))
+attempt("symlink_current", lambda: os.symlink("deps", os.path.join(share, "current")))
+attempt("rename_deps", lambda: os.rename(os.path.join(roots.deps_root(), "x"), os.path.join(share, "x")))
+attempt("chmod_share", lambda: os.chmod(share, 0o755))
+attempt("rmdir_share", lambda: os.rmdir(share))
+""")
+        self.assertEqual(results, {
+            "mkdir_share_unnormalised": "write_outside_roots", "mkdir_share": "ok", "mkdir_deps": "ok",
+            "write_deps": "ok", "mkdir_app": "write_outside_roots", "write_share": "write_outside_roots",
+            "symlink_current": "write_outside_roots", "rename_deps": "write_outside_roots",
+            "chmod_share": "write_outside_roots", "rmdir_share": "write_outside_roots"})
+        self.assertEqual(sorted(os.listdir(roots.share_dir(home))), ["deps"])
 
 
 if __name__ == "__main__":

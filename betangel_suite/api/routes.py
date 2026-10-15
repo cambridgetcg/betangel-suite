@@ -9,13 +9,19 @@ Routes (exact path and method; tests/test_http_routes.py asserts equality):
     POST /api/v1/command                                {"nonce": <str>, "command": <COMMANDS>, "args": {...}}
 
 The command enum is section 9.1's, in full. Phase 0b implements open_market {"seed": int} (synthetic only),
-play, pause, set_speed {"speed_x100": int} and stop; every other command answers
-{"ok": false, "code": "not_implemented"}. Exploration mode's replace is not part of Phase 0b.
+play, pause, set_speed {"speed_x100": int} and stop; Phase 0c adds claim_control {} (9.2 item 8: a read-only
+tab takes control; it is the one command a read-only tab may send). Every other command answers
+{"ok": false, "code": "not_implemented"}. Exploration mode's replace is not part of Phase 0.
 No route, command or query name holds a word of FORBIDDEN_WORDS (I-7).
 
-The App joins the engine, the session tokens and the control socket. Its methods return (HTTP status,
-JSON object); every failure object is {"ok": false, "code": <errors.CODES entry>}. Requests carry no
-identifier back into a log: the handler logs status codes and error codes only.
+The control socket's closed command set (CONTROL_ARGS, each with its exact extra keys): DESIGN.md 9.1's attach,
+new_code, pause and stop, plus the ssh-session viewer's attach_viewer, viewer_code, viewer_heartbeat and
+viewer_away (Phase 0c: session lifetime, DESIGN.md 8.6 item 2 and I-19), which name the viewer generation that
+attach_viewer returned, so an ssh-session that was taken over cannot ask for codes or keep the session alive.
+
+The App joins the engine, the session tokens, the session lifetime (api/lifetime.py) and the control socket.
+Its methods return (HTTP status, JSON object); every failure object is {"ok": false, "code": <errors.CODES
+entry>}. Requests carry no identifier back into a log: the handler logs status codes and error codes only.
 Standard library only.
 """
 
@@ -37,16 +43,24 @@ COMMANDS = ("open_market", "play", "pause", "set_speed", "seek", "jump", "step",
 EXPLORATION_COMMANDS = ("replace",)         # exploration mode (R-7) adds it; not accepted in Phase 0b
 QUERIES = ("session", "catalogue", "journal", "green_up_preview")
 FORBIDDEN_WORDS = ("live", "account", "funds", "login", "kill", "upload", "share")
-CONTROL_COMMANDS = ("attach", "new_code", "pause", "stop")
+# The control socket: command -> the exact extra keys of its request line (each an int viewer generation).
+CONTROL_ARGS = {
+    "attach": (), "new_code": (), "pause": (), "stop": (),
+    "attach_viewer": (), "viewer_code": ("viewer",), "viewer_heartbeat": ("viewer",), "viewer_away": ("viewer",),
+}
+CONTROL_COMMANDS = tuple(CONTROL_ARGS)
+VIEWER_MAX = 2 ** 31 - 1
 
-# Phase 0b: command -> exact argument schema {key: type}
+# Phase 0b and 0c: command -> exact argument schema {key: type}
 IMPLEMENTED = {
     "open_market": {"seed": int},
     "play": {},
     "pause": {},
     "set_speed": {"speed_x100": int},
     "stop": {},
+    "claim_control": {},
 }
+APP_COMMANDS = ("claim_control",)           # handled by the App itself, never by the engine's actor
 IMPLEMENTED_QUERIES = ("session",)
 BODY_KEYS = {
     "bootstrap": frozenset({"code"}),
@@ -123,6 +137,11 @@ def exact_object(value, keys):
     return isinstance(value, dict) and set(value) == set(keys)
 
 
+def viewer_ok(value):
+    """A viewer generation as attach_viewer returns it: a positive int (never a bool)."""
+    return type(value) is int and 0 < value <= VIEWER_MAX
+
+
 def args_ok(args, schema):
     """args has exactly the schema's keys, each of exactly its type (bool is never an int here)."""
     if not exact_object(args, schema):
@@ -133,14 +152,17 @@ def args_ok(args, schema):
 class App:
     """The engine, the tokens and the request logic behind the HTTP handler and the control socket."""
 
-    def __init__(self, engine, auth, static_files, *, port=0):
+    def __init__(self, engine, auth, static_files, *, port=0, lifetime=None):
+        from .lifetime import Lifetime
         self.engine = engine
         self.auth = auth
+        self.lifetime = Lifetime(grace_s=600, max_session_s=14400) if lifetime is None else lifetime
         self.static = static_files
         self.port = port
         self.limits = RateLimiter()
         self.nonces = NonceCache()
         self._watch_lock = threading.Lock()
+        self._takeover_lock = threading.Lock()   # a code and its viewer generation are issued together
         self.stopping = threading.Event()
         self.stop_reason = None
 
@@ -154,14 +176,27 @@ class App:
 
     # --- the control socket (same uid only; control.py checks the peer) -----------------------------
 
-    def control(self, command):
-        if command == "attach":                 # takeover: pause, invalidate the old token, issue a fresh code
-            code = self.auth.issue_code(takeover=True)
-            self.watching_changed()
-            self.engine.pause_external("takeover")
-            return {"ok": True, "port": self.port, "code": code}
+    def control(self, command, args=None):
+        args = {} if args is None else args
+        if command not in CONTROL_ARGS or set(args) != set(CONTROL_ARGS[command]):
+            return {"ok": False, "code": "control_bad_request"}
+        if "viewer" in args and not viewer_ok(args["viewer"]):
+            return {"ok": False, "code": "control_bad_request"}
+        if command in ("attach", "attach_viewer"):
+            port, code, generation = self.takeover(terminal=command == "attach_viewer")
+            reply = {"ok": True, "port": port, "code": code}
+            if command == "attach_viewer":
+                reply["viewer"] = generation
+            return reply
         if command == "new_code":
             return {"ok": True, "port": self.port, "code": self.auth.issue_code()}
+        if command == "viewer_code":
+            code = self.viewer_code(args["viewer"])
+            return {"ok": True, "port": self.port, "code": code} if code else {"ok": False, "code": "superseded"}
+        if command == "viewer_heartbeat":
+            return {"ok": True} if self.viewer_heartbeat(args["viewer"]) else {"ok": False, "code": "superseded"}
+        if command == "viewer_away":
+            return {"ok": True} if self.viewer_away(args["viewer"]) else {"ok": False, "code": "superseded"}
         if command == "pause":
             result = self.engine.pause_external("control")
             return {"ok": True} if result.get("ok") else result
@@ -169,6 +204,44 @@ class App:
             self.request_stop("stopped")
             return {"ok": True}
         return {"ok": False, "code": "control_bad_request"}
+
+    # --- takeovers and the ssh-session viewer (DESIGN.md 8.6 item 2, I-19) ---------------------------
+
+    def takeover(self, *, terminal):
+        """(port, fresh code, viewer generation): pause, invalidate every earlier code and token, start a new viewer.
+
+        open's attach is a takeover without a terminal; ssh-session's (attach_viewer, or its own start) has one.
+        """
+        with self._takeover_lock:
+            code = self.auth.issue_code(takeover=True)
+            generation = self.lifetime.takeover(terminal=terminal)
+        self.watching_changed()
+        self.engine.pause_external("takeover")
+        return self.port, code, generation
+
+    def viewer_code(self, generation):
+        """A fresh single-use code for the current terminal viewer (Enter in ssh-session), else None."""
+        with self._takeover_lock:                # never a code for a viewer a concurrent takeover replaced
+            return self.auth.issue_code() if self.lifetime.current(generation) else None
+
+    def viewer_heartbeat(self, generation):
+        return self.lifetime.heartbeat(generation)
+
+    def viewer_away(self, generation):
+        """stdin EOF or a failed write: pause, and keep the session for the grace period."""
+        if not self.lifetime.away(generation):
+            return False
+        self.engine.pause_external("not_watched")
+        return True
+
+    def check_lifetime(self):
+        """The engine main loop's periodic check: pause a silent viewer, end an abandoned or over-long session."""
+        reason, pause = self.lifetime.check(self.auth.streams_open())
+        if pause:
+            self.engine.pause_external("not_watched")
+        if reason is not None:
+            self.request_stop(reason)
+        return reason
 
     # --- routes -------------------------------------------------------------------------------------
 
@@ -213,13 +286,21 @@ class App:
         if not new:                             # a replay: the first result, nothing new (9.2 item 7)
             entry[0].wait(10.0)
             return (OK, entry[1]) if entry[1] is not None else refused(409, "engine_busy")
+        if name == "claim_control":             # the one command a read-only tab may send (9.2 item 8)
+            if not args_ok(body["args"], IMPLEMENTED[name]):
+                self.nonces.forget(nonce, entry)
+                return refused(400, "bad_args")
+            result = {"ok": True} if self.auth.claim(token) else {"ok": False, "code": "unauthorized"}
+            self.watching_changed()             # the clock runs only while the new controller watches
+            self.nonces.finish(nonce, entry, result)
+            return OK, result
+        if not self.auth.is_controller(token):  # before not_implemented: a read-only tab learns nothing else
+            self.nonces.forget(nonce, entry)
+            return refused(409, "not_controller")
         if name not in IMPLEMENTED:
             result = {"ok": False, "code": "not_implemented"}
             self.nonces.finish(nonce, entry, result)
             return OK, result
-        if not self.auth.is_controller(token):
-            self.nonces.forget(nonce, entry)
-            return refused(409, "not_controller")
         if not args_ok(body["args"], IMPLEMENTED[name]):
             self.nonces.forget(nonce, entry)
             return refused(400, "bad_args")

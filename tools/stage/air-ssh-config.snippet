@@ -1,0 +1,20 @@
+Host lab-suite
+  HostName 192.168.50.88
+  User user
+  AddressFamily inet
+  IdentityFile ~/.ssh/id_ed25519_lab_suite
+  IdentitiesOnly yes
+  AddKeysToAgent no
+  UseKeychain no
+  LocalForward 127.0.0.1:8765 127.0.0.1:8765
+  ExitOnForwardFailure yes
+  RequestTTY no
+  ServerAliveInterval 30
+  StrictHostKeyChecking yes
+  ControlMaster no
+  ControlPath none
+  ControlPersist no
+  IdentityAgent none
+  ProxyCommand none
+  ProxyJump none
+  PermitLocalCommand no

@@ -5,10 +5,13 @@ matters and is part of the design (DESIGN.md 3.6, 6.8, 10):
 
   1. refuse any interpreter but 3.13 and the 3.11 floor (I-14; 3.15 is frozen for Nuance's certification) and
      any start without -I, -S and -B; this prologue uses only old syntax so the refusal is clean;
-  2. append the checkout root to sys.path (-I leaves the script's directory off it);
+  2. append the checkout root (its real path, so app/current resolves to one release copy) to sys.path (-I
+     leaves the script's directory off it);
   3. arm the audit hook (betangel_suite.guard) in the mode the command name selects, before anything
      can import betangel_research, and install the code-only exception hooks;
-  4. check TMPDIR against roots.tmp_dir(command), then (for every command except stop, test and vendor) load
+  4. if the root lies under ~/.local/share/betangel-suite/app, verify it as a release copy against its
+     RELEASE.json (betangel_suite.release, I-18) and refuse any mismatch; any other root is a working checkout;
+     then check TMPDIR against roots.tmp_dir(command), then (for every command except stop, test and vendor) load
      the config and refuse while the run marker exists, before anything is created anywhere;
   5. dispatch to betangel_suite.cli, which creates TMPDIR (0700) before any handler runs.
 
@@ -39,7 +42,7 @@ def main(argv):
         return _refuse("interpreter_version")
     if not flags_ok(sys.flags):
         return _refuse("launch_flags")
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     if root not in sys.path:
         sys.path.append(root)
     from betangel_suite import cli, errors, guard      # standard library only; nothing upstream yet
@@ -52,7 +55,8 @@ def main(argv):
             os.nice(10)
         except OSError:                 # already at the maximum niceness: the intent is met
             pass
-        from betangel_suite import config, roots, runmarker
+        from betangel_suite import config, release, roots, runmarker
+        release.check_launch(root)          # a release copy runs only while it matches its RELEASE.json (I-18)
         if not command:
             raise errors.SuiteError("no_command")
         if command not in cli.COMMANDS:

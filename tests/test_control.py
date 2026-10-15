@@ -1,7 +1,9 @@
 """The control socket (DESIGN.md 3.1 item 3, 9.1; I-4) and the guard's one connect permit for it.
 
 run/control.sock is an absolute path in the 0700 run directory, mode 0600, served to same-uid peers only
-(LOCAL_PEERCRED, which getpeereid is built on), with the closed command set attach, new_code, pause, stop.
+(LOCAL_PEERCRED, which getpeereid is built on), with the closed command set attach, new_code, pause, stop,
+and (Phase 0c) the ssh-session viewer's attach_viewer, viewer_code, viewer_heartbeat and viewer_away, each with
+its exact extra keys.
 Its clients (open, stop) are engine-mode processes, whose guard refuses every connect except to a Unix
 socket path in the run directory permitted before seal(). Each check runs in a fresh engine-mode child
 under a temporary HOME short enough for sockaddr_un.
@@ -22,8 +24,8 @@ from betangel_suite.api import control
 roots.ensure_dir(roots.run_dir())
 path = control.socket_path()
 calls = []
-def handler(command):
-    calls.append(command)
+def handler(command, args):
+    calls.append([command, args] if args else command)
     return {"ok": True, "port": 1234, "code": "c" * 22} if command in ("attach", "new_code") else {"ok": True}
 def talk(data):
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -112,8 +114,31 @@ for command in ("attach", "new_code", "pause", "stop"):
 for name, data in (("unknown", b'{"command": "kill"}\\n'), ("extra", b'{"command": "stop", "x": 1}\\n'),
                    ("duplicate", b'{"command": "stop", "command": "pause"}\\n'), ("not_json", b"stop\\n"),
                    ("array", b'["stop"]\\n'), ("nan", b'{"command": NaN}\\n'),
-                   ("too_long", b'{"command": "' + b"x" * 2000 + b'"}\\n'), ("no_newline", b'{"command": "stop"}')):
+                   ("too_long", b'{"command": "' + b"x" * 2000 + b'"}\\n'), ("no_newline", b'{"command": "stop"}'),
+                   ("viewer_missing", b'{"command": "viewer_heartbeat"}\\n'),
+                   ("viewer_on_stop", b'{"command": "stop", "viewer": 1}\\n'),
+                   ("viewer_attach_args", b'{"command": "attach_viewer", "viewer": 1}\\n'),
+                   ("viewer_zero", b'{"command": "viewer_away", "viewer": 0}\\n'),
+                   ("viewer_bool", b'{"command": "viewer_away", "viewer": true}\\n'),
+                   ("viewer_text", b'{"command": "viewer_code", "viewer": "1"}\\n'),
+                   ("viewer_float", b'{"command": "viewer_code", "viewer": 1.0}\\n'),
+                   ("viewer_huge", b'{"command": "viewer_code", "viewer": 2147483648}\\n'),
+                   ("viewer_extra", b'{"command": "viewer_code", "viewer": 1, "x": 1}\\n')):
     results[name] = talk(data) if name != "no_newline" else None
+for command in ("attach_viewer",):
+    results[command] = talk(json.dumps({"command": command}).encode() + b"\\n")
+for command in ("viewer_code", "viewer_heartbeat", "viewer_away"):
+    results[command] = talk(json.dumps({"command": command, "viewer": 7}).encode() + b"\\n")
+from betangel_suite.errors import SuiteError
+for name, call in (("client_unknown", lambda: control.request("kill")),
+                   ("client_missing_viewer", lambda: control.request("viewer_code")),
+                   ("client_bool_viewer", lambda: control.request("viewer_code", args={"viewer": True}))):
+    try:
+        call()
+        results[name] = "sent"
+    except SuiteError as exc:
+        results[name] = str(exc)
+results["client_viewer"] = control.request("viewer_heartbeat", args={"viewer": 3})
 results["calls"] = calls
 server.close()
 results["removed"] = not os.path.lexists(path)
@@ -123,10 +148,41 @@ results["removed"] = not os.path.lexists(path)
         self.assertEqual(results["attach"], {"ok": True, "port": 1234, "code": "c" * 22})
         self.assertEqual(results["new_code"]["ok"], True)
         self.assertEqual((results["pause"], results["stop"]), ({"ok": True}, {"ok": True}))
-        for name in ("unknown", "extra", "duplicate", "not_json", "array", "nan", "too_long"):
+        for name in ("unknown", "extra", "duplicate", "not_json", "array", "nan", "too_long", "viewer_missing",
+                     "viewer_on_stop", "viewer_attach_args", "viewer_zero", "viewer_bool", "viewer_text",
+                     "viewer_float", "viewer_huge", "viewer_extra"):
             self.assertEqual(results[name], {"ok": False, "code": "control_bad_request"}, name)
-        self.assertEqual(results["calls"], ["attach", "new_code", "pause", "stop"])
+        for name in ("attach_viewer", "viewer_code", "viewer_heartbeat", "viewer_away", "client_viewer"):
+            self.assertEqual(results[name], {"ok": True}, name)
+        for name in ("client_unknown", "client_missing_viewer", "client_bool_viewer"):
+            self.assertEqual(results[name], "control_bad_request", name)       # refused before anything is sent
+        self.assertEqual(results["calls"], ["attach", "new_code", "pause", "stop", "attach_viewer",
+                                            ["viewer_code", {"viewer": 7}], ["viewer_heartbeat", {"viewer": 7}],
+                                            ["viewer_away", {"viewer": 7}], ["viewer_heartbeat", {"viewer": 3}]])
         self.assertTrue(results["removed"])
+
+    def test_a_sealed_client_keeps_only_the_permit_it_had_before_the_seal(self):
+        # ssh-session's attached viewer (Phase 0c) talks to the engine after guard.seal(): control.request then asks
+        # for no new permit (none can be added once sealed) and connects only to a path permitted before.
+        home = support.short_home(self)
+        results = checks(self, home, setup="", body=SERVER + """
+server = control.ControlServer(path, handler)
+server.start()
+results["before_seal"] = control.request("viewer_heartbeat", args={"viewer": 3})
+guard.seal()
+results["after_seal"] = control.request("viewer_away", args={"viewer": 3})
+server.close()
+""")
+        self.assertEqual((results["before_seal"], results["after_seal"]), ({"ok": True}, {"ok": True}))
+        unpermitted = checks(self, home, setup="", body=SERVER + """
+server = control.ControlServer(path, handler)
+server.start()
+guard.seal()
+attempt("sealed_without_permit", lambda: control.request("stop"))
+results["calls"] = calls
+server.close()
+""")
+        self.assertEqual(unpermitted, {"sealed_without_permit": "network_refused", "calls": []})
 
     def test_peer_of_another_uid_is_refused(self):
         # A process of another uid cannot be made here without privileges, so the server is told to expect

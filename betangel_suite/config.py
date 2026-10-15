@@ -33,6 +33,7 @@ DEFAULTS = {
     "research_months_ruling": None,                     # research months hidden while null
     "run_marker": "~/.local/state/lab-runs/ACTIVE",     # section 6.8; proposal pending Q-N3
     "watch_grace_s": 600,                               # section 8.6
+    "max_session_s": 14400,                             # section 8.6: a maximum session time of 4 h (Phase 0c)
 }
 CAP_PROFILES = ("v1-live-mirror", "practice")
 COMMISSION_SOURCES = ("user_package_verified", "user_package_unverified", "official_example_basic_2pct")
@@ -117,6 +118,7 @@ _CHECKS = {
         isinstance(value, str) and bool(_RULING_RE.fullmatch(value))),
     "run_marker": lambda value, home_dir: value == DEFAULTS["run_marker"],
     "watch_grace_s": lambda value, home_dir: _is_int(value, 60, 3600),
+    "max_session_s": lambda value, home_dir: _is_int(value, 600, 86400),
 }
 _NOT_JSON = object()
 

@@ -18,14 +18,19 @@ logs nothing but "http:<status>:<code>" and "http:error:<class>" lines. Request 
 
 Connections are bounded: at most MAX_CONNECTIONS at once (one over the cap gets a code-only 503 with the
 9.3 headers and is closed at once, without waiting on the accept thread); a request's line and headers
-must arrive within HEAD_DEADLINE_S of their first byte, however slowly they trickle in; an idle
-keep-alive connection is closed after Handler.timeout; and the lingering close lasts LINGER_S in all.
+must arrive within HEAD_DEADLINE_S of their first byte, and its body (bootstrap included) within
+BODY_DEADLINE_S of the start of the body read, however slowly either trickles in (the connection is then
+closed with no response); an idle keep-alive connection is closed after Handler.timeout; and the lingering
+close lasts LINGER_S in all.
 
-run() is the engine process (serve, and open when no engine is running): the single-instance lock
-run/engine.lock, the engine, the control socket, the HTTP server, then for open the one /usr/bin/open
+run() is the engine process (serve, open and ssh-session when no engine is running): the single-instance
+lock run/engine.lock, the engine, the control socket, the HTTP server, then for open the one /usr/bin/open
 argv the guard allows at startup, then guard.seal(), then one stdout line with the port (never a code or a
-token), and a wait until stop (control socket, SIGTERM, SIGINT or SIGHUP), the run marker, or an engine
-failure. Shutdown ends the streams with an end line, stops the server and removes the control socket.
+token; open --print-url adds the URL line before it, for Yu only, and ssh-session prints only its viewer's
+lines, api/sshsession.py), and a wait until stop (control socket, SIGTERM, SIGINT, or SIGHUP except under
+ssh-session, where a hangup is the viewer leaving), the run marker, an engine failure, or the session's
+lifetime (api/lifetime.py: abandoned, max_session). Shutdown ends the streams with an end line, stops the
+server and removes the control socket.
 """
 
 import email.utils
@@ -42,7 +47,7 @@ import sys
 import threading
 import time
 
-from .. import guard, runmarker
+from .. import config, guard, runmarker
 from ..errors import SuiteError
 from . import auth as auth_module
 from . import control, routes, static, stream
@@ -50,6 +55,7 @@ from . import control, routes, static, stream
 MAX_BODY_BYTES = 64 << 10
 MAX_CONNECTIONS = 32
 HEAD_DEADLINE_S = 10.0          # a request's line and headers, from their first byte
+BODY_DEADLINE_S = 10.0          # a request's body, from the start of its read
 LINGER_S = 0.25                 # the whole lingering close, not each read
 LINGER_BYTES = 1 << 20
 SECURITY_HEADERS = (
@@ -74,6 +80,7 @@ HOST_RE = re.compile(r"(127\.0\.0\.1|localhost):([1-9][0-9]{0,4})")
 JSON_TYPE = "application/json"
 OPEN_ARGV0 = guard.OPEN
 EXIT_OK = 0
+POLL_S = 0.25                   # the engine main loop: stop requests, the ssh-session viewer, the lifetime check
 
 
 def host_ok(values):
@@ -96,7 +103,8 @@ def json_type_ok(values):
 class _HeadReader(io.RawIOBase):
     """The handler's socket input. While a request's line and headers are being read, the first byte starts
     the handler's head deadline, and every later read waits only until it (a per-read timeout alone would let a
-    client that sends one byte at a time hold its connection for ever); otherwise each read waits Handler.timeout."""
+    client that sends one byte at a time hold its connection for ever); while a body is read, its body deadline
+    bounds every read the same way; otherwise each read waits Handler.timeout."""
 
     def __init__(self, handler):
         super().__init__()
@@ -109,10 +117,11 @@ class _HeadReader(io.RawIOBase):
     def readinto(self, buffer):
         handler = self._handler
         timeout = handler.timeout
-        if handler._head_deadline is not None:
-            remaining = handler._head_deadline - time.monotonic()
+        deadline = handler._head_deadline if handler._head_deadline is not None else handler._body_deadline
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError("request head deadline")
+                raise TimeoutError("request deadline")
             timeout = min(timeout, remaining)
         self._sock.settimeout(timeout)
         count = self._sock.recv_into(buffer)
@@ -127,10 +136,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     sys_version = ""
     timeout = 60                    # each read and write; an idle keep-alive connection closes after it
     head_deadline_s = HEAD_DEADLINE_S
+    body_deadline_s = BODY_DEADLINE_S
     _security_added = False
     _responded = False
     _reading_head = False
     _head_deadline = None
+    _body_deadline = None
     _http_1_1 = False
 
     def setup(self):
@@ -320,7 +331,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if size > MAX_BODY_BYTES:
             self.fail(413, "body_too_large")
             return None
-        data = self.rfile.read(size)
+        self._body_deadline = time.monotonic() + self.body_deadline_s
+        try:
+            data = self.rfile.read(size)         # a TimeoutError at the deadline closes the connection, no response
+        finally:
+            self._body_deadline = None
         if len(data) != size:
             self.close_connection = True
             return None
@@ -463,16 +478,23 @@ def bootstrap_url(port, code):
 
 
 def run(cfg, *, command, port, opener=None, on_ready=None, marker_grace_s=None, ui_dir=None, synthetic=None,
-        out=None, home_dir=None):
-    """serve or open: run the engine until it stops; returns the exit status.
+        out=None, home_dir=None, print_url=False, session=None, lifetime=None, poll_s=POLL_S):
+    """serve, open or ssh-session: run the engine until it stops; returns the exit status.
 
-    opener (open only) receives the /usr/bin/open argv; the default runs it. on_ready(app) runs in this
-    thread after seal() and the ready line. marker_grace_s, ui_dir and synthetic exist for tests.
+    opener (open only) receives the /usr/bin/open argv; the default runs it. print_url (open only; Yu's
+    --print-url) writes the URL to out instead, and runs nothing. session (ssh-session only) is an
+    sshsession.Session: its viewer takes the new engine over in this process, or, with an engine running,
+    takes that one over through the control socket. on_ready(app) runs in this thread after seal() and the
+    ready line. marker_grace_s, ui_dir, synthetic, lifetime (an api/lifetime.Lifetime) and poll_s exist for
+    tests; by default the lifetime's grace and maximum come from the config (watch_grace_s, max_session_s).
     """
     from .. import engine as engine_module
     from .. import rx
+    from .lifetime import Lifetime
     out = sys.stdout if out is None else out
-    if command not in ("serve", "open"):
+    if command not in ("serve", "open", "ssh-session") or (command == "ssh-session") != (session is not None):
+        raise SuiteError("bad_arguments")
+    if print_url and command != "open":
         raise SuiteError("bad_arguments")
     if cfg.get("data_roots"):
         raise SuiteError("synthetic_only")
@@ -482,7 +504,9 @@ def run(cfg, *, command, port, opener=None, on_ready=None, marker_grace_s=None, 
     lock_fd = control.acquire_lock(home_dir)
     if lock_fd is None:
         if command == "open":
-            return attach(opener=opener, out=out, home_dir=home_dir)
+            return attach(opener=opener, out=out, home_dir=home_dir, print_url=print_url)
+        if command == "ssh-session":
+            return session.run_attached()
         raise SuiteError("engine_running")
     httpd = control_server = app = None
     serving = None
@@ -491,8 +515,11 @@ def run(cfg, *, command, port, opener=None, on_ready=None, marker_grace_s=None, 
         engine = engine_module.Engine(cfg, marker_path=marker, synthetic=synthetic, marker_grace_s=grace)
         files = static.load(static.ui_dir(guard.REPO_ROOT) if ui_dir is None else ui_dir)
         auth = auth_module.Auth(register=rx.secret.register)
-        app = routes.App(engine, auth, files)
-        _install_signal_handlers(app)
+        if lifetime is None:
+            limits = {key: cfg.get(key, config.DEFAULTS[key]) for key in ("watch_grace_s", "max_session_s")}
+            lifetime = Lifetime(grace_s=limits["watch_grace_s"], max_session_s=limits["max_session_s"])
+        app = routes.App(engine, auth, files, lifetime=lifetime)
+        _install_signal_handlers(app, session)
         control_server = control.ControlServer(control.socket_path(home_dir), app.control)
         guard.permit_loopback_port(port)
         httpd = SuiteHTTPServer(port, app)
@@ -501,21 +528,37 @@ def run(cfg, *, command, port, opener=None, on_ready=None, marker_grace_s=None, 
         serving = threading.Thread(target=httpd.serve_forever, name="suite-http", daemon=True)
         serving.start()
         control_server.start()
+        url = None
         if command == "open":
-            if port == 0:
-                guard.permit_loopback_port(app.port)   # the guard checks the URL's port against its permits
-            (opener or system_opener)([OPEN_ARGV0, bootstrap_url(app.port, auth.issue_code())])
+            url = bootstrap_url(app.port, auth.issue_code())
+            if not print_url:
+                if port == 0:
+                    guard.permit_loopback_port(app.port)   # the guard checks the URL's port against its permits
+                (opener or system_opener)([OPEN_ARGV0, url])
+                url = None                      # the /usr/bin/open argv only: never printed (I-16)
         guard.seal()
-        out.write("%s port=%d\n" % ("serving" if command == "serve" else "opened", app.port))
-        out.flush()
+        if command == "ssh-session":
+            session.start_local(app)            # the viewer's first URL, on its own stdout only
+        else:
+            if url is not None:
+                out.write(url + "\n")           # open --print-url: Yu pastes it into a Safari Private window
+            out.write("%s port=%d\n" % ("serving" if command == "serve" else "opened", app.port))
+            out.flush()
         if on_ready is not None:
             on_ready(app)
-        while not app.stopping.wait(0.25):
+        while not app.stopping.wait(poll_s):
             if engine.stopped.is_set():
                 break
+            if session is not None:
+                session.step()
+            app.check_lifetime()
         engine.stop(app.stop_reason or "stopped")
         engine.stopped.wait(5.0)
         reason = engine.ended()
+        if session is not None:
+            session.finish(reason or "stopped")
+        elif reason in ("abandoned", "max_session"):
+            _write_line(out, "ended reason=%s\n" % reason)
         if reason == "run_marker":
             raise SuiteError("run_marker_present")
         if reason == "engine_failed":
@@ -544,19 +587,31 @@ def _shutdown(app, httpd, serving, control_server):
         control_server.close()
 
 
-def _install_signal_handlers(app):
+def _write_line(out, text):
+    try:
+        out.write(text)
+        out.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _install_signal_handlers(app, session=None):
     if threading.current_thread() is not threading.main_thread():
         return
 
     def handler(signum, frame):
-        app.request_stop("stopped")
+        if signum == signal.SIGHUP and session is not None:
+            session.hangup()                    # ssh-session: the viewer left; the grace period keeps the session
+        else:
+            app.request_stop("stopped")
 
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):     # a closed terminal stops it cleanly too
         signal.signal(signum, handler)
 
 
-def attach(*, opener=None, out=None, home_dir=None):
-    """open with an engine already running: a takeover through the control socket, then /usr/bin/open."""
+def attach(*, opener=None, out=None, home_dir=None, print_url=False):
+    """open with an engine already running: a takeover through the control socket, then /usr/bin/open (or, with
+    print_url, the URL on out instead)."""
     out = sys.stdout if out is None else out
     reply = control.request("attach", home_dir)
     if reply is None:
@@ -565,9 +620,13 @@ def attach(*, opener=None, out=None, home_dir=None):
     if (not reply.get("ok") or type(port) is not int or not 0 < port <= 65535 or not isinstance(code, str)
             or not auth_module.CODE_RE.fullmatch(code)):
         raise SuiteError("control_failed")
-    guard.permit_loopback_port(port)                   # the guard checks the URL's port against its permits
-    (opener or system_opener)([OPEN_ARGV0, bootstrap_url(port, code)])
-    guard.seal()
+    if print_url:
+        guard.seal()
+        out.write(bootstrap_url(port, code) + "\n")
+    else:
+        guard.permit_loopback_port(port)               # the guard checks the URL's port against its permits
+        (opener or system_opener)([OPEN_ARGV0, bootstrap_url(port, code)])
+        guard.seal()
     out.write("attached port=%d\n" % port)
     out.flush()
     return EXIT_OK

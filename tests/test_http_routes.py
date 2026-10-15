@@ -33,6 +33,10 @@ DESIGN_COMMANDS = ("open_market", "play", "pause", "set_speed", "seek", "jump", 
                    "set_prefs", "export_csv")
 PHASE_0B_COMMANDS = {"open_market": {"seed": int}, "play": {}, "pause": {}, "set_speed": {"speed_x100": int},
                      "stop": {}}
+PHASE_0C_COMMANDS = dict(PHASE_0B_COMMANDS, claim_control={})      # 9.2 item 8, handled by the App itself
+# 9.1's four control commands, plus the ssh-session viewer's (Phase 0c, DESIGN.md 8.6 item 2): command -> extra keys
+CONTROL_ARGS = {"attach": (), "new_code": (), "pause": (), "stop": (), "attach_viewer": (), "viewer_code": ("viewer",),
+                "viewer_heartbeat": ("viewer",), "viewer_away": ("viewer",)}
 DESIGN_QUERIES = ("session", "catalogue", "journal", "green_up_preview")       # 9.1: read-only queries
 FORBIDDEN = ("live", "account", "funds", "login", "kill", "upload", "share")
 
@@ -54,10 +58,13 @@ class RouteTableTests(unittest.TestCase):
         self.assertEqual(routes.COMMANDS, DESIGN_COMMANDS)
         self.assertEqual(routes.EXPLORATION_COMMANDS, ("replace",))
         self.assertNotIn("replace", routes.COMMANDS)
-        self.assertEqual(routes.IMPLEMENTED, PHASE_0B_COMMANDS)
-        self.assertEqual(routes.CONTROL_COMMANDS, ("attach", "new_code", "pause", "stop"))
+        self.assertEqual(routes.IMPLEMENTED, PHASE_0C_COMMANDS)
+        self.assertEqual(routes.CONTROL_ARGS, CONTROL_ARGS)
+        self.assertEqual(routes.CONTROL_COMMANDS, tuple(CONTROL_ARGS))
+        self.assertEqual(routes.APP_COMMANDS, ("claim_control",))
         from betangel_suite import engine
         self.assertEqual(set(engine.COMMANDS), set(PHASE_0B_COMMANDS))
+        self.assertEqual(set(engine.COMMANDS) | set(routes.APP_COMMANDS), set(routes.IMPLEMENTED))
 
     def test_query_enum_is_exactly_the_design(self):
         self.assertEqual(routes.QUERIES, DESIGN_QUERIES)
@@ -336,6 +343,23 @@ class AuthTests(unittest.TestCase):
         self.assertFalse(self.auth.stream_started(third))
         self.assertFalse(self.auth.stream_started("B" * 43))
         self.assertTrue(self.auth.controller_watching())
+
+    def test_claim_makes_a_read_only_token_the_controller(self):
+        first = self.auth.exchange(self.auth.issue_code())
+        self.assertTrue(self.auth.stream_started(first))
+        second = self.auth.exchange(self.auth.issue_code())
+        self.assertFalse(self.auth.is_controller(second))
+        self.assertTrue(self.auth.claim(second))
+        self.assertTrue(self.auth.is_controller(second))
+        self.assertFalse(self.auth.is_controller(first))       # the old controller is read-only now
+        self.assertFalse(self.auth.controller_watching())      # the new one has no stream yet
+        self.assertTrue(self.auth.streams_open())              # but somebody is watching
+        self.assertTrue(self.auth.claim(first))                # and it can claim back
+        self.assertTrue(self.auth.controller_watching())
+        self.assertFalse(self.auth.claim("B" * 43))
+        self.auth.issue_code(takeover=True)
+        self.assertFalse(self.auth.claim(first))               # a takeover's dead token claims nothing
+        self.assertFalse(self.auth.streams_open())
 
     def test_evicting_the_watching_controller_stops_the_watch(self):
         first = self.auth.exchange(self.auth.issue_code())

@@ -146,6 +146,14 @@ class StartTimeTests(unittest.TestCase):
         self.assertEqual(returncode, 0, stderr)
         self.assertIn("Ran 0 tests", stderr)
         self.assertNotIn("run_marker", stderr)
+        # The heavy tier never runs while the marker exists (DESIGN.md 11): refused before any test is loaded.
+        self.assertEqual(self.suite(home, "test", "--heavy", "-j", "1", "-k", "zzz_no_such_test"),
+                         (2, "refused:run_marker_present\n"))
+        os.remove(path)
+        os.chmod(os.path.dirname(path), 0)
+        self.addCleanup(os.chmod, os.path.dirname(path), 0o700)
+        self.assertEqual(self.suite(home, "test", "--heavy", "-k", "zzz_no_such_test"),
+                         (2, "refused:run_marker_unreadable\n"))
 
 
 if __name__ == "__main__":

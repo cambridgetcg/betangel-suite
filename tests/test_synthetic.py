@@ -3,7 +3,7 @@
 Determinism (on python3.13 and python3.11 alike), the reserved namespace (tools/hygiene_scan.py passes on the
 generated text and catches a planted non-reserved id in it), every message accepted by upstream's MarketBookCache
 with valid snapshots before the off, ladders that look like a market (tick ladder, pence, depth, spread, trades),
-sizes in the real ranges of DESIGN.md 6.7, the in-play flip, CLOSED with a winner, and each Phase 0b option.
+sizes in the real ranges of DESIGN.md 6.7 (heavy tier), the in-play flip, CLOSED with a winner, and each Phase 0b option.
 Everything is generated in memory or into temp dirs under TMPDIR; nothing here reads a data root.
 """
 
@@ -18,7 +18,7 @@ from collections import Counter
 
 from betangel_suite import rx, synthetic
 from betangel_suite.synthetic import Spec, generate
-from tests import ARM_ENGINE, FORBID, ROOT, child_env, make_home, rmtree
+from tests import ARM_ENGINE, FORBID, HEAVY, HEAVY_ONLY, ROOT, child_env, make_home, rmtree
 
 SMALL = {"runners": 6, "pre_off_s": 120, "inplay_s": 20}
 SCANNER = os.path.join(ROOT, "tools", "hygiene_scan.py")
@@ -365,6 +365,7 @@ class BookTests(unittest.TestCase):
             self.assertLess(max(plan.q0) / min(plan.q0), max(plan.true_p) / min(plan.true_p))
             self.assertAlmostEqual(sum(plan.q0), 1.0)
 
+    @unittest.skipUnless(HEAVY, HEAVY_ONLY + " (a size test: full-length markets of 5 and 44 runners and a 26 h file)")
     def test_sizes_reach_the_real_ranges(self):
         # DESIGN.md 6.7 (real aggregates): 5-44 runners and 721-6,166 book entries; 3,309-5,922 messages in the
         # last 10 minutes; 14-25 in the busiest second; files spanning 25-53 h, 53-91% of messages before T-30m.
