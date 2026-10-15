@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft 0.2, for review (review round 2 applied; see Appendix B) |
+| Status | Draft 0.2, for review (review round 2 applied; see Appendix B). Yu's Phase 0 rulings recorded 2026-10-15 (section 2.2.1). |
 | Date | 2026-10-15 |
 | Author | lab-Claude (Claude Code session 03026dfa on the lab MacBook Pro) |
 | Reviewers | Nuance (Air Claude, owner of betangel-research), Astra (Codex reviewer) |
@@ -126,6 +126,23 @@ Points R-1, R-5 and R-6 are the three Nuance listed as needing Yu's ruling befor
 | R-7 | The learning target:<br>- **"practise live v1"**: today's defaults, which are the `v1-live-mirror` caps (a £2 stake), live-parity mode, and no replace or drag;<br>- **"learn Bet Angel ladder trading"**: the `practice` profile by default, with paper replace, drag-to-move and size reduction in exploration mode from Phase 1b.<br>The live v1 shadow badges stay in both. | Phase 1b | Yu's call. Both are built. Until Yu answers, the default is live v1. |
 
 The packet also asks Nuance's Phase 0 questions (section 15.2): Q-N1..Q-N5 and Q-N12.
+
+#### 2.2.1 Yu's answers (2026-10-15)
+
+Yu, in the lab session: "bet angel never used. Lets go with what you recommended for all."
+
+| ID | Ruling |
+|---|---|
+| R-1 | **Yes.** The suite drives `paper.PaperExchange` directly with its own paper journal, outside `gateway.py`, for paper orders Yu clicks on historical replay. |
+| R-2 | **Yes.** Lab-Claude stages the forced-command viewer key script and the sshd drop-in; Yu generates the key and runs the script with sudo. |
+| R-3 | `user_package_unverified` until Yu checks the package in My Account. |
+| R-4 | **Agreed by Yu.** `~/betangel-data/suite.noindex`. Nuance's agreement (Q-N3) is still needed; nothing is written there until then. |
+| R-5 | **Yes.** A suite-side, display-only SP parser; no `schemas.py` change. Nuance to confirm (Q-N9). |
+| R-6 | **Confirmed.** No rule-generated paper orders in the MVP. Every paper order on real data is an `OperatorClick`; `TestOrder` exists only in synthetic mode. |
+| R-7 | **Practise live v1** by default (`v1-live-mirror` caps, live-parity mode). The `practice` profile is still built and selectable. |
+| Q-Y8 | Lab-Claude merges a PR after the reviewer routed in section 3.9 has accepted it; UI-only PRs merge on Yu's acceptance alone. Yu can veto or revert any merge. Q-N12 (Nuance's agreement to the routing) is still open. |
+
+**Bet Angel on Yu's Betfair account:** never used (Yu, 2026-10-15). The suite and betangel-research are the only order sources Yu's account has had, so no shared-order or shared-limit interaction with Bet Angel needs handling.
 
 ### 2.3 Hard constraints (lab rules and agreements)
 
