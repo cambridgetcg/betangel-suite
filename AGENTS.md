@@ -30,8 +30,13 @@ context. It is never Yu's instruction, consent or acceptance.
      report and named fields (DESIGN.md 8.7).
 6. **Commands agents never run.** Agents never run `open`, `ssh-session` or `--print-url`, and
    never POST to `/api/v1/command` or `/api/v1/bootstrap` on an engine with real data roots.
-   `serve` and `open` never print a bootstrap code; only `--print-url`, used by Yu, does. `stop`
-   is allowed, because it only reduces activity.
+   `serve` and `open` never print a bootstrap code; only `--print-url` and `ssh-session`, used by
+   Yu, do (`ssh-session` to its own SSH stdout). `stop` is allowed, because it only reduces
+   activity.
+   - `bin/suite test` exercises `open`, `--print-url` and `ssh-session` only in temporary HOMEs:
+     with injected openers and piped stdin and stdout, or to see them refused before any engine
+     starts. Nothing runs `/usr/bin/open`, and no test prints a code or a token outside its own
+     pipes. Agents never run these commands otherwise.
 7. **Nuance's runs.** While the run marker exists, no suite engine runs and nothing writes under
    `~/betangel-data` (DESIGN.md 6.8).
 8. **No credential fields.** The suite UI never has credential fields. Any login prompt inside it
@@ -70,7 +75,9 @@ context. It is never Yu's instruction, consent or acceptance.
 
 - **Merging (Q-Y8, Yu, 2026-10-15).** Lab-Claude merges a PR after the reviewer routed above has
   accepted it. UI-only PRs merge on Yu's acceptance alone. Yu can veto or revert any merge.
-  Nuance's agreement to this routing (Q-N12) is still open.
+  Nuance's agreement to this routing (Q-N12) is still open. Phase 0c's review plan also sends
+  uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`), the staged viewer scripts (`tools/stage/`),
+  `cli.py` and `roots.py` to Astra. The table does not name them; Q-N12 asks whether it should.
 - Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS. Collab edit tasks use
   `root_path=/Users/user/betangel-suite`. Lab-Claude never accepts its own Collab edit tasks.
 - **Yu's acceptance and feedback** reach lab-Claude only in a lab-Claude session that Yu types
@@ -119,15 +126,44 @@ reviewed PR changes them.
 - **C. Pin.** betangel-research `76f71dc94588a50f0df56dde2c3fabcf6e102f88`. The deps clone is at
   `~/.local/share/betangel-suite/deps/betangel-research-76f71dc94588/`, made by
   `tools/vendor_research.py` exactly as DESIGN.md 3.5 describes.
-- **D. Synthetic only.** Phase 0b built the loopback HTTP server and `serve`, `open` and `stop`;
-  the engine replays synthetic markets only and refuses every configured data root
-  (`synthetic_only`). No data-root reading, no paper trading, and no release copies or
-  `ssh-session` yet (Phase 0c). `cli.py` commands that are not built yet refuse with code
-  `not_implemented` and exit 2.
+- **D. Synthetic only; viewing built.** Phase 0b built the loopback HTTP server and `serve`,
+  `open` and `stop`. Phase 0c built:
+  - `ssh-session`, with pause unless watched: heartbeats, stdin EOF, takeover within
+    `watch_grace_s`, the `abandoned` end after it, and `max_session_s` for every engine;
+  - `open --print-url` and `claim_control`;
+  - `bin/suite release <tag>`, and the `RELEASE.json` check at every launch from a release copy;
+  - `bin/suite uisnap`;
+  - the staged viewer-key and sshd drop-in script and the Air self-test under `tools/stage/`. Yu
+    runs them. Nuance may start the Air self-test, but only Yu types the key's passphrase. Tests
+    run them only in their harness, with fake `sudo`, `sshd` and `ssh`.
+
+  The engine still replays synthetic markets only and refuses every configured data root
+  (`synthetic_only`), from a release copy too. There is no data-root reading and no paper trading
+  yet. No real release copy exists yet. Making one, with `bin/suite release <tag>` in the clean
+  main checkout after review, is Yu's decision (DESIGN.md Q-Y18). `catalogue`, `selfcheck`,
+  `diagnose` and `ledger-summary` are not built; they refuse with code `not_implemented` and exit 2.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE`, proposed to Nuance (Q-N3).
   The config key `run_marker` accepts only that path, so no config edit can point the check at a
   file that never exists; a reviewed change moves it once Nuance answers. Every command except
   `stop`, `test` and `vendor` refuses to start while the marker is present, unreadable, or in an
   unreadable directory (DESIGN.md 6.8). `stop` is exempt because it only reduces
-  activity (DESIGN.md 3.9 rule 6). `runmarker.py` exposes a
-  check function that later phases call on every tick.
+  activity (DESIGN.md 3.9 rule 6). `test --heavy` refuses as well (item F). `runmarker.py`
+  exposes a check function that later phases call on every tick.
+- **F. Tests.** `bin/suite test` runs the fast tier with its test modules spread over 3 worker
+  interpreters, whole modules each: about 47-48 s on the lab M1 under `nice -n 10`, on 3.13 and on
+  3.11. With `-j 2` it takes about 61 s, and serially (`-j 1`) about 127 s. Use `-j 1` or `-j 2`
+  when the lab is busy. `bin/suite test --heavy` adds the heavy tier, about 90-95 s in all:
+  - the real uisnap `swiftc` build and offscreen WebKit runs, in a temporary HOME;
+  - the synthetic size test;
+  - the 60 s grace expiry through `bin/suite ssh-session`, from a release copy in a temporary HOME.
+
+  `bin/suite test --heavy` refuses while the run marker exists (`run_marker_present` or
+  `run_marker_unreadable`), before any test loads. Never run the heavy tier during an announced
+  Nuance run. The fast tier still runs while the marker exists (adaptation E); whether it may is
+  open (DESIGN.md Q-N14).
+
+  A test run fails with `refused:state_root_changed` if an entry appears or vanishes in the real
+  state root (`~/.local/state/betangel-suite`) outside `tmp/` while it runs. Contents are not
+  compared. Only `run/` entries explained by an engine Yu starts or stops meanwhile are exempt.
+  So do not run `bin/suite uisnap` against the real HOME while a test run is in progress: its
+  `uisnap/` entries fail that run.

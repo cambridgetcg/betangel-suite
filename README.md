@@ -4,7 +4,9 @@ Yu's personal macOS trading suite for Betfair. The first goal is a spoiler-free 
 ladder and paper-trading trainer over licensed Betfair historical data (GB/IE horse
 racing WIN markets). It has no live path.
 
-Status: design stage. Read [docs/DESIGN.md](docs/DESIGN.md). No code yet.
+Status: Phase 0 (scaffold, guards and viewing; synthetic markets only) is built on stacked PRs,
+pending review. Nothing reads real data yet. Read [AGENTS.md](AGENTS.md) for the rules every agent
+follows and the Phase 0 status, and [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Ground rules
 

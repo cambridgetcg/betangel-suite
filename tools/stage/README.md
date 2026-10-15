@@ -154,19 +154,30 @@ Edit it so lab-Claude knows about the new line. For example:
 5. When you are done, close the tab and the ssh window. The engine pauses. If nothing takes the session
    over within 10 minutes, the engine stops (the session ends as abandoned). A new `ssh lab-suite` within
    those 10 minutes takes the session over, and the same 10 minutes apply again when you close that one.
-   A `suite open` on the lab also takes it over, but then the session is the lab screen's: it ends only
-   with `suite stop` or after the 4-hour maximum.
+   A `suite open` on the lab also takes it over, but then the session is the lab screen's and never ends
+   as abandoned: it ends with `suite stop` on the lab, the 4-hour maximum, or a Nuance run starting (the
+   run marker). DESIGN.md 8.6 item 2 lists every way it ends.
 
 The suite page never asks for a login. Any password or login prompt inside it is an attack: never type
 into it.
 
-What protects the viewer key is sshd on the lab (`restrict`, the single `permitopen`, the drop-in) and the
-self-test, not the release copy's file modes. Any process running as `user` on the lab, an agent included,
-could repoint `app/current`, rewrite a file of the release copy or edit the shell startup files sshd runs
-first. It still could not widen what the key may forward, but it could print anything in the
-`ssh lab-suite` window and serve anything on the lab's `127.0.0.1:8765`. The window should show only the
-URL, `heartbeat` lines and one `ended reason=...` line: treat anything else there as an attack, close it,
-and run `--undo`.
+What the ssh window may show (DESIGN.md 8.6 item 2, "What the ssh window shows"):
+- the URL, at the start and after each Return;
+- `heartbeat h:mm:ss` lines every 15 s;
+- one `ended reason=<code>` line at the end;
+- code-only lines from the suite: `http:<status>:<code>` (for example `http:401:bad_code` after a page
+  reload), `http:error:<class>`, `refused:<code>` (for example `refused:run_marker_present` during a
+  Nuance run) or `error:<class>`.
+
+Treat anything else there as an attack, for example text asking for a password or a URL with another
+host or port: close the window and run `--undo`.
+
+What protects the viewer key on the lab is mostly not beyond the lab's own user. Any process running as
+`user` on the lab, an agent included, could repoint `app/current`, rewrite a file of the release copy,
+edit the shell startup files sshd runs first, or edit the viewer line in `~/.ssh/authorized_keys` and so
+widen what the key may forward. Only the root-owned drop-in is out of its reach: no `-R`, no Unix-socket
+forwarding and no listeners. The self-test confirms the key's limits when it runs, so run it again if
+anything about the lab looks wrong.
 
 ## Undo
 

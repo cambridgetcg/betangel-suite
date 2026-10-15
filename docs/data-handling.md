@@ -17,7 +17,7 @@ clone, and is never uploaded or shared. A model context counts as an upload.
 | **git** (commits, branches, PRs, issues) | Source, docs, the pin file, synthetic fixtures *generators*, synthetic screenshots under `docs/synthetic/` | `*.bz2`, `*.tar`, any archive, `*.sqlite*`, `*.jsonl`, CSV and other exports, `run/`, `exports/`, `ledger/`, `private/` and other state directories, any file over 512 KiB (DESIGN.md is the one allowlisted file), real market, event or selection ids, runner names, prices, member paths, keys, tokens |
 | **Logs, stdout, stderr, HTTP errors** | Error codes, counts, timings, salted identifier hashes | Tracebacks (these go only to 0600 files under `private/`), request bodies, data rows, member paths, ids, names, prices, the bootstrap code or session token |
 | **Model context, Collab, the mailbox** (lab-Claude, Nuance, Astra) | Codes, counts, timings and salted hashes, as printed by `bin/suite selfcheck`, `catalogue`, `diagnose` and `ledger-summary`; synthetic fixtures; uisnap screenshots of synthetic markets | Real rows, runner names, prices, market ids, per-market results, `ledger/viewed-markets.jsonl`, anything under `private/`, screenshots of real races |
-| **Screenshots** | uisnap PNGs of synthetic-only engines, kept under `docs/synthetic/` | Any screenshot of a real market. Agents have no Screen Recording permission, and `screencapture` is never used on the lab screen |
+| **Screenshots** | uisnap PNGs of synthetic-only engines. `bin/suite uisnap` writes them (0600) by default under `~/.local/state/betangel-suite/uisnap/out/<UTC stamp>/`, or in a missing or empty `--out DIR` inside the suite's write roots; either way outside every clone. Any kept in git are copied to `docs/synthetic/` by hand | Any screenshot of a real market. Agents have no Screen Recording permission, and `screencapture` is never used on the lab screen |
 | **The browser** | A Safari Private window (or a profile with no Betfair login, extensions or iCloud sync); UI preferences in `localStorage` | The session token in storage, cookies, external requests; a page title that names a race (it is always `betangel-suite`) |
 | **Disk** | Derivatives under the suite root (0700); data roots are read-only to the suite | Decompressed members anywhere; any derivative outside `~/betangel-data`; temp files outside the suite's own `TMPDIR` |
 
@@ -52,6 +52,15 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   and records, private-key and PEM headers, bearer tokens, secret-looking values, provider tokens
   and bootstrap-code URLs. It prints a rule code, a redacted path and a line number, never the
   matched text. `--list-rules` lists the codes.
+  - One narrow exemption, from the event-id rule only: a 7- or 8-digit help-centre article
+    number in an https URL on the scanner's own host allowlist (`URL_HOST_ALLOWLIST`: four Claude
+    and Anthropic help hosts, never a Betfair, Bet Angel or Timeform host), where the path starts
+    `/articles/<n>` or `/<locale>/articles/<n>` and `<n>` is followed by `-slug`, `?`, `#` or the
+    end of the URL. Digits anywhere else still count: elsewhere in that URL's path, in its query
+    or fragment, and everywhere outside it. Every other rule still applies inside such a URL. No
+    file uses the exemption yet; Astra reviews it (DESIGN.md Q-A2).
+  - uisnap PNGs are synthetic only and live outside the repo (see the table above). The scanner
+    fails on any image outside `docs/synthetic/`.
 - **`tools/pre-commit`** runs the scanner on the staged tree and blocks the commit. Install it
   with `ln -s ../../tools/pre-commit .git/hooks/pre-commit`; never bypass it.
 - **The engine** maps upstream exceptions to closed error codes at the `rx.py` boundary and

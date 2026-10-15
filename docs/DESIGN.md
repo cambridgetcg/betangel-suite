@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft 0.2, for review (review round 2 applied; see Appendix B). Yu's Phase 0 rulings recorded 2026-10-15 (section 2.2.1). |
+| Status | Draft 0.2, for review (review round 2 applied; see Appendix B). Yu's Phase 0 rulings recorded 2026-10-15 (section 2.2.1). Synced with the built Phase 0b and 0c code (branch phase0/viewing) on 2026-10-15; see the end of Appendix B. |
 | Date | 2026-10-15 |
 | Author | lab-Claude (Claude Code session 03026dfa on the lab MacBook Pro) |
 | Reviewers | Nuance (Air Claude, owner of betangel-research), Astra (Codex reviewer) |
@@ -262,28 +262,37 @@ bin/suite                     POSIX sh launcher (section 3.6)
 bin/_launch.py                path setup, run-marker check, guard arming, dispatch
 betangel_suite/
   __init__.py
-  guard.py                    audit hook (startup phase, then sealed), environment refusals; stdlib only; no off-switch
+  guard.py                    audit hook (startup phase, then sealed; modes engine, test, vendor, release, uisnap), environment refusals; stdlib only; no off-switch
   pin.py                      deps checkout lookup, per-file hash check, sys.path append, origin assertion
   rx.py                       THE ONLY module that imports betangel_research (section 4); maps upstream errors to codes
   roots.py                    state roots, the single writer helper (O_EXCL|O_NOFOLLOW, 0600/0700)
-  release.py                  RELEASE.json check (release copy or synthetic mode)
+  release.py                  bin/suite release, and the RELEASE.json check at every launch from a copy (I-18)
   runmarker.py                the agreed run marker (section 6.8)
   errors.py                   closed error-code enum, salted identifier hashes, excepthooks
   config.py                   suite config, cap profiles, repo validate_config call
+  engine.py                   Phase 0: the actor, clock and frames for one synthetic market (replay/ later)
+  synthetic.py                Phase 0: the synthetic market generator (reserved namespace)
+  uisnap.py                   bin/suite uisnap (section 11)
   data/      discover.py catalogue.py member.py reader.py roles.py ledger.py
   replay/    clock.py tracker.py checkpoints.py tap.py hwm.py frames.py budget.py
   paper/     desk.py click.py pending.py exposure.py greening.py rule4.py queuetrack.py session.py report.py
   api/       server.py auth.py routes.py stream.py static.py control.py
+             lifetime.py (pause unless watched: viewer generations, grace, maximum time) sshsession.py (bin/suite ssh-session)
   cli.py     serve | open | ssh-session | stop | catalogue | selfcheck | diagnose | ledger-summary | release | test | uisnap | vendor
 ui/          index.html app.js ladder.js grid.js keys.js chart.js style.css manifest.json sounds/
-ui/tests/    *.test.mjs (node --test, no npm)
+ui/tests/    *.test.mjs (node --test with each file named, no npm)
 tests/       test_*.py (unittest); fixtures/gen.py (synthetic only, generated into temp dirs)
-tools/       vendor_research.py hygiene_scan.py pre-commit uisnap/ (Swift, section 11) stage/ (scripts staged for Yu)
+tools/       vendor_research.py hygiene_scan.py pre-commit
+             export_ticks.py (writes ui/ticks.json from the pinned CLASSIC ladder)
+             uisnap/uisnap.swift (section 11)
+             stage/ suite-viewer-setup.sh air-viewer-selftest.sh air-ssh-config.snippet suite-alias.zsh README.md (staged for Yu, section 8.6)
 docs/        DESIGN.md threat-model.md keymap.md data-handling.md proposals/NNN-*.md
 .gitignore   *.bz2 *.tar *.sqlite* *.jsonl exports/ run/ screenshots/ (synthetic ones under docs/synthetic/)
 ```
 
 The repo root holds no top-level `.py` file; a test enforces this. That matters because discovering tests with `-t .` puts the root on `sys.path`.
+
+**Phase 0 as built.** `data/`, `replay/` and `paper/` do not exist yet: the synthetic replay lives in `engine.py` and `synthetic.py`. `ui/` holds `index.html`, `app.js`, `ladder.js`, `grid.js`, `stream.js`, `format.js`, `style.css`, `manifest.json` and `ticks.json`. The keymap is in `app.js`; there is no `keys.js`, `chart.js` or `sounds/` yet. Of `docs/`, only `DESIGN.md` and `data-handling.md` exist.
 
 ### 3.5 Dependency on betangel-research
 
@@ -343,15 +352,21 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
   /opt/homebrew/bin/python3.13 -I -S -B "$ROOT/bin/_launch.py" "$@"
 ```
 
+- **Phase 0's `bin/suite`** differs from this listing in three ways:
+  - it refuses to run with `HOME` unset (`HOME="${HOME:?}"`), and passes `USER="${USER:-}"`;
+  - while `roots.STATE_ROOT_AGREED` is False (AGENTS.md, Phase 0 status A), both `TMP` branches name `$HOME/.local/state/betangel-suite/tmp`, so every command uses it, and `vendor` joins `test` and `uisnap` in the first branch;
+  - `test --py311` runs `/opt/homebrew/bin/python3.11` instead of python3.13.
 - **The SSH checks catch accidents, not a determined same-uid process.**
   - The Air agent key is a full shell with no forced command, so `SSH_ORIGINAL_COMMAND` is unset there too.
   - These checks stop `open` or `--print-url` from running over SSH.
+  - `ssh-session` accepts `--port N` for tests only (N = 0 picks a free port). The forced command passes no arguments, and an SSH client cannot add any, because a requested command is refused (`refused:ssh_original_command`).
   - The rest rests on the agent-conduct rules (section 3.9, rule 6).
+- **Release copies.** `_launch.py` resolves its root with `realpath`, so `app/current` runs exactly one copy. A root under `~/.local/share/betangel-suite/app` must be `app/<tag>` and match its `RELEASE.json` before any command runs, `stop` included (section 8.6); any other root is a working checkout.
 - **`-I` and `-S`.**
   - `-I` implies `-P`: neither the script directory nor the cwd is put on `sys.path`. So `_launch.py` appends the repo root itself, and `pin.py` appends the deps clone.
   - `-S` drops Homebrew's `site-packages`, so a stray package there cannot shadow `betangel_suite` or `betangel_research`.
   - The suite and betangel-research are stdlib-only. Upstream checks this for `betfair/*.py` at tests/test_betfair_boundaries.py:297 and for the backtest package at tests/test_betfair_backtest_boundaries.py:949.
-- **`env -i`.** Drops any inherited `BETFAIR*`, `BETANGEL_BETFAIR_*`, `PYTHON*` or `SSH_*` variable. Only `BETANGEL_BETFAIR_FORBID_NETWORK=1`, `TMPDIR`, `SQLITE_TMPDIR` and `SUITE_VIA_SSH` are set.
+- **`env -i`.** Drops any inherited `BETFAIR*`, `BETANGEL_BETFAIR_*`, `PYTHON*` or `SSH_*` variable. Only `HOME`, `USER`, `LANG=en_GB.UTF-8`, `PATH=/usr/bin:/bin`, `TMPDIR`, `SQLITE_TMPDIR`, `SUITE_VIA_SSH`, `BETANGEL_BETFAIR_FORBID_NETWORK=1` and `PYTHONDONTWRITEBYTECODE=1` are set.
 - **Temporary files.**
   - `env -i` would otherwise leave `tempfile.gettempdir()` at `/tmp`.
   - Homebrew SQLite 3.54.0 is built with `TEMP_STORE=1`, so large sorts can spill temp files to SQLite's search path. Those would be licensed derivatives outside `~/betangel-data`, opened in C where the audit hook cannot see them.
@@ -359,7 +374,7 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 - **Python 3.13 is primary.** Tests also run on `/opt/homebrew/bin/python3.11`, matching the upstream syntax floor.
   - The engine refuses to start on any other major version, and in particular on 3.15. It is refused because 3.15 is frozen for Nuance's certification, and so that one interpreter (3.13, with 3.11 as the floor) is the tested one.
   - Nothing installs or upgrades an interpreter. `session.json` records the interpreter version.
-- **Tests.** `bin/suite test` runs `python3.13 -I -S -B -m unittest discover -s tests -t .` from the repo root under the same environment, then `~/.local/bin/node --test ui/tests` (section 11 for the fast and heavy tiers).
+- **Tests.** `bin/suite test [--py311] [--heavy] [-v] [-k PATTERN] [-j N]` runs `unittest` over `tests/` from the repo root under the same environment. The test modules are spread over N worker interpreters (default 3, at most 4), whole modules each; `-j 1` runs them in the runner itself. The UI's `node:test` files run from `tests/test_ui_assets.py`, which names each `ui/tests/*.test.mjs`, because `node --test ui/tests` (a directory) fails on node 24. Section 11 has the fast and heavy tiers.
 
 ### 3.7 State roots (proposed; R-4 needs Yu's and Nuance's agreement)
 
@@ -367,9 +382,11 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 |---|---|---|---|
 | Indexed data roots, for example `~/betangel-data/historic-pro` (Nuance's, read-only to the suite) | as is | raw, manifests, index | yes |
 | `~/betangel-data/suite.noindex/` (the **suite root**) | 0700 | `catalogue/<index_head_sha256>.sqlite`, `sessions/<YYYY>/<MM>/<session_id>/{journal-paper.sqlite, commands.jsonl, session.json, report.json}`, `ledger/viewed-markets.jsonl`, `reports/` (problem reports, codes only), `exports/`, `logs/` (codes and counts only), `private/` (full tracebacks; agents never read it), `tmp/` | derivatives: yes |
-| `~/.local/state/betangel-suite/` | 0700 | `config.json`, `prefs.json` (UI preferences only), `run/{engine.lock, engine.pid, STOP, control.sock}`, `tmp/` (synthetic tests) | no |
+| `~/.local/state/betangel-suite/` | 0700 | `config.json`, `prefs.json` (UI preferences only), `install-salt` (Phase 0 adaptation B), `run/{engine.lock, engine.pid, STOP, control.sock}`, `tmp/` (synthetic tests; in Phase 0, every command), `uisnap/build/<sha256>/` (the uisnap `swiftc` build, plus a shared `module-cache/` of about 233 MB), `uisnap/out/<UTC stamp>/` (synthetic PNGs and `report.json`) | no |
 | `~/.local/share/betangel-suite/deps/betangel-research-<sha12>/` | read-only | pinned upstream code | no |
-| `~/.local/share/betangel-suite/app/<tag>/` + `current` symlink | read-only | the reviewed release copy that every command Yu runs uses (section 8.6) | no |
+| `~/.local/share/betangel-suite/app/<tag>/` + `current` symlink | owner-only read-only: files 0400, executables 0500, directories 0500; `app/` 0700 | the reviewed release copy that every command Yu runs uses (section 8.6) | no |
+
+Phase 0 creates only `run/engine.lock` and `run/control.sock` in `run/`: no `engine.pid` or `STOP` yet.
 
 - **Rules for the suite root:**
   - it must pass `archive.check_data_root` (archive.py:273): outside the repo and every worktree;
@@ -398,7 +415,8 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 | `commission_source` | `user_package_unverified` | R-3 |
 | `research_months_ruling` | `null` | A ruling id. While it is null, research months are hidden and not written to the catalogue (section 5.3). |
 | `run_marker` | `~/.local/state/lab-runs/ACTIVE` (proposed; agreed with Nuance) | section 6.8 |
-| `watch_grace_s` | 600 | pause-unless-watched grace (section 8.6) |
+| `watch_grace_s` | 600 | pause-unless-watched grace (section 8.6); accepted 60-3600 |
+| `max_session_s` | 14400 | maximum session time (4 h) for every engine (`serve`, `open`, `ssh-session`), measured from engine start; the session then ends with reason `max_session` (section 8.6); accepted 600-86400 |
 
 - **Paper config.** It is `deepcopy(config.DEFAULTS)` (config.py:27-72), with the active cap profile merged in, plus:
   - `orders.paper.commission_rate = 0.02` and `commission_source`;
@@ -412,7 +430,7 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 ### 3.9 Development workflow and the suite's AGENTS.md
 
 - **Branches and PRs.** Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS, so work continues while reviews queue. Review routing is agreed up front (Q-N12, Q-Y8):
-  - Astra reviews `guard.py`, `rx.py`, `errors.py`, `api/`, the boundary tests, the scanner and pin bumps;
+  - Astra reviews `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the launcher, the boundary tests, the scanner and pin bumps (the table in AGENTS.md). Phase 0c's review plan also sends uisnap (`uisnap.py`, `tools/uisnap/`), the staged viewer scripts (`tools/stage/`), `cli.py` and `roots.py` to Astra; whether the table should name them is open (Q-N12);
   - Nuance reviews the data and paper paths;
   - UI-only PRs (`ui/` with no change to routes or the command enum) need only Yu's acceptance.
 - **Collab.** Edit tasks use `root_path=/Users/user/betangel-suite`.
@@ -432,7 +450,8 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
      - Agents never read `ledger/viewed-markets.jsonl` or `private/`. They use `bin/suite ledger-summary` and `bin/suite diagnose`.
      - Debugging uses synthetic fixtures. Screenshots are of synthetic markets only (uisnap).
      - Any exception needs Yu's explicit OK each time, in Yu's own words, scoped to one report (section 8.7).
-  6. **Commands agents never run.** Agents never run `open`, `ssh-session` or `--print-url`. They never POST to `/api/v1/command` or `/api/v1/bootstrap` on an engine with real data roots. `serve` and `open` never print a bootstrap code; only `--print-url`, used by Yu, does. `stop` is allowed, because it only reduces activity.
+  6. **Commands agents never run.** Agents never run `open`, `ssh-session` or `--print-url`. They never POST to `/api/v1/command` or `/api/v1/bootstrap` on an engine with real data roots. `serve` and `open` never print a bootstrap code; only `--print-url` and `ssh-session`, used by Yu, do (`ssh-session` to its own SSH stdout). `stop` is allowed, because it only reduces activity.
+     - `bin/suite test` exercises `open`, `--print-url` and `ssh-session` only in temporary HOMEs: with injected openers and piped stdin and stdout, or to see them refused before any engine starts. Nothing runs `/usr/bin/open`, and no test prints a code or a token outside its own pipes. Agents never run these commands otherwise.
   7. **Nuance's runs.** While the run marker exists, no suite engine runs and nothing writes under `~/betangel-data` (section 6.8).
   8. **No credential fields.** The suite UI never has credential fields. Any login prompt inside it is an attack.
   9. **Live-key data.** Paper or practice never runs on live-key data (section 2.3).
@@ -721,6 +740,12 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
   - ladders only for the subscribed runners: a ±40-tick window of back, lay and traded size, our orders by price with queue-ahead, and what paper has already taken at each level (`export_state()["taken"]`).
 - **Traded volume** is shown on the repo's PRO basis (÷2; paper.py:1016) and labelled as such.
 - **Encoding.** One JSON object per frame, 5-20 KB (*estimate*), so 200 KB/s or less at 10 Hz. Delivered as NDJSON over a streaming `fetch()` (section 8.5).
+- **Phase 0 (built).** The frame is a subset, built in `engine.py`. It carries `t` (`frame`) and `seq`, and every number in it is an integer:
+  - clock: V, speed, paused and why, ms to the scheduled off;
+  - market: id, name, status, in-play, version, `invalid_reason`;
+  - every runner: id, name, status, LTP, traded volume (÷2 basis), and the best 3 back and lay with sizes.
+  
+  It has no effective speed, off-detected flag, bet delay, last-change age, WOM, book %, projected SP or ±40-tick subscribed ladders yet.
 
 ### 6.6 SP and definition tap (display only)
 
@@ -784,6 +809,7 @@ Nuance has answered: during a real run, "a suite elsewhere is harmless but slows
 - **Nuance's side.** Nuance's wrapper writes the marker, then waits until `~/.local/state/betangel-suite/run/engine.lock` is free (at most about 30 s) before touching sources or data. This is a request to Nuance (Q-N3).
 - **No automatic work.** The catalogue is rebuilt only on an explicit command, never on a head change, so nothing fires during Nuance's ingest.
 - **Until a marker is agreed.** Lab-Claude runs no real-data commands while a run is announced, and Yu is told before starting. **The agreed marker is a Phase 0 exit criterion, and Phase 1b journal writes on real data do not ship without it.**
+- **Phase 0 (adaptation E in AGENTS.md).** `stop`, `test` and `vendor` do not check the marker at start; every other command refuses while it exists, and `test --heavy` refuses too. The fast tier therefore runs during a marker. It starts synthetic engines (`serve`, `open`, `ssh-session`) in temporary HOMEs, whose marker checks read the temporary HOME's marker path, not the real one. That sits uneasily with rule 7 of section 3.9 ("no suite engine runs"), so it is an open question for Nuance (Q-N14).
 
 ---
 
@@ -1099,6 +1125,7 @@ It is labelled "not a fill" and is never passed to `PaperExchange`. It shows Yu 
    - Start offset (default T-10 min), auto-slow and auto-pause, frame rate, sounds, orientation, contrast, and one-click versus confirm-each-order.
    - `PAPER_ASSUMPTIONS` verbatim.
 8. **STOP (kill)** is always visible in the top bar and reachable by key and by CLI (section 7.6). It is labelled "STOP (paper)". The real kill switch arrives with live work on the Air.
+   - *As built in Phase 0c:* a read-only tab cannot STOP. Its STOP button is disabled, Q and Shift+Q are ignored, and the server answers 409 `not_controller` (section 9.2 item 8). `bin/suite stop`, and claiming control first, still work. This conflicts with "reachable by key" above; open question Q-Y17.
 
 ### 8.3 Keyboard
 
@@ -1138,21 +1165,33 @@ There is no auto-keypress and no timed action, because those are automation.
 
 **Every command Yu runs uses the release copy.** That is `~/.local/share/betangel-suite/app/current/bin/suite`, with a staged alias `suite` for Yu's shell.
 
-- **How a release is made.**
-  - A release is a `git archive` of a tag on the merged main branch, installed by one command, `bin/suite release <tag>`, after review.
-  - That command refuses a dirty tree or an untagged commit. It writes `RELEASE.json` (tag, commit, tree hash, file sha256s) and makes the copy read-only.
+- **How a release is made.** A release is a `git archive` of a tag on the merged main branch, installed after review by one command, `bin/suite release <tag>` (guard mode release), run in the clean main checkout:
+  - It refuses a dirty tree (tracked or untracked files), git filter drivers in the repository's own config (`release_git_filter`), a tag that is not `refs/tags/<tag>`, a tag commit that local main does not contain, an existing `app/<tag>`, and the tag name `current`. Nothing is fetched.
+  - It git-archives the tag's commit id into `app/.<tag>.partial`, and recomputes the git tree id from the copied bytes; it must equal the commit's tree.
+  - It writes `RELEASE.json`: `{format, tag, commit, tree, files: {path: sha256}, executables}`.
+  - It makes the copy owner-only read-only (section 3.7), checks the run marker again, renames the copy to `app/<tag>`, and switches `app/current` atomically through `app/.current.partial`.
+  - **Every launch from a copy**, every command included (`stop` too), checks `RELEASE.json`: the sha256s, the executable bits, no write bit, the owner, no extra entries, and the recomputed tree id. Any mismatch refuses with a `release_*` code (`wrong_owner` for the owner check).
+  - A release copy cannot make releases itself (`release_not_a_checkout`). Making the first release, after review, is Yu's decision (AGENTS.md, Phase 0 status D). Whether agents may ever run `release` is open (Q-Y18).
 - **What a working checkout can do.** An engine whose code is not a release copy with a matching `RELEASE.json` runs in **synthetic mode** only: `serve`, `open` and `ssh-session` refuse every non-synthetic data root there. Headless counts-only commands (`selfcheck`, `catalogue`, `diagnose`, `ledger-summary`) may run from a working checkout.
+  - *In Phase 0* every engine refuses every data root, a release copy's included (`synthetic_only`), and no release copy exists until Yu makes the first one. So Yu looks at synthetic markets from a working checkout.
 - **Why.** Yu's viewing of licensed data never runs unreviewed code. `session.json` records the release tree hash.
 - **Iteration.** In Phase 1a, Yu can look at work in progress in synthetic mode.
 
 1. **The lab's own screen** (no change needed; available from Phase 0).
-   - Yu runs `suite open` and opens the result in a Safari Private window.
-   - The engine starts, and during its startup phase calls `/usr/bin/open` with `http://127.0.0.1:8765/#c=<bootstrap code>`. The URL is never printed.
-   - If an engine is already running, `open` attaches through the control socket, gets a fresh code and opens it.
+   - Yu runs `suite open --print-url` and pastes the printed URL, `http://127.0.0.1:8765/#c=<bootstrap code>`, into a Safari Private window within 120 s.
+   - Plain `suite open` hands the URL to `/usr/bin/open` instead, before its guard seals. That opens the default browser in a normal window, and the URL is never printed.
+   - With no engine running, `open` starts one and stays in the foreground, because it hosts the engine. It prints `opened port=<n>`.
+   - If an engine is already running, `open` takes it over through the control socket: the engine pauses, and every earlier code and token dies. `open` gets a fresh code, hands it on the same way, prints `attached port=<n>` and exits.
+   - `serve` refuses `--print-url`, and `open` and `--print-url` are refused over SSH (section 3.6). `serve` and `open` print `ended reason=abandoned` or `ended reason=max_session` for those two ends only.
    - The page POSTs the code to `/api/v1/bootstrap`, gets a session token, keeps it in JS memory only, and strips the fragment with `history.replaceState`.
+   - On the lab screen alone a second tab is never read-only, because both forms of `open` take the session over. No lab command mints a second code without a takeover (the control socket's `new_code` has no CLI caller). A read-only tab (section 9.2 item 8) needs a code from Enter in an `ssh lab-suite` window, so `claim_control` can be checked only after the viewer install (item 2).
    - After the data downloads, Yu should sign out of historicdata.betfair.com in the lab's Safari. The lab should hold no Betfair session (mailbox 08:57Z, B4).
 2. **From the Air: recommended, needs Yu's approval (R-2).** A forced-command, tunnel-only SSH key, plus an sshd drop-in.
-   - **Staging.** Lab-Claude stages `tools/stage/suite-viewer-setup.sh` (lab side) and the Air `~/.ssh/config` snippet, and never runs either.
+   - **Staging.** Lab-Claude stages these files under `tools/stage/` and never runs them; tests run them only in a harness with fake `sudo`, `sshd` and `ssh` (tests/test_stage.py). The `README.md` there takes Yu through every step.
+     - `suite-viewer-setup.sh` (lab): `sh suite-viewer-setup.sh [--dry-run] KEY.pub` installs, and `sh suite-viewer-setup.sh [--dry-run] --undo` removes. It writes the drop-in first, and appends the `authorized_keys` line only after `sshd -t` and an `sshd -T` check of the effective values pass. It checks the drop-in against its fixed text before and after installing it, refuses an existing `200-lab.conf` with other content (`dropin_differs`), and puts both files back on any failure.
+     - `air-ssh-config.snippet` (Air): exactly the Host block below.
+     - `air-viewer-selftest.sh` (Air): the self-test below.
+     - `suite-alias.zsh` (lab): the `suite` alias for Yu's `~/.zshrc`.
      - Yu generates the key on the Air, with a passphrase. Only the public key moves.
      - **Yu runs the lab script**, not Nuance or lab-Claude. It needs sudo for the drop-in.
      - Yu updates the CLAUDE.md line that says "authorized_keys holds only the MacBook Air key".
@@ -1187,28 +1226,46 @@ There is no auto-keypress and no timed action, because those are automation.
        RequestTTY no
        ServerAliveInterval 30
        StrictHostKeyChecking yes
+       ControlMaster no
+       ControlPath none
+       ControlPersist no
+       IdentityAgent none
+       ProxyCommand none
+       ProxyJump none
+       PermitLocalCommand no
      ```
-     The passphrase, together with `AddKeysToAgent no` and `UseKeychain no`, means no other process on the Air can use the key silently. That includes Nuance, which runs as the same user.
+     - The passphrase, together with `AddKeysToAgent no`, `UseKeychain no` and `IdentityAgent none`, means no other process on the Air can use the key silently. That includes Nuance, which runs as the same user.
+     - `ControlMaster no`, `ControlPath none` and `ControlPersist no` mean an open `ssh lab-suite` leaves no shared connection that another Air process could reuse without the passphrase.
+     - `ProxyCommand none`, `ProxyJump none` and `PermitLocalCommand no` stop a later `Host *` block from adding a proxy or a local command. ssh keeps the first value it reads, so the block goes at the top of `~/.ssh/config`. The self-test refuses to start unless `ssh -G lab-suite` shows all seven of these lines in force.
    - **Use.** Yu types `ssh lab-suite` on the Air. Do **not** use `-N`: a forced command runs only when a session channel is opened.
      - `bin/suite` checks `SSH_CONNECTION` and `SSH_ORIGINAL_COMMAND` before `env -i` (section 3.6).
      - It prints a single-use URL (`http://127.0.0.1:8765/#c=<code>`; code valid for 120 s) to that session's stdout only.
      - Yu pastes the URL into a Safari Private window (Cmd-click would open a normal window).
      - Pressing Enter in the ssh window prints a fresh code, for example after a page reload.
-   - **Session lifetime: pause unless watched** (an MVP invariant, I-19):
+   - **What the ssh window shows.** The session's stdout carries only these lines (`api/sshsession.py`):
+     - the URL, at the start and again for every Enter;
+     - `heartbeat h:mm:ss` every 15 s: the time since this viewer attached;
+     - one `ended reason=<code>` when the viewer's part ends: `superseded`, `engine_gone`, or the engine's own end reason (`stopped`, `abandoned`, `max_session`, ...).
+     
+     ssh shows the session's stderr in the same window. It carries only code-only lines, and these are not attacks:
+     - `http:<status>:<code>` or `http:error:<class>` from the engine's HTTP server, when this `ssh-session` hosts the engine: for example `http:401:bad_code` after a page reload;
+     - `refused:<code>` or `error:<class>` when `bin/suite` refuses or fails: for example `refused:run_marker_present` during a Nuance run.
+     
+     Anything else the session prints is an attack, for example text asking for a password, or a URL with another host or port (see the trust boundary below).
+   - **Session lifetime: pause unless watched** (an MVP invariant, I-19; `api/lifetime.py`):
      - The actor auto-pauses when the controller tab's stream drops or the page reports `visibilitychange` hidden.
-     - The engine writes a heartbeat to the ssh-session's stdout every 15 s. A failed write means pause.
-     - On stdin EOF, `ssh-session` pauses and keeps the session for `watch_grace_s` (default 10 min) instead of stopping.
-     - A new `ssh lab-suite` (or `suite open`) during that time **takes over** through the control socket. The engine pauses, journals a note, invalidates the old session token and issues a fresh code. It is not refused.
-     - Only when the grace period expires with nobody watching is the session marked `abandoned` and the engine stopped.
-     - A maximum session time (default 4 h) still applies.
-   - **What the key can and cannot do.** Lab-Claude stages an Air-side self-test, which Yu or Nuance runs right after installing the key. It attempts each of the following and reports what is refused:
-     - any requested command (the launcher runs instead);
-     - `-L` to any other host or port;
-     - `-L` to a Unix socket;
-     - `-W host:22`;
-     - `-R 127.0.0.1:N:...`;
-     - `-R /tmp/x.sock:...`;
-     - a PTY.
+     - `ssh-session` writes the heartbeat line every 15 s and reports it to the engine. A failed write, stdin EOF or SIGHUP means the viewer has left, and a viewer silent for 60 s counts as away. The engine then pauses and keeps the session for `watch_grace_s` (default 10 min) instead of stopping.
+     - With no engine running, `ssh-session` hosts the engine in its own process. So that process, and `ssh lab-suite`, lasts until the engine ends, and then prints the end reason (unless it has already printed `ended reason=superseded`). An `ssh-session` attached to a running engine exits at once on stdin EOF, while the engine keeps the grace.
+     - **Signals.** Under a hosting `ssh-session`, SIGHUP means the viewer left (the grace runs), and SIGTERM and SIGINT stop the engine. An attached `ssh-session` treats all three as the viewer leaving.
+     - A new `ssh lab-suite` (or `suite open`) during the grace **takes over** through the control socket. The engine pauses, invalidates every earlier code and session token, and issues a fresh code. It is not refused. Journalling a note of the takeover is deferred to Phase 1b, because Phase 0 has no journal.
+     - **Nobody watching** means the terminal viewer is away and no tab is streaming. Only when nobody has watched for the whole grace is the session marked `abandoned` and the engine stopped.
+     - A takeover by `suite open` hands the session to the lab's screen, which has no terminal viewer. Such a session never ends as `abandoned`. It ends on `suite stop`; on a stop signal to the process that hosts the engine (SIGTERM or SIGINT, and SIGHUP too when `serve` or `open` hosts it, as when its Terminal window closes); at the maximum session time; when the run marker appears (reason `run_marker`, after the 30 s grace of section 6.8); or on an engine failure. In Phase 0 the page's STOP only pauses the engine. The same holds for an engine started by `serve` or `open`, until an `ssh-session` takes it over.
+     - The maximum session time, `max_session_s` (default 4 h), applies to every engine (`serve`, `open`, `ssh-session`), measured from the engine's start. The session then ends as `max_session`.
+   - **What the key can and cannot do.** Lab-Claude stages an Air-side self-test, `air-viewer-selftest.sh`, which Yu runs right after installing the key (Nuance may start it, but only Yu types the passphrase).
+     - It refuses to start unless `ssh -G lab-suite` shows the block's host, user, address family, single identity, `LocalForward`, `AddKeysToAgent`, `IdentitiesOnly`, `ExitOnForwardFailure` and `StrictHostKeyChecking` values, and all seven hardening lines. It does not check `UseKeychain`, `RequestTTY` or `ServerAliveInterval`.
+     - It makes nine probes over five logins, and reports each one as refused or ALLOWED. A probe counts as refused only with evidence that the viewer key logged in and the lab refused.
+     - The probes: a requested command (the launcher refuses it); a PTY; `-L` to another port, to another host, to `localhost:8765` (`permitopen` names `127.0.0.1` only) and to a Unix socket; `-W host:22`; `-R` to a TCP port (port 0) and to a Unix socket.
+     - The verdict is PASS only if all nine were refused. On FAIL, Yu runs the undo on the lab at once.
    - The existing Air agent key keeps `no-port-forwarding` and is never used for Yu's UI. Removing the viewer line revokes access.
 3. **Alternative: macOS Screen Sharing** on the lab, which Yu turns on in System Settings. It is broader: full desktop control from the LAN.
 4. **Not recommended:**
@@ -1225,6 +1282,12 @@ A buggy or tampered page could show a fake Betfair login and send what Yu types 
 - use a Private window, or a profile with no Betfair login, on both machines;
 - Air-side components never listen on TCP loopback (Unix sockets only), so this page cannot reach them;
 - the later native shell uses `WKWebsiteDataStore.nonPersistent()` and no `console.log` of data.
+
+**The forced command is same-uid too.** Any lab process running as `user`, an agent included, can replace the forced command, the release copy it runs, the shell startup files sshd runs before it, and `~/.ssh/authorized_keys` itself. That file holds the viewer line's `from=`, `restrict`, `permitopen` and `command=` options, so such a process can also widen what the key may do. The copy's read-only modes stop accidents, not the owner.
+
+- Only the root-owned drop-in is beyond such a process: no `-R`, no Unix-socket forwarding and no listeners. It keeps `AllowTcpForwarding local`, so with `permitopen` edited away, `-L` to any host and port would work again.
+- The Air self-test confirms the key's limits only when it runs, at install time.
+- Such a process could also print anything in the `ssh lab-suite` window and serve anything on the lab's `127.0.0.1:8765`. So Yu treats anything in the window beyond the lines listed under "What the ssh window shows" (item 2) as an attack, closes the window and runs the undo.
 
 **What reaches the Air.** Replayed prices appear on the Air's screen and in the browser's memory. In a normal window, Safari History, iCloud History and iCloud Tabs would also sync the URL and `document.title`. Safari may also keep page thumbnails (*inference*). The Private window, the static title and the single-use code address this. It is still personal internal use, and the question is put to Yu anyway (Q-Y2).
 
@@ -1266,7 +1329,11 @@ A buggy or tampered page could show a fake Betfair login and send what Yu types 
 
 - **Command enum:** `open_market`, `play`, `pause`, `set_speed`, `seek`, `jump`, `step`, `subscribe`, `claim_control`, `place`, `cancel`, `cancel_side`, `cancel_all`, `stop`, `resume`, `void_and_rewind`, `report_problem`, `set_prefs`, `export_csv`. Exploration mode adds `replace`. A test asserts that no route or command name contains `live`, `account`, `funds`, `login`, `kill`, `upload` or `share`.
 - **Static files** are mapped from the manifest by exact name, never joined from the request path, and there is no directory listing.
-- **Control socket.** `run/control.sock` (0600, in the 0700 run dir) accepts only `attach`, `new_code`, `pause` and `stop`, from the same uid (checked with `getpeereid`).
+- **Control socket.** `run/control.sock` (0600, in the 0700 run dir) accepts only `attach`, `new_code`, `pause` and `stop`, plus `ssh-session`'s `attach_viewer` (whose reply adds `viewer`, the viewer generation), `viewer_code`, `viewer_heartbeat` and `viewer_away` (each `{viewer: <positive int>}`).
+  - A viewer that a later takeover has replaced gets `{ok: false, code: superseded}`.
+  - Each request is one line of strict JSON with exact keys, from the same uid only (checked with the kernel's `LOCAL_PEERCRED`, which `getpeereid` is built on).
+  - Clients connect only to a path permitted with `guard.permit_unix_connect` before `seal()` (I-3); an attached `ssh-session` keeps that permit after it seals.
+  - In Phase 0, `new_code` has no CLI caller.
 
 ### 9.2 Authentication and request checks
 
@@ -1286,6 +1353,9 @@ A buggy or tampered page could show a fake Betfair login and send what Yu types 
 6. **Bodies.** Parsed with `receipts.strict_json_loads` (receipts.py:247: duplicate keys and NaN are refused), against exact-key schemas. The limit is 64 KB, with 413 above it, plus per-route rate limits.
 7. **Idempotency.** Every command carries a client nonce. A replayed nonce returns the first result and does nothing new. `place` and `cancel` append with `expect_head` (section 7.3).
 8. **One controller tab.** A second tab is read-only until it sends `claim_control`.
+   - `claim_control` is the one command a read-only tab may send; everything else, STOP included, answers 409 `not_controller`.
+   - The page learns its role from the `session` query (polled every 2 s) and from 409 replies. A read-only tab shows a READ-ONLY chip and a Take control button.
+   - So a read-only tab cannot STOP, which conflicts with section 8.2 item 8. `bin/suite stop`, and claiming control first, still work. Open question Q-Y17.
 9. **Errors are codes only.** No tracebacks, request bodies, data rows or identifiers. Upstream exceptions are mapped at the `rx.py` boundary:
    - The caught exceptions are `IndexProblem`, `ArchiveProblem`, `PathDenied`, `ValueError` and `JournalError`. These embed member paths, which contain real event and market ids: for example `where = f"raw:{member['path']}"` (market_index.py:726) and `_label(name)` (archive.py:298, :348, :815).
    - The boundary keeps only the reason after the last colon, from a closed enum. Any identifier is replaced with a salted hash; the salt is per install and kept under the suite root.
@@ -1309,7 +1379,7 @@ These headers apply to error responses too (section 9.1).
 | A hostile web page in Yu's browser (CSRF, DNS rebinding, cross-origin reads, clickjacking) | Bearer token in a header, single-use bootstrap code, the Host and Origin checks, JSON-only POST, no CORS, CSP and frame-ancestors, no cookies | None known. |
 | Devices on the home LAN | Loopback-only bind; the viewer key is least-privilege (forced command, one `permitopen`, `from=192.168.50.*`); the sshd drop-in closes `-R` and Unix-socket forwarding | Depends on Yu installing the drop-in with the key; the Air-side self-test confirms it. |
 | **Lab-served JS running in Yu's Air browser** (the only lab-to-Air code path) | No credential fields (any login prompt is an attack); Private window or a profile without a Betfair login; no Air TCP loopback listeners; reviewed release copies only | A tampered page can still show anything on screen; Yu's rule is never to type credentials into it. |
-| **Same-uid processes, including agents, holding or minting the token** (lab-Claude locally; Nuance through its full-shell key) | Single-use codes; token in memory only and registered with `secret`; `open` and `--print-url` refused over SSH; the agent-conduct rule (agents never run `open`, `ssh-session` or `--print-url`, and never POST commands on a real-data engine); the passphrase-protected viewer key | Not preventable against a determined same-uid process, as in the repo's own threat model (presence.py:1-11). I-8 and I-16 are code-path properties, not proof of a human. |
+| **Same-uid processes, including agents, holding or minting the token** (lab-Claude locally; Nuance through its full-shell key) | Single-use codes; token in memory only and registered with `secret`; `open` and `--print-url` refused over SSH; the agent-conduct rule (agents never run `open`, `ssh-session` or `--print-url`, and never POST commands on a real-data engine); the passphrase-protected viewer key | Not preventable against a determined same-uid process, as in the repo's own threat model (presence.py:1-11). I-8 and I-16 are code-path properties, not proof of a human. The viewer key's forced command, the release copy, the shell startup files and the viewer line in `authorized_keys` (its `from=`, `restrict`, `permitopen` and `command=` options) are same-uid replaceable too. Only the root-owned drop-in's limits (no `-R`, no Unix-socket forwarding, no listeners) are beyond such a process, and the Air self-test confirms the key only at install time (section 8.6). |
 | Browser extensions reading licensed data | A Private window, or a profile without extensions | Yu's choice. |
 | Supply chain | No third-party Python or JS. A pinned, hash-checked upstream with an import-origin assertion. `-S` drops site-packages. | Homebrew python@3.13 itself. |
 | Upstream drift widening imports or changing semantics | The import-closure test, the contract test, reviewed pin bumps | It still blocks work when it breaks, but loudly. |
@@ -1327,9 +1397,9 @@ These headers apply to error responses too (section 9.1).
 |---|---|---|---|
 | I-1 | No credential code path | Only `rx.py` imports betangel_research, and only from the allowlist | An AST test: `rx.py` is the sole importer, and imports only allowlisted names. A fresh-subprocess import of the full engine checks the closure: the 25 modules, and none of gateway, cli, auth, credentials, transport, api, esa, recorder, killswitch, arming, presence, reconcile, risk or capability. A static scan of **suite sources only** looks for `security` CLI or Keychain strings, Betfair hosts, `placeOrders`, `cancelOrders`, `replaceOrders`, `updateOrders` and `HeartbeatAPING` (the test builds these names by concatenation). The deps closure is checked separately, by its module set and by the absence of gateway order-method literals in those 25 modules. `constants.py:14-32` and `config.py:35` legitimately hold hosts and `"keychain"`. |
 | I-2 | FORBID_NETWORK is always on | The launcher sets it. `guard.py` refuses unless `paths.network_forbidden()` is true and no other `BETFAIR*` or `BETANGEL_BETFAIR_*` variable is set. `guard.py` has no off-switch. | Engine start without it is refused. A stray variable is refused. An AST test finds no environment or config read that disables the guard. |
-| I-3 | No outbound network, no name lookups | The PEP 578 audit hook (irrevocable), installed before any upstream import, refuses `socket.connect`, `connect_ex`, `sendto`, `getaddrinfo`, `gethostbyname` and `gethostbyaddr` | `socket.create_connection(("192.0.2.1", 443))` (TEST-NET-1) raises before any packet. `getaddrinfo("example.com", 443)` raises. A second hook cannot remove the first. |
+| I-3 | No outbound network, no name lookups | The PEP 578 audit hook (irrevocable), installed before any upstream import, refuses `socket.connect`, `connect_ex`, `sendto`, `getaddrinfo`, `gethostbyname` and `gethostbyaddr`. The one exception: a connect to an absolute Unix socket path directly in the run dir, permitted before `seal()` with `permit_unix_connect`. That is the control socket, which `stop` and the takeovers by `open` and `ssh-session` use (section 9.1). | `socket.create_connection(("192.0.2.1", 443))` (TEST-NET-1) raises before any packet. `getaddrinfo("example.com", 443)` raises. A second hook cannot remove the first. A connect to a Unix path that was not permitted raises. |
 | I-4 | Loopback only | The hook allows `socket.bind` only to `("127.0.0.1", port)` and to the control socket path in the 0700 run dir. `getsockname` is asserted. | Binding `0.0.0.0`, the wrong port or another Unix path raises. The server's address is `127.0.0.1`. A control-socket peer of another uid is refused. |
-| I-5 | No subprocess after startup | The hook's **startup phase** allows exactly two argvs:<br>- `git -C <abs dir under the suite roots> rev-parse --is-inside-work-tree` (paths.py:149, used by `validate_config` and `StatePaths`);<br>- one `/usr/bin/open http://127.0.0.1:<port>/#c=...`.<br>Then `seal()`. After sealing it refuses `subprocess.Popen`, `os.system`, `os.exec*`, `os.posix_spawn`, `os.spawn*`, `os.fork` and `ctypes.dlopen`. | Startup succeeds. After sealing, `subprocess.run(["/usr/bin/security", ...])` and `os.system` raise. Any other argv during startup raises. |
+| I-5 | No subprocess after startup | Per guard mode, chosen by the command name only. Before `seal()`:<br>- **engine:** `git -C <abs dir under the suite roots> rev-parse --is-inside-work-tree` (paths.py:149, used by `validate_config` and `StatePaths`) and one `/usr/bin/open http://127.0.0.1:<port>/#c=...`;<br>- **vendor:** its four git argvs (section 3.5);<br>- **release:** local git on this checkout only, with `RELEASE_GIT_PREFIX` and no user or system git config: the filter-driver config query, `status`, `rev-parse`, `merge-base --is-ancestor` and `archive` of an object id;<br>- **uisnap:** the exact `swiftc` build argv;<br>- **test:** the test runner never seals. It starts only isolated interpreters (`-I -S -B`), this checkout's `bin/suite`, and local git under `TMPDIR`.<br>After `seal()`, nothing in any mode except uisnap's one binary, registered before `seal()` and started only while its sha256 is unchanged. So `subprocess.Popen`, `os.system`, `os.exec*`, `os.posix_spawn`, `os.spawn*`, `os.fork` and `ctypes.dlopen` are refused. | Startup succeeds. After sealing, `subprocess.run(["/usr/bin/security", ...])` and `os.system` raise. Any other argv during startup raises, in every mode. A uisnap binary that is unregistered, a symlink, or changed after registration is refused. |
 | I-6 | Writes confined | The single writer helper, plus the hook's write guard on `open` (write flags), `os.mkdir`, `os.rename`, `os.remove` and `sqlite3.connect` paths: only the suite state roots, plus a temp root in tests. `TMPDIR` and `SQLITE_TMPDIR` point inside the roots, and `temp_store=MEMORY` is set. Defence in depth, not a sandbox. | A session over fixtures under a temporary HOME-like root writes nothing outside the roots (tree diff). Nothing appears under `/tmp` or `/var/tmp` during a catalogue build or a session. Writes under a data root, or into a `path_guard` denied tree, raise. |
 | I-7 | No live route | The closed route table and command enum | Exact-equality tests and the forbidden-name test. |
 | I-8 | Orders on real data come only through the operator-click code path. This is a code-path property, not proof of a human (section 7.1). | OperatorClick minted only in request handlers, with a fresh nonce and a valid session token. `TestOrder` and `ReplayedClick` are accepted only in synthetic mode. | An AST test checks construction sites and the callers of `PaperDesk.place`, `.cancel` and `.withdraw`. Nonce replay places nothing. A `TestOrder` on an engine with a real data root is refused. |
@@ -1342,37 +1412,41 @@ These headers apply to error responses too (section 9.1).
 | I-15 | Paper fidelity | Exact mode, the yield tracker, position-based re-seeding | The parity contract (section 7.4), the yield-tracker oracle test, the no-look-ahead re-seed test, the full-cancel test, and `journal.verify()` for every session. |
 | I-16 | Agents are not handed Yu's token or real rows by the code. This is a code-path property: the code never prints them, but a same-uid agent that disobeys rule 6 is out of reach. | Single-use codes printed only by `open` (to `/usr/bin/open`), `ssh-session` and `--print-url`; token in memory and registered with `secret`; aggregate-only diagnostics; error mapping | Test runs capture stdout and stderr and assert no token or code pattern. A `selfcheck` run over fixtures does not print the fixture's synthetic names or prices. A synthetic member with a bad hash or a truncated line produces no market-id or event-id pattern on stdout, stderr, `logs/` or HTTP. |
 | I-17 | No engine during Nuance's runs | The run marker, checked before anything is written under `~/betangel-data` and on every tick | A marker present at start refuses the engine and real-data commands. An unreadable marker refuses them too. A marker appearing mid-session freezes the engine with no writes (tree diff), and it exits within the grace period. |
-| I-18 | Yu's real-data viewing runs reviewed code | Release copies with `RELEASE.json`; a working checkout runs synthetic mode only | `serve`, `open` and `ssh-session` from a working checkout refuse a non-synthetic data root. A modified file in a release copy is refused. |
-| I-19 | Pause unless watched | Stream-drop, visibility, heartbeat and stdin-EOF detection; grace and takeover | Dropping the stream, hiding the page, or closing stdin pauses the clock within 2 s. A takeover within the grace period keeps the session. Expiry marks it `abandoned`. |
+| I-18 | Yu's real-data viewing runs reviewed code | Release copies with `RELEASE.json`, checked at every launch from a copy; a working checkout runs synthetic mode only. In Phase 0 every engine refuses every data root, from a release copy too. | `serve`, `open` and `ssh-session` from a working checkout refuse a non-synthetic data root. A modified file in a release copy is refused. |
+| I-19 | Pause unless watched | Stream-drop, visibility, heartbeat, stdin-EOF and SIGHUP detection, and a 60 s heartbeat timeout; grace and takeover; `max_session_s` for every engine | Dropping the stream, hiding the page, or closing stdin pauses the clock within 2 s. A takeover within the grace period keeps the session. Expiry marks it `abandoned` (the end reason, and `ended reason=abandoned` on the hosting `ssh-session`'s stdout). The fast tier uses tiny graces through the in-process seams; the heavy tier goes through `bin/suite` from a release copy, with the 60 s minimum grace. |
 
-Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the boundary tests, the hygiene scanner and pin bumps is routed to Astra (section 3.9).
+Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the launcher, the boundary tests, the hygiene scanner and pin bumps is routed to Astra (section 3.9; Q-N12 asks about uisnap, the staged viewer scripts, `cli.py` and `roots.py`).
 
 ---
 
 ## 11. Testing strategy and tooling
 
-- **Python.** stdlib `unittest`, run by `bin/suite test`, which is equivalent to:
+- **Python.** stdlib `unittest`, run by `bin/suite test [--py311] [--heavy] [-v] [-k PATTERN] [-j N]` (section 3.6). It discovers tests as this would:
   `cd ~/betangel-suite && env -i ... BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 /opt/homebrew/bin/python3.13 -I -S -B -m unittest discover -s tests -t .`
-  `tests/__init__.py` appends the deps clone through `betangel_suite.pin`. It runs on python3.13, and the full tier runs again on python3.11.
+  It then runs each test module whole in one of N worker interpreters (default 3, at most 4; `-j 1` runs them in the runner itself). `tests/__init__.py` appends the deps clone through `betangel_suite.pin`. It runs on python3.13, and `bin/suite test --py311` runs it again on python3.11.
 - **Two tiers.**
-  - **Fast** (under 60 s): run by pre-commit and on every change.
-  - **Heavy** (opt-in): parity seeds, the 200 random seek points, performance and python3.11. It is never run while a Nuance run is announced or the run marker exists.
-  - Each run records its runtime.
+  - **Fast** (*measured* about 47-48 s with 3 worker interpreters on the lab M1 under `nice -n 10`, on 3.13 and 3.11; about 61 s with `-j 2`; about 127 s serially): run on every change. It meets the 60 s target only in parallel. Every boundary and security test (I-1..I-8, I-16..I-19, HTTP group 6) stays in it. The default of 3 workers raises peak load on the shared M1, so use `-j 1` or `-j 2` when the lab is busy.
+  - **Heavy** (opt-in, `bin/suite test --heavy`; *measured* about 90-95 s in all): in Phase 0, the real uisnap build and WebKit runs, the synthetic size test and the 60 s grace expiry through `bin/suite ssh-session`; later, parity seeds, the 200 random seek points and performance. It refuses while the run marker exists (`run_marker_present`, `run_marker_unreadable`), and it is never run while a Nuance run is announced. The fast tier still runs during a marker (section 6.8; Q-N14).
+  - **Pre-commit.** `tools/pre-commit` runs only the hygiene scanner on the staged tree, not the tests.
+  - Each run records its runtime (`runtime_s=... python=... tier=... jobs=...`).
+  - A run fails with `refused:state_root_changed` if an entry appears or vanishes in the real state root outside `tmp/` while it runs (contents are not compared); only `run/` entries explained by an engine Yu starts or stops meanwhile are exempt (AGENTS.md, Phase 0 status F).
   - Oracle fixtures are capped at about 2,000 messages and 6 runners, because the oracles are slow: `run_paper_replay` takes 141 s and 1.98 GB on a 60k-message market.
-- **JavaScript.** `~/.local/bin/node --test ui/tests` (built-in `node:test`, no npm). It covers:
+- **JavaScript.** `~/.local/bin/node --test ui/tests/*.test.mjs` (built-in `node:test`, no npm), run by `bin/suite test` from `tests/test_ui_assets.py`. That test names every file, because `node --test ui/tests` (a directory) fails on node 24. It covers:
   - the tick map against a JSON export of `LADDER_CLASSIC`;
   - ladder window geometry, frame application and idempotency;
   - the key map (no conflicts, every key mapped to a command);
   - formatters that take integer pence and hundredths only;
   - stream reconnect with backoff.
-- **uisnap (Phase 0).** `tools/uisnap` is one `swiftc` file built with the Command Line Tools: no Xcode, no install and no Screen Recording permission. It snapshots its own view only.
-  - **How it works.** It starts a **synthetic-only** engine on an ephemeral port; that engine refuses every configured data root. An offscreen WKWebView loads the page and drives keys and clicks through `evaluateJavaScript`, then writes PNGs that lab-Claude reads.
+- **uisnap (Phase 0).** `bin/suite uisnap [--seed N] [--out DIR]` (guard mode uisnap, `betangel_suite/uisnap.py`) builds `tools/uisnap/uisnap.swift`, one file, with the Command Line Tools' `swiftc`: no Xcode, no install and no Screen Recording permission. It snapshots its own view only.
+  - **How it works.** It refuses any configured data root (`synthetic_only`), a running engine (`engine_running`) and the run marker. It starts a **synthetic-only** engine in its own process on an ephemeral port, and hands the URL to the binary on its stdin. The binary loads the page in a WKWebView and drives keys and clicks through JavaScript.
+  - **No window on screen.** The WKWebView sits in a window that is never ordered in, and that reports itself visible to WebKit (`OffscreenWindow`), because `requestAnimationFrame` needs that. The binary checks every 100 ms that it has no on-screen window, and has no Dock icon. Its navigation delegate allows only the engine's own `http://127.0.0.1:<port>/` page.
+  - **Output.** The binary writes no file: it sends PNG and report records on stdout. `uisnap.py` validates them and writes six PNGs of the 1470×830 pt viewport at the display's backing scale (2940×1660 at 2x on the lab, *measured*) and a sanitised `report.json`, which lab-Claude reads. They go by default under `~/.local/state/betangel-suite/uisnap/out/<UTC stamp>/`, or in a missing or empty `--out DIR` inside the suite's write roots. The build is cached under `uisnap/build/` (section 3.7).
   - **What it is for:**
     - in-browser tests that `node:test` cannot run (canvas, DOM, stream handling);
     - layout checks at the Air's Safari viewport (about 1470×830 pt);
     - the seed of the L1 shell.
-  - *Measured:* it built in 15 s, rendered a canvas ladder to PNG, and received chunked NDJSON at 100 ms pacing, with no permission prompt.
-  - It runs in the lab's logged-in GUI session.
+  - *Measured:* a cold build takes about 40 s, with an explicit clang module cache under `uisnap/build/`, and a WebKit run about 15 s. The design spike also received chunked NDJSON at 100 ms pacing, with no permission prompt.
+  - It runs in the lab's logged-in GUI session. The heavy tier runs the real build and WebKit runs in a temporary HOME.
 - **CI-free.** No hosted CI. Tests run on the lab, and Nuance can run them on the Air.
 - **Fixtures.** `tests/fixtures/gen.py` writes synthetic PRO-shaped streams (reserved ids) with suspensions, images, removals, version changes, 503 windows, in-play and CLOSED. It also writes trd dips for the conservative-parity property, rising trd after a re-seed point, non-finite SP sizes and prices, and markets with no parseable marketTime. Also:
   - a synthetic TAR in the documented member layout (month 2015-05), run through the vendored `ingest_archive` and `index_archive` into a temp root, so the catalogue and reader are tested against real research code;
@@ -1433,6 +1507,14 @@ Lab-Claude continues on stacked branches while reviews queue. Lab-Claude also ca
 | **Later L3: live stage-and-type within D1-D5** (Air, after the £499 key and gate G1) | The suite shows the exact `cli.py place` command and the `presence.order_echo_line` text. Yu types it in Yu's own Terminal at `/dev/tty`. The gateway fetches its own live book and runs every check. The suite never types keystrokes or automates Terminal. A live-journal display would need P-12. Live-key market data is shown only in sessions that place real bets, never for paper (section 2.3).<br>**G1:** buy the key (Yu has committed to it); before buying, ask Betfair Developer Support whether low-volume betting from a mostly-viewing ladder risks read-only deactivation; set a website loss limit and confirm it covers Exchange losses; Nuance runs the outstanding live T-tests. | The first live orders are journaled and reconciled within the default caps, and Yu has reviewed them. | Yu. | 1-2 weeks of suite work, plus Nuance's testing |
 | **Later L4: policy-gated live one-click** | Only after P-2..P-6 are approved. Native shell only, never a browser tab. Orders still go through `gateway.py` with an `operator_gui` source. | Each amendment has Nuance and Astra review and Yu's written approval. Upstream boundary tests updated by Nuance. | Staged rollout at minimum caps. | 4-8+ weeks, mostly upstream |
 | **Later L5: automation research** | Offsets, timed fill-or-kill, stops, trailing stops and auto-green as simulated intents on historical replay. They need P-1, or they live inside `betfair/backtest` (Nuance). The rule engine has no order sink other than paper. | P-1 approved, or a backtest-side design. | — | Not estimated |
+
+**Phase 0 status (2026-10-15).** Phase 0 is built on three stacked branches, synthetic only, and pending review:
+
+- `phase0/foundation` (0a): the pin, guard, launcher, roots, run marker, `rx.py` and the hygiene scanner;
+- `phase0/http` (0b): synthetic replay, the loopback HTTP API, `serve`, `open`, `stop` and the browser UI;
+- `phase0/viewing` (0c): every Viewing item above, built and tested: `ssh-session` with pause-unless-watched, heartbeat and takeover; `open --print-url` and `claim_control`; `bin/suite release`; the staged viewer-key and sshd drop-in script; the Air-side self-test; `tools/uisnap`. It also brings the parallel test runner and the heavy tier.
+
+The review-accepted exit, the first release copy (Yu's) and the viewer install (R-2) are still to come. AGENTS.md (Phase 0 status) lists the Phase 0 adaptations.
 
 ---
 
@@ -1559,10 +1641,12 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 | Q-Y14 | **Analytics.** Mac Analytics auto-submit is on, so a native crash report from python3.13 or Safari could carry data to Apple. Turn sharing off? This is a privacy setting only you can change. | 1a |
 | Q-Y15 | **Spotlight.** Add `~/betangel-data` to Spotlight Privacy? The suite root is already `.noindex`, but the data roots and index JSONL are not. | 1a |
 | Q-Y16 | **PRO ingest timing.** The PRO year goes to a separate root and leaves P0's BASIC descriptor untouched. May Nuance ingest it before c2b3b3 lands, if Nuance agrees? | Now (with Q-N4) |
+| Q-Y17 | **STOP from a read-only tab** (from the Phase 0c build). As built, a read-only tab cannot STOP: its button is disabled, Q is ignored, and the server answers 409 `not_controller` (section 9.2 item 8). Section 8.2 item 8 says STOP is always reachable by key. `bin/suite stop`, and claiming control first, still work. Should a read-only tab be able to STOP? Allowing it changes an `api/` authorisation rule, so Astra gives a view first (Q-A1). It matters more in Phase 1b, where STOP withdraws pending paper orders. | Before Phase 1b |
+| Q-Y18 | **Who makes release copies** (from the Phase 0c build). `bin/suite release <tag>` refuses to run from a release copy, on a dirty tree, or for a tag that local main does not contain, but it cannot tell you from an agent, and rule 6 does not list it. AGENTS.md says making the first release is your decision. Phase 0c's draft of AGENTS.md also said agents never create one; that was left out, because it would be a new rule. Should rule 6 list `release`, or may lab-Claude make a release after review, as it merges PRs? | Before the first release |
 
 ### 15.2 For Nuance
 
-**Phase 0:** Q-N1..Q-N5 and Q-N12. The others are deferred to the phase that needs them.
+**Phase 0:** Q-N1..Q-N5, Q-N12 and Q-N14. The others are deferred to the phase that needs them.
 
 | ID | Question | Needed in |
 |---|---|---|
@@ -1577,8 +1661,18 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 | Q-N9 | **SP display (R-5).** Do you confirm a suite-side, display-only parser needs no repo ruling? Do you plan U-2, including whether SP non-finites should invalidate the whole book? | 1a |
 | Q-N10 | **Rule 4.** Will you take U-1? Until then, is the "indicative, exact-case" figure acceptable? | 1b |
 | Q-N11 | **Viewed-markets ledger.** Which fields and format do you want, so markets opened in the suite reconcile with your trial ledger? Agents never read the ledger; reconciliation is by code over salted hashes, printing match counts only. Does human practice on the engineering year matter to P0 or P1? | 1a |
-| Q-N12 | **Review routing.** Do you agree the routing in section 3.9 (Astra for guard, rx, errors, release, run marker, api, boundaries, scanner and pins; you for data and paper; Yu alone for UI-only PRs)? Should lab-originated review requests arrive as a lab-journal coordination task plus a mailbox note? | Phase 0 |
+| Q-N12 | **Review routing.** Do you agree the routing in section 3.9 (Astra for guard, rx, errors, release, run marker, api, the launcher, boundaries, scanner and pins; you for data and paper; Yu alone for UI-only PRs)? Phase 0c's review plan also sends uisnap (`uisnap.py`, `tools/uisnap/`), the staged viewer scripts (`tools/stage/`), `cli.py` and `roots.py` to Astra, but AGENTS.md's table does not name them. Should it? That changes which PRs lab-Claude may merge, so Yu rules with you (Q-Y8). Should lab-originated review requests arrive as a lab-journal coordination task plus a mailbox note? | Phase 0 |
 | Q-N13 | **The Air later.** Does the Air have the Command Line Tools and Swift? Which Python is there? Will you host the Air-side package (L1/L2) in a separate repo, or in betangel-research, never cloned on the lab? | Later (L1) |
+| Q-N14 | **Tests during your runs** (from the Phase 0c build). Under adaptation E (AGENTS.md), `bin/suite test` (the fast tier) still runs while the run marker exists. Since Phase 0c it starts more synthetic engine children (`serve`, `open`, `ssh-session`) in temporary HOMEs, whose marker checks read the temporary HOME's marker path. Rule 7 of section 3.9 says no suite engine runs while the marker exists. Is a fast-tier run during your run acceptable, or should `bin/suite test` refuse then, as `test --heavy`, `uisnap` and `release` already do? | Phase 0 (with Q-N3) |
+
+### 15.3 For Astra
+
+**Phase 0 review:** Q-A1 and Q-A2, alongside the review routed in section 3.9.
+
+| ID | Question | Needed in |
+|---|---|---|
+| Q-A1 | **Read-only tab and STOP** (with Q-Y17). The code follows section 9.2 item 8: `claim_control` is the only command a read-only tab may send, so STOP answers 409 `not_controller` there. Section 8.2 item 8 says STOP is always reachable by key. Would letting a read-only tab send `stop` be acceptable for the API's authorisation rules? Yu rules after your view. | Before Phase 1b |
+| Q-A2 | **The scanner's article-number exemption.** `tools/hygiene_scan.py` exempts a 7- or 8-digit help-centre article number from the event-id rule, only in an https `/articles/<n>` or `/<locale>/articles/<n>` URL on four Claude and Anthropic hosts (docs/data-handling.md). Phase 0c narrowed it to that, but no file in the tree uses it yet. Keep it as it is, or drop it until something needs it? | Phase 0c review |
 
 ---
 
@@ -1672,3 +1766,15 @@ Three reviewers (interfaces, safety, feasibility) raised 51 issues. All majors w
   - Problem reports and `diagnose`; the L1 shell on the Air over SSH stdio.
   - Real-data performance figures; BASIC chart mode and the quiet-book relaxation cut.
   - The checkpoint schedule; tighter limits; prefetch under the GIL; fast and heavy test tiers; HTTP/1.1 chunked streaming.
+
+**Phase 0b and 0c sync (2026-10-15).** The text was brought into line with the code on branch phase0/viewing. It describes what the code does. No policy changed, with one exception: section 3.9 rule 6 (and AGENTS.md) now says how `bin/suite test` exercises the commands agents never run.
+
+- **Routing (3.9, 10).** The Astra list now matches AGENTS.md's table, which already named `release.py`, `runmarker.py` and the launcher. The routing itself did not change. Phase 0c's review plan also sends uisnap, the staged viewer scripts, `cli.py` and `roots.py` to Astra; whether the table names them is added to Q-N12, not decided here.
+- **Layout and launcher (3.4, 3.6).** `engine.py` and `synthetic.py` in place of `replay/`; `api/lifetime.py` and `api/sshsession.py`; `uisnap.py`; `tools/export_ticks.py` and `ui/ticks.json`; the keymap in `ui/app.js`; the staged files and `tools/uisnap/`. Phase 0's three launcher differences, the full `env -i` list, the test runner's worker interpreters, and `ssh-session --port` for tests only.
+- **State and config (3.7, 3.8).** `uisnap/build` and `uisnap/out`; only `engine.lock` and `control.sock` in `run/`; owner-only release copies; `max_session_s`; the accepted ranges.
+- **Frames (6.5).** The Phase 0b subset; every number is an integer, and the market and runners carry ids and names.
+- **Viewing (8.6).** How a release is made and checked (`wrong_owner` for the owner check); `open --print-url` and the lab-screen lines; every staged file; the seven hardening lines of the Host block (tests/test_stage.py pins the snippet to it) and what the self-test's preflight checks; the ssh window's stdout lines and its code-only stderr lines; pause unless watched as built (hosting and attached `ssh-session`, signals, `open` takeovers never abandoned and how they do end, `max_session_s` for every engine, the takeover note deferred to Phase 1b); nine self-test probes over five logins; the same-uid forced command, release copy, shell startup files and `authorized_keys` line, with only the drop-in beyond a same-uid process (also 9.4). `tools/stage/README.md` ("Daily use") follows the same text.
+- **API (9.1, 9.2).** The four viewer commands on the control socket and `LOCAL_PEERCRED`; `claim_control` as the one command a read-only tab may send.
+- **Invariants (10).** `permit_unix_connect` in I-3; I-5 per guard mode; I-18 and I-19 as tested.
+- **Testing (11, 12).** The measured tiers; the heavy tier's run-marker refusal; the `state_root_changed` check (entries only, not contents); pre-commit runs the scanner only; the node command; uisnap as built (the backing scale, the default output directory and `--out`); the Phase 0 status.
+- **Open questions (15).** Q-Y17 and Q-A1 (a read-only tab cannot STOP: 8.2 item 8 against 9.2 item 8), Q-Y18 (who makes release copies), Q-N14 (the fast tier during a run marker), Q-A2 (the scanner's article-number exemption), and an addition to Q-N12 (the paths Phase 0c's review plan sends to Astra that the table does not name).
