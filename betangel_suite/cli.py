@@ -1,10 +1,20 @@
-"""bin/suite commands (DESIGN.md 3.4). Phase 0a implements test and vendor; every other command refuses.
+"""bin/suite commands (DESIGN.md 3.4). Built: test and vendor (Phase 0a), serve, open and stop (Phase 0b);
+every other command refuses with not_implemented.
 
-bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except test and
-vendor, checked the run marker before main() is called. main() then creates TMPDIR (0700, through the
-writer helper) before any handler runs (DESIGN.md 3.6, 6.8), so SQLite never falls back to a system temp
-directory. vendor is the exception: it must work before the deps clone exists, never imports upstream
-(which the writer helper's path_guard needs) and makes no temporary files. Output is codes and counts only.
+bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop, test and
+vendor, checked the run marker before main() is called. main() checks the command's arguments first, then
+creates TMPDIR (0700, through the writer helper) before any handler runs (DESIGN.md 3.6, 6.8), so SQLite
+never falls back to a system temp directory. vendor and stop are the exceptions: vendor must work before
+the deps clone exists and never imports upstream (which the writer helper's path_guard needs); stop only
+talks to the control socket. Neither makes temporary files. Output is codes and counts only.
+
+    serve [--port N]   the engine in synthetic mode on 127.0.0.1 (config port; N = 0 picks a free port);
+                       prints "serving port=<n>", never a bootstrap code or token
+    open [--port N]    start the engine and hand one bootstrap URL to /usr/bin/open (the URL is never
+                       printed), or, with an engine running, take it over through the control socket
+    stop               ask a running engine to stop through the control socket; prints stopped or not_running
+
+serve, open and stop import socket and http only inside their handlers, so no other command loads them.
 """
 
 import importlib.util
@@ -18,6 +28,7 @@ from .errors import SuiteError
 COMMANDS = ("serve", "open", "ssh-session", "stop", "catalogue", "selfcheck", "diagnose", "ledger-summary",
             "release", "test", "uisnap", "vendor")
 NO_RUN_MARKER_CHECK = ("stop", "test", "vendor")  # adaptation E; stop only reduces activity (DESIGN 3.9 rule 6)
+NO_TMPDIR = ("stop", "vendor")                    # they create no temporary files and must not need upstream
 REPO_ROOT = guard.REPO_ROOT
 
 
@@ -37,9 +48,52 @@ def main(argv):
     if handler is None:
         raise SuiteError("not_implemented")
     guard.require_mode(guard_mode(command))
-    if command != "vendor":
+    parser = _PARSERS.get(command)
+    if parser is not None:
+        args = parser(args)                     # argument errors refuse before anything is created
+    if command not in NO_TMPDIR:
         roots.ensure_dir(roots.tmp_dir(command))
     return handler(args)
+
+
+def parse_port_args(args):
+    """{"port": None or int} for `[--port N]`: N is 0 (a free port, for tests) or 1024-65535."""
+    args = list(args)
+    port = None
+    if args:
+        if len(args) != 2 or args[0] != "--port" or not args[1].isascii() or not args[1].isdigit() or len(args[1]) > 5:
+            raise SuiteError("bad_arguments")
+        port = int(args[1])
+        if port != 0 and not 1024 <= port <= 65535:
+            raise SuiteError("bad_arguments")
+    return {"port": port}
+
+
+def parse_no_args(args):
+    if args:
+        raise SuiteError("bad_arguments")
+    return {}
+
+
+def _serve(options):
+    return _run_engine("serve", options)
+
+
+def _open(options):
+    return _run_engine("open", options)
+
+
+def _run_engine(command, options):
+    from . import config
+    from .api import server         # here, not at the top: no other command loads socket or http
+    cfg = config.load()
+    port = cfg["port"] if options["port"] is None else options["port"]
+    return server.run(cfg, command=command, port=port)
+
+
+def _stop(options):
+    from .api import control        # here, not at the top: no other command loads socket
+    return control.stop_main()
 
 
 def parse_test_args(args, version):
@@ -105,4 +159,5 @@ def _vendor(args):
     return module.main(args)
 
 
-_HANDLERS = {"test": _test, "vendor": _vendor}
+_HANDLERS = {"test": _test, "vendor": _vendor, "serve": _serve, "open": _open, "stop": _stop}
+_PARSERS = {"serve": parse_port_args, "open": parse_port_args, "stop": parse_no_args}

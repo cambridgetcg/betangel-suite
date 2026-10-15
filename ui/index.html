@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>betangel-suite</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="title-row">
+    <span id="badge-synthetic" class="badge synthetic">SYNTHETIC DATA</span>
+    <h1 id="market-name" class="market-name">No market open</h1>
+    <span id="market-status" class="chip status" hidden></span>
+    <span id="badge-inplay" class="chip inplay" hidden>IN-PLAY</span>
+    <span id="invalid" class="chip invalid" hidden></span>
+    <span id="countdown" class="countdown" aria-live="off">T --:--</span>
+  </div>
+  <div class="controls" role="toolbar" aria-label="Replay controls">
+    <button id="play" type="button" class="play" aria-pressed="false" disabled>Play</button>
+    <span class="speeds" role="group" aria-label="Replay speed">
+      <button type="button" class="speed" data-speed="100" aria-pressed="false" disabled>1x</button>
+      <button type="button" class="speed" data-speed="200" aria-pressed="false" disabled>2x</button>
+      <button type="button" class="speed" data-speed="500" aria-pressed="false" disabled>5x</button>
+      <button type="button" class="speed" data-speed="1000" aria-pressed="false" disabled>10x</button>
+    </span>
+    <span id="clock" class="clock">replay --:--:-- UTC</span>
+    <span id="paused-reason" class="chip paused" hidden></span>
+    <span class="spacer"></span>
+    <label class="seed" for="seed">Synthetic seed</label>
+    <input id="seed" class="seed-input" type="text" inputmode="numeric" maxlength="9" autocomplete="off"
+           autocapitalize="off" spellcheck="false" value="1" disabled>
+    <button id="open" type="button" disabled>Open synthetic market</button>
+    <button id="stop" type="button" class="stop" title="Stops the replay and any paper activity" disabled>STOP (paper)</button>
+    <button id="help-toggle" type="button" aria-expanded="false" aria-controls="help">Keys (?)</button>
+  </div>
+  <div class="status-line"><span id="conn" class="conn">starting</span><span id="note" class="note"></span></div>
+</header>
+<main class="main">
+  <section class="grid-panel" aria-label="One-click grid">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th class="name" scope="col">Runner</th>
+          <th class="back-head" scope="colgroup" colspan="3">Back: price / £</th>
+          <th class="lay-head" scope="colgroup" colspan="3">Lay: price / £</th>
+          <th class="ltp" scope="col">LTP</th>
+          <th class="tv" scope="col">Traded</th>
+        </tr>
+      </thead>
+      <tbody id="grid-body"></tbody>
+    </table>
+    <p class="label"><strong>Traded volume: PRO basis</strong> (divided by 2, betangel-research's basis for PRO historical data). Best three prices each side; sizes in whole pounds.</p>
+  </section>
+  <section class="ladder-panel" aria-label="Ladder">
+    <div id="ladder-runner" class="ladder-runner">No runner selected</div>
+    <div class="ladder-cols" aria-hidden="true"><span>Back £</span><span>Price</span><span>Lay £</span></div>
+    <canvas id="ladder" class="ladder" width="240" height="630" role="img" aria-label="Price ladder for the selected runner"></canvas>
+  </section>
+</main>
+<aside id="help" class="help" aria-label="Keys" hidden>
+  <h2>Keys</h2>
+  <ul id="help-list"></ul>
+</aside>
+</body>
+</html>

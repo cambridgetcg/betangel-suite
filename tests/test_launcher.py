@@ -13,7 +13,7 @@ import subprocess
 import types
 import unittest
 
-from betangel_suite import cli, guard, roots
+from betangel_suite import cli, guard, pin, roots
 from betangel_suite.errors import SuiteError
 from tests import ARM_ENGINE, PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_relayed, run_suite, tree_listing
 
@@ -120,10 +120,12 @@ class LauncherTests(unittest.TestCase):
         return result.returncode, result.stdout, result.stderr
 
     def test_unbuilt_commands_refuse_and_write_nothing(self):
+        # serve, open and stop are built (Phase 0b): they are never run here without arguments, because a bare
+        # serve would bind the configured port and a bare open would start an engine and call /usr/bin/open.
         home = make_home(self)
         before = tree_listing(home)
         for command in cli.COMMANDS:
-            if command in ("test", "vendor"):
+            if command in ("test", "vendor", "serve", "open", "stop"):
                 continue
             env = {"SSH_CONNECTION": SSH} if command == "ssh-session" else {}
             self.assertEqual(self.suite(home, command, **env), (2, "", "refused:not_implemented\n"), command)
@@ -137,12 +139,15 @@ class LauncherTests(unittest.TestCase):
 
     def test_ssh_checks_run_before_env_i(self):
         home = make_home(self)
+        # open runs below; with no deps clone in this HOME, any check that let it through would stop at
+        # deps_missing before the engine or /usr/bin/open.
+        self.assertFalse(os.path.lexists(pin.deps_dir(pin.load(), home)))
         self.assertEqual(self.suite(home, "ssh-session"), (2, "", "refused:ssh_session_outside_ssh\n"))
         self.assertEqual(self.suite(home, "ssh-session", SSH_CONNECTION=SSH, SSH_ORIGINAL_COMMAND="ls"),
                          (2, "", "refused:ssh_original_command\n"))
         for command in ("open", "serve"):
             self.assertEqual(self.suite(home, command, SSH_CONNECTION=SSH), (2, "", "refused:open_over_ssh\n"))
-            self.assertEqual(self.suite(home, command), (2, "", "refused:not_implemented\n"))
+            self.assertEqual(self.suite(home, command, "--no-such-option"), (2, "", "refused:bad_arguments\n"))
         self.assertEqual(self.suite(home, "selfcheck", "--print-url", SSH_CONNECTION=SSH),
                          (2, "", "refused:print_url_over_ssh\n"))
         self.assertEqual(self.suite(home, "selfcheck", "--print-url"), (2, "", "refused:not_implemented\n"))

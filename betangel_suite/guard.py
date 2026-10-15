@@ -16,7 +16,10 @@ What the hook refuses, in every mode and phase:
   I-2  changing BETANGEL_BETFAIR_FORBID_NETWORK (arm() refuses unless it is "1"), setting any other
        BETFAIR* or BETANGEL_BETFAIR_* variable (arm() refuses if one is set), or changing TMPDIR or
        SQLITE_TMPDIR (arm() refuses unless both name the same directory inside the write roots);
-  I-3  socket connect, sendto and sendmsg, and every name or address lookup;
+  I-3  socket connect, sendto and sendmsg, and every name or address lookup; the one exception is a connect
+       to an absolute Unix socket path in the run directory permitted before seal() with
+       permit_unix_connect (the control socket, which stop and open use to reach a running engine;
+       DESIGN.md 9.1). TCP connects and every other address stay refused;
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute
        Unix socket path in the run directory permitted the same way (a relative path is never permitted);
   I-5  ctypes.dlopen and SQLite extension loading always; os.system, os.exec*, os.spawn*, os.fork and
@@ -151,6 +154,7 @@ class _State:
         self.interpreters = frozenset(TEST_INTERPRETERS + (sys.executable,))
         self.ports = set()
         self.unix_paths = set()
+        self.unix_connects = set()
 
 
 # --- arming and phases ---------------------------------------------------------------------------
@@ -227,6 +231,20 @@ def permit_unix_socket(path):
                 or os.path.dirname(os.path.normpath(path)) != state.run_dir):
             raise SuiteError("bind_permit_invalid")
         state.unix_paths.add(os.path.normpath(path))
+
+
+def permit_unix_connect(path):
+    """Allow connecting to the Unix socket at path, which must lie directly in the run directory. Only before seal().
+
+    This is how stop and open reach a running engine's control socket (DESIGN.md 9.1); the engine itself never
+    asks for it. A relative path is never permitted, and nothing but socket.connect on an AF_UNIX socket uses it.
+    """
+    with _LOCK:
+        state = _require_unsealed()
+        if (not isinstance(path, str) or not os.path.isabs(path)
+                or os.path.dirname(os.path.normpath(path)) != state.run_dir):
+            raise SuiteError("connect_permit_invalid")
+        state.unix_connects.add(os.path.normpath(path))
 
 
 def _require_armed():
@@ -311,6 +329,8 @@ def _make_hook(state):
 def _check(state, event, args):
     code = _NETWORK.get(event)
     if code is not None:
+        if event == "socket.connect" and _unix_connect_ok(state, args[0], args[1]):
+            return
         raise GuardRefusal(code)
     if event == "socket.bind":
         _check_bind(state, args[0], args[1])
@@ -344,6 +364,13 @@ def _check_bind(state, sock, address):
             if os.path.normpath(os.fsdecode(address)) in state.unix_paths:
                 return
     raise GuardRefusal("bind_refused")
+
+
+def _unix_connect_ok(state, sock, address):
+    """True only for an AF_UNIX connect to a path permitted with permit_unix_connect."""
+    sockets = sys.modules.get("socket")     # loaded by whoever made the socket; never imported here
+    return (sockets is not None and getattr(sock, "family", None) == sockets.AF_UNIX
+            and isinstance(address, (str, bytes)) and os.path.normpath(os.fsdecode(address)) in state.unix_connects)
 
 
 def _check_spawn(state, event, args):

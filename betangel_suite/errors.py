@@ -37,6 +37,18 @@ CODES = frozenset({
     "dlopen_refused", "write_outside_roots", "state_root_not_agreed", "environment_change_refused",
     # commands
     "no_command", "unknown_command", "not_implemented", "bad_arguments", "state_root_changed",
+    # the synthetic engine, serve, open and stop (Phase 0b; DESIGN.md 6.8, 9.1)
+    "synthetic_only", "not_synthetic", "engine_running", "engine_failed", "port_in_use", "bind_failed",
+    "connect_permit_invalid", "control_path_too_long", "control_unavailable", "control_failed",
+    "control_bad_request", "control_peer_refused", "manifest_invalid",
+    # engine command results (DESIGN.md 9.1); the run marker's run_marker_present is listed below
+    "no_market", "not_watched", "end_of_market", "engine_stopping", "engine_busy",
+    # the local API (DESIGN.md 9.1-9.3): code-only HTTP error bodies
+    "bad_request", "bad_json", "bad_args", "bad_host", "bad_origin", "unsupported_media_type",
+    "body_too_large", "length_required", "unauthorized", "bad_code", "not_found", "method_not_allowed",
+    "rate_limited", "not_controller", "uri_too_long", "headers_too_large", "expectation_failed",
+    "http_version_not_supported", "unsupported_method", "internal_error", "too_many_connections",
+    "unknown_query",
     # the run marker (I-17)
     "run_marker_present", "run_marker_unreadable",
     # suite config

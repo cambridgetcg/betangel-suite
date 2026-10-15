@@ -119,9 +119,11 @@ reviewed PR changes them.
 - **C. Pin.** betangel-research `76f71dc94588a50f0df56dde2c3fabcf6e102f88`. The deps clone is at
   `~/.local/share/betangel-suite/deps/betangel-research-76f71dc94588/`, made by
   `tools/vendor_research.py` exactly as DESIGN.md 3.5 describes.
-- **D. Synthetic only.** No data-root reading, no paper trading, no HTTP server yet (Phase 0b),
-  and no release copies or `ssh-session` yet (Phase 0c). `cli.py` commands that are not built
-  yet refuse with code `not_implemented` and exit 2.
+- **D. Synthetic only.** Phase 0b built the loopback HTTP server and `serve`, `open` and `stop`;
+  the engine replays synthetic markets only and refuses every configured data root
+  (`synthetic_only`). No data-root reading, no paper trading, and no release copies or
+  `ssh-session` yet (Phase 0c). `cli.py` commands that are not built yet refuse with code
+  `not_implemented` and exit 2.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE`, proposed to Nuance (Q-N3).
   The config key `run_marker` accepts only that path, so no config edit can point the check at a
   file that never exists; a reviewed change moves it once Nuance answers. Every command except

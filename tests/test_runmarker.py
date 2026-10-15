@@ -8,7 +8,7 @@ import json
 import os
 import unittest
 
-from betangel_suite import config, runmarker
+from betangel_suite import config, pin, runmarker
 from betangel_suite.errors import SuiteError
 from tests import child_env, make_home, run_suite, tree_listing
 
@@ -92,6 +92,9 @@ class StartTimeTests(unittest.TestCase):
 
     def test_marker_refuses_engine_commands_before_any_write(self):
         home = make_home(self)
+        # open runs below; with no deps clone in this HOME, a marker check that let it through would stop
+        # at deps_missing before the engine or /usr/bin/open.
+        self.assertFalse(os.path.lexists(pin.deps_dir(pin.load(), home)))
         path = marker(home)
         os.makedirs(os.path.dirname(path))
         open(path, "w").close()
@@ -131,7 +134,7 @@ class StartTimeTests(unittest.TestCase):
         path = marker(home)
         os.makedirs(os.path.dirname(path))
         open(path, "w").close()
-        self.assertEqual(self.suite(home, "stop"), (2, "refused:not_implemented\n"))
+        self.assertEqual(self.suite(home, "stop"), (0, ""))          # no engine running: prints not_running
 
     def test_test_and_vendor_do_not_check_the_marker(self):
         home = make_home(self, deps=True)

@@ -167,8 +167,8 @@ class NoOffSwitchTests(unittest.TestCase):
     """I-2: no environment or config read can disable the guard, and the guard has no off function."""
 
     PUBLIC = {"GuardRefusal", "arm", "seal", "armed_mode", "is_sealed", "require_armed", "require_mode",
-              "permit_loopback_port", "permit_unix_socket", "engine_argv_ok", "vendor_argv_ok", "runner_argv_ok",
-              "runner_git_ok"}
+              "permit_loopback_port", "permit_unix_socket", "permit_unix_connect", "engine_argv_ok", "vendor_argv_ok",
+              "runner_argv_ok", "runner_git_ok"}
 
     def test_guard_public_callables_are_exactly_these(self):
         public = {name for name, value in vars(guard).items()
