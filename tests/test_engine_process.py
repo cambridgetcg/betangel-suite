@@ -14,7 +14,8 @@ import time
 import unittest
 
 from betangel_suite import pin, roots, runmarker
-from tests import child_env, run_suite, tree_listing
+from betangel_suite.api import control
+from tests import LAUNCHER, child_env, run_suite, tree_listing
 from tests import test_http_support as support
 
 # sealed_probe(): what a sealed engine must refuse (I-5), tried in the child itself. Only harmless spawns.
@@ -250,6 +251,40 @@ results["open"] = command(token, "open_market", {"seed": 2})[0]
         self.assertEqual((again.returncode, again.stdout, again.stderr), (0, "not_running\n", ""))
         self.assertEqual(serving.stdout(), "serving port=%d\n" % port)
         self.assertEqual(serving.stderr(), "")
+
+    def test_stop_during_startup_stops_the_engine(self):
+        # server.run holds engine.lock while it builds the engine, before it binds control.sock (Astra's review of
+        # #4). A stop in that window must not print not_running and let the engine start: it asks again until the
+        # socket answers, then waits for the lock to be free.
+        home = support.short_home(self)
+        gate = os.path.join(home, "gate")
+        child = support.run_child(self, home, """
+import time
+from betangel_suite.api import static
+real_load = static.load
+def load(path):                             # engine.lock is held here, and control.sock is not bound yet
+    sys.stdout.write("loading\\n")
+    sys.stdout.flush()
+    deadline = time.monotonic() + 20
+    while not os.path.lexists(%r) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return real_load(path)
+static.load = load
+def main():
+    return server.run(cfg, command="serve", port=0)
+""" % gate)
+        child.wait_line(r"loading\n")
+        self.assertTrue(control.engine_running(home))
+        self.assertFalse(os.path.lexists(support.control_path(home)))
+        stopping = support.Child(self, home, ["/bin/sh", LAUNCHER, "stop"], name="stop")
+        self.assertIsNone(stopping.wait_exit(2.0), stopping.stdout())       # still asking while the lock is held
+        open(gate, "w").close()
+        self.assertEqual(stopping.wait_exit(), 0, stopping.stderr())
+        self.assertEqual((stopping.stdout(), stopping.stderr()), ("stopped\n", ""))
+        self.assertEqual(child.wait_exit(), 0, child.stderr())
+        self.assertEqual(child.stderr(), "")
+        self.assertFalse(control.engine_running(home))
+        self.assertFalse(os.path.lexists(support.control_path(home)))
 
     def test_stop_is_prompt_with_an_idle_keep_alive_connection_open(self):
         home = support.short_home(self)

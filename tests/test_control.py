@@ -167,6 +167,41 @@ results["client_without_engine"] = control.request("stop")
         self.assertFalse(results["running_after"])
         self.assertIsNone(results["client_without_engine"])
 
+    def test_stop_asks_again_while_the_lock_is_held_and_nothing_answers(self):
+        # server.run takes engine.lock before it binds control.sock (Astra's review of #4): a stop in between must
+        # never print not_running while that engine goes on to start. It asks again until its deadline.
+        home = support.short_home(self)
+        results = checks(self, home, setup="", body=SERVER + """
+import io, time
+lock = control.acquire_lock()
+out = io.StringIO()
+attempt("held", lambda: control.stop_main(out=out, wait_s=0.5))
+results["held_out"] = out.getvalue()
+results["held_running"] = control.engine_running()
+def stopping(command):
+    calls.append(command)
+    os.close(lock)
+    return {"ok": True}
+late = []
+def bind_late():                            # the engine binds its socket 0.3 s after the stop started
+    time.sleep(0.3)
+    late.append(control.ControlServer(path, stopping))
+    late[0].start()
+thread = threading.Thread(target=bind_late)
+thread.start()
+out = io.StringIO()
+attempt("late", lambda: control.stop_main(out=out, wait_s=10))
+results["late_out"] = out.getvalue()
+thread.join()
+late[0].close()
+results["calls"] = calls
+results["running_after"] = control.engine_running()
+""")
+        self.assertEqual((results["held"], results["held_out"], results["held_running"]), ("control_failed", "", True))
+        self.assertEqual((results["late"], results["late_out"]), ("ok", "stopped\n"))
+        self.assertEqual(results["calls"], ["stop"])
+        self.assertFalse(results["running_after"])
+
     def test_peer_credentials_name_this_uid(self):
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         self.addCleanup(left.close)

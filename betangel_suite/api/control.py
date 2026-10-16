@@ -14,8 +14,9 @@ MAX_LINE bytes, and gets one line back:
 
 Only open and ssh-session ask for a code, and they hand it to /usr/bin/open or the viewer's terminal; this
 module never prints or logs one. The client side (request) connects through guard.permit_unix_connect,
-the only connect the guard allows. stop (stop_main) needs no engine: with none running it prints
-not_running. It never checks the run marker, because it only reduces activity (DESIGN.md 3.9 rule 6).
+the only connect the guard allows. stop (stop_main) needs no engine: with no engine holding engine.lock it
+prints not_running, and while one holds the lock without answering yet (it is still starting) it asks again
+until its deadline. It never checks the run marker, because it only reduces activity (DESIGN.md 3.9 rule 6).
 Standard library only.
 """
 
@@ -239,16 +240,24 @@ def request(command, home_dir=None, *, timeout=CONNECTION_TIMEOUT_S):
 def stop_main(home_dir=None, *, out=None, wait_s=STOP_WAIT_S):
     """bin/suite stop: ask a running engine to stop and wait until its lock is free. Prints one word."""
     out = sys.stdout if out is None else out
-    try:
-        reply = request("stop", home_dir)
-    except SuiteError as exc:
-        if exc.code not in ("control_failed", "control_unavailable"):
-            raise
-        reply = {"ok": False}           # the engine may close before its reply: the lock below decides
-    if reply is None:
-        out.write("not_running\n")
-        return 0
     deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            reply = request("stop", home_dir)
+        except SuiteError as exc:
+            if exc.code not in ("control_failed", "control_unavailable"):
+                raise
+            reply = {"ok": False}       # the engine may close before its reply: the lock below decides
+        if reply is not None:
+            break
+        if not engine_running(home_dir):
+            out.write("not_running\n")
+            return 0
+        # engine.lock is held but nothing answers on control.sock: server.run binds it only after building the
+        # engine (or has just removed it while stopping), so ask again until the deadline
+        if time.monotonic() > deadline:
+            raise SuiteError("control_failed")
+        time.sleep(0.05)
     while engine_running(home_dir):
         if time.monotonic() > deadline:
             raise SuiteError("control_failed")
