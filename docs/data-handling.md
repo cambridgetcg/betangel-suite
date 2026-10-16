@@ -52,8 +52,10 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   and records, private-key and PEM headers, bearer tokens, secret-looking values, provider tokens
   and bootstrap-code URLs. It prints a rule code, a redacted path and a line number, never the
   matched text. When the file may hold data, the whole path is withheld and an entry number
-  identifies it; only a suffix on the scanner's fixed list (its own file-type suffixes and common
-  code and text ones) is still shown. `--list-rules` lists the codes.
+  identifies it. Its suffix is still shown only when it is exactly one of a short list of
+  file-type abbreviations that are not English words (`.py`, `.md`, `.csv`, `.bz2` and the like:
+  `SHOWN_SUFFIXES` in the scanner); any other suffix may be a word of the name and is dropped.
+  `--list-rules` lists the codes.
 - **`tools/pre-commit`** runs the scanner on the staged tree and blocks the commit. Install it
   with `ln -s ../../tools/pre-commit .git/hooks/pre-commit`; never bypass it.
 - **The engine** maps upstream exceptions to closed error codes at the `rx.py` boundary and
