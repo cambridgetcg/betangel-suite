@@ -253,9 +253,11 @@ def arm(mode):
 
 
 def seal():
-    """End the startup phase: from now on no subprocess and no new bind or connect permit (engine, vendor).
+    """End the startup phase (engine, vendor, release, uisnap; the test runner never seals).
 
-    Permits given before seal() stay in force. The test runner never seals.
+    From now on no new bind, connect or uisnap-binary permit is accepted, and no subprocess starts except, in
+    uisnap mode, the binary registered with permit_uisnap_binary before seal(), still unchanged. Permits given
+    before seal() stay in force: an attached ssh-session keeps connecting to the control socket with its own.
     """
     with _LOCK:
         _require_armed().sealed = True

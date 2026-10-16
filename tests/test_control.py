@@ -4,8 +4,10 @@ run/control.sock is an absolute path in the 0700 run directory, mode 0600, serve
 (LOCAL_PEERCRED, which getpeereid is built on), with the closed command set attach, new_code, pause, stop,
 and (Phase 0c) the ssh-session viewer's attach_viewer (with the port it expects), viewer_code, viewer_heartbeat and
 viewer_away, each with its exact extra keys.
-Its clients (open, stop) are engine-mode processes, whose guard refuses every connect except to a Unix
-socket path in the run directory permitted before seal(). Each check runs in a fresh engine-mode child
+Its clients, stop and the takeovers by open and ssh-session, are engine-mode processes, whose guard refuses
+every connect except to a Unix socket path in the run directory permitted before seal() (I-3). A permit
+outlives seal(): an attached ssh-session seals after its takeover and keeps connecting (viewer_code,
+viewer_heartbeat, viewer_away) with the permit it got before. Each check runs in a fresh engine-mode child
 under a temporary HOME short enough for sockaddr_un.
 """
 
