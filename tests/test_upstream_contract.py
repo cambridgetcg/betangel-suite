@@ -11,7 +11,9 @@ calls get their signatures and the result shapes the suite reads. Everything is 
 suite code reaches it; this file never imports betangel_research.
 
 CoverageTests fails when suite code uses an rx.<module>.<name> that CONTRACT_NAMES does not list, so each new
-upstream name brings its contract with it. The later-phase names of DESIGN.md 4.5 are added as code uses them.
+upstream name brings its contract with it. It reads only that spelling; the I-10 rule (tests/test_ast_boundary.py)
+refuses every other, such as `from .rx import ticks` or `t = rx.ticks`. The later-phase names of DESIGN.md 4.5 are
+added as code uses them.
 """
 
 import ast
