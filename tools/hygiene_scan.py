@@ -131,7 +131,8 @@ RULES = {
     "market_id": "Betfair market-id shape (1.1 or 1.2 then 8-9 digits); reserved 1.999 never matches",
     "event_id": "8-digit event or selection id shape outside the reserved 9xxxxxxx namespace",
     "member_path": "historical-data member path with a non-reserved event id",
-    "runner_table": "three or more rows of a capitalised name (after up to two number cells) and price columns",
+    "runner_table": "three or more rows of a capitalised name (after up to two number cells) and price columns, "
+                    "in any table rendering (|, box drawing, HTML cells, LaTeX &)",
     "runner_record": "runner-name field holding a non-synthetic name",
     "stream_record": "exchange-stream runner change (ladder, traded or ltp values) with a non-reserved runner id",
     "data_path_text": "text naming a member or archive path under betangel-data",
@@ -289,10 +290,19 @@ _PRICE = re.compile(r"(?<![0-9.])([0-9]{1,3}\.[0-9]{1,2})(?![0-9.])")
 # Up to two leading cells before the name: a saddle-cloth or row number ("1", "12a", "(3)") followed by a
 # cell separator, a list marker ("1." or "1)") or spaces.
 _LEAD_CELL = r"[\"']?(?:[0-9]{1,3}[A-Za-z]?|\([0-9]{1,2}\))[\"']?(?:\s*[|,;\t]\s*|[.)]\s+|\s+)"
+# Names may hold Latin letters with accents (Latin-1 and Latin Extended-A and B), as runner names do.
+_LATIN = [chr(code) for code in range(0xC0, 0x250)]
+_UPPER = "A-Z" + "".join(c for c in _LATIN if c.isupper())
+_LETTER = "A-Za-z" + "".join(c for c in _LATIN if c.isalpha())
 _ROW = re.compile(
     r"^[\s|>*#(\[{-]*(?:" + _LEAD_CELL + r"){0,2}[\"']?"
-    r"(?P<name>[A-Z][A-Za-z'.-]{1,30}(?: [A-Z(][A-Za-z'.()-]{0,30}){0,4})"
+    r"(?P<name>[%s][%s'.-]{1,30}(?: [%s(][%s'.()-]{0,30}){0,4})" % (_UPPER, _LETTER, _UPPER, _LETTER) +
     r"[\"']?\s*(?:[|,;\t]|:\s|\s{2,}|\s-\s)(?P<rest>.*)$")
+# Other table renderings, turned into "|" cells before a row is matched (round-4 review): box drawing (SQLite's
+# .mode box, DuckDB), a fullwidth bar, LaTeX's &, and HTML cell tags (any other tag is dropped).
+_CELL_BORDERS = str.maketrans(dict.fromkeys("\u2502\u2503\u2551\u2506\u250a\uff5c&", "|"))
+_HTML_CELL = re.compile(r"</?t[dhr]\b[^<>]{0,200}>", re.I)
+_HTML_TAG = re.compile(r"<[^<>]{0,200}>")
 _PRICE_TOKEN = re.compile(r"[0-9]{1,4}(?:\.[0-9]{1,6})?")
 # Exchange-stream runner changes: price/size or traded ladders, or ltp/tv values, next to a runner id that
 # is outside the reserved 9xxxxxxx selection namespace.
@@ -390,14 +400,19 @@ def _table_row_name(line: str):
     """Return the runner-like name if the line looks like a name-and-prices row.
 
     Only the first MAX_TABLE_LINE characters after the indent are matched, so a long row (many
-    price columns, or padding) still counts, and the match stays bounded.
+    price columns, or padding) still counts, and the match stays bounded. Box-drawing bars, a
+    fullwidth bar, LaTeX's & and HTML cell tags count as "|". A name in capitals only counts when
+    the row holds nothing else but prices (no other word).
     """
-    m = _ROW.match(line.lstrip()[:MAX_TABLE_LINE])
+    if "<" in line:
+        line = _HTML_TAG.sub("", _HTML_CELL.sub("|", line))
+    m = _ROW.match(line.translate(_CELL_BORDERS).lstrip()[:MAX_TABLE_LINE])
     if not m:
         return None
     name = m.group("name")
-    if name.startswith("Synthetic") or not any(c.islower() for c in name):
+    if name.casefold().startswith("synthetic"):
         return None
+    capitals = not any(c.islower() for c in name)
     prices = words = 0
     for token in _ROW_SPLIT.split(m.group("rest")):
         token = token.strip("£$%x")
@@ -407,7 +422,7 @@ def _table_row_name(line: str):
             prices += 1
         elif any(c.isalpha() for c in token):
             words += 1
-    return name if prices >= 2 and words <= 1 else None
+    return name if prices >= 2 and words <= (0 if capitals else 1) else None
 
 
 def _without_format_chars(line: str) -> str:

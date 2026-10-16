@@ -645,6 +645,42 @@ class LineShapeTests(_RepoCase):
         rows = [row.replace(n, n[:2] + mark + n[2:]) for row, n, mark in zip(self.ROWS, RUNNER_NAMES, marks)]
         self.plant("docs/t.md", "\n".join(rows) + "\n", *RUNNER_NAMES, code="runner_table")
 
+    def test_table_renderings_accents_and_capitals(self):
+        # Round-4 review: SQLite's .mode box and DuckDB (box-drawing bars), HTML cells, LaTeX's &, a fullwidth bar,
+        # accented names and names in capitals were all missed. Each shape holds the same three invented rows.
+        rows = [(n, f"{3 + i}.4", f"{3 + i}.45") for i, n in enumerate(RUNNER_NAMES)]
+        light, heavy, double, full = "\u2502", "\u2503", "\u2551", "\uff5c"
+        accented = ["\u00c9" + RUNNER_NAMES[0][1:], RUNNER_NAMES[1].replace("o", "\u00f3", 1),
+                    RUNNER_NAMES[2].replace("e", "\u00e9", 1)]
+        shapes = {
+            "box": ("".join(f"{light} {n:<20}{light} {a:<6}{light} {b:<6}{light}\n" for n, a, b in rows), RUNNER_NAMES),
+            "duckdb": ("".join(f"{light} {n:<20}{light} {a:>8} {light} {b:>8} {light}\n" for n, a, b in rows),
+                       RUNNER_NAMES),
+            "heavy and double bars": ("".join(f"{heavy} {n} {double} {a} {double} {b} {heavy}\n" for n, a, b in rows),
+                                      RUNNER_NAMES),
+            "html": ("<table>\n" + "".join(f"<tr><td>{n}</td><td>{a}</td><td>{b}</td></tr>\n" for n, a, b in rows)
+                     + "</table>\n", RUNNER_NAMES),
+            "html with attributes and markup": ("".join(f'<tr class="r"><TD align="left"><b>{n}</b></TD><td>{a}</td>'
+                                                        f"<td>{b}</td></tr>\n" for n, a, b in rows), RUNNER_NAMES),
+            "latex": ("".join(f"{n} & {a} & {b} \\\\\n" for n, a, b in rows), RUNNER_NAMES),
+            "fullwidth bar": ("".join(f"{full}{n}{full}{a}{full}{b}{full}\n" for n, a, b in rows), RUNNER_NAMES),
+            "accented": ("".join(f"| {n} | {a} | {b} |\n" for n, (_, a, b) in zip(accented, rows)), accented),
+            "capitals": ("".join(f"| {n.upper()} | {a} | {b} |\n" for n, a, b in rows),
+                         [n.upper() for n in RUNNER_NAMES]),
+        }
+        for name, (text, names) in shapes.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.plant("docs/t.md", text, *names, code="runner_table")
+
+    def test_capitals_with_another_word_are_not_a_runner_table(self):
+        # A name in capitals counts only when its row holds prices and nothing else: a heading or code with a word
+        # beside its numbers is not a runner row.
+        rows = "".join(f"| {n.upper()} | fast | {3 + i}.4 | {3 + i}.45 |\n" for i, n in enumerate(RUNNER_NAMES))
+        self.write("docs/t.md", rows)
+        self.add("docs/t.md")
+        self.assert_clean()
+
     def test_format_character_inside_a_market_id(self):
         hidden = MARKET_2015[:5] + "​" + MARKET_2015[5:]
         self.plant("pkg/u.py", f"m = '{hidden}'\n", MARKET_2015, hidden, code="market_id")
