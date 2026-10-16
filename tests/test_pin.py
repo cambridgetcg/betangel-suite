@@ -24,6 +24,21 @@ def outcome(case, home, code):
     return result.stdout.strip()
 
 
+def firmlink_spelling(directory):
+    """The same directory through the Data volume's own path (/Users and /private are firmlinks to it)."""
+    alias = "/System/Volumes/Data" + os.path.realpath(directory)
+    assert os.path.samefile(alias, directory), alias
+    return alias
+
+
+def volfs_spelling(directory):
+    """The same directory as /.vol/<st_dev>/<st_ino>."""
+    info = os.stat(directory)
+    alias = "/.vol/%d/%d" % (info.st_dev, info.st_ino)
+    assert os.path.samefile(alias, directory), alias
+    return alias
+
+
 TRY_RX = """
 from betangel_suite.errors import SuiteError
 try:
@@ -170,28 +185,34 @@ class ActivationTests(unittest.TestCase):
         self.assertEqual(outcome(self, home, code).splitlines(), ["imported", "upstream_loaded", "True", "True"])
 
     def test_research_clone_on_sys_path_is_refused(self):
-        # The lab's APFS volume folds case and U+017F (long s), so the last two entries name the clone too.
+        # The lab's APFS volume folds case and U+017F (long s), so BetAngel-Research and betangel-reſearch
+        # name the clone too; so do the firmlink and /.vol spellings, which realpath leaves as they are.
         home = make_home(self, deps=True)
         research = roots.research_clone(home)
-        os.makedirs(os.path.join(research, "sub"))
-        os.symlink(os.path.join(research, "sub"), os.path.join(home, "alias"))
-        for entry in (research, os.path.join(research, "sub"), os.path.join(home, "alias"),
-                      os.path.join(home, "BetAngel-Research"), os.path.join(home, "betangel-reſearch", "sub")):
-            code = ARM_ENGINE + "sys.path.append(%r)\n" % entry + TRY_RX
-            self.assertEqual(outcome(self, home, code).splitlines(),
-                             ["research_clone_on_path", "upstream_absent"], entry)
+        sub = os.path.join(research, "sub")
+        os.makedirs(sub)
+        os.symlink(sub, os.path.join(home, "alias"))
+        for entry in (research, sub, os.path.join(home, "alias"),
+                      os.path.join(home, "BetAngel-Research"), os.path.join(home, "betangel-reſearch", "sub"),
+                      firmlink_spelling(research), firmlink_spelling(sub), volfs_spelling(sub)):
+            with self.subTest(entry=entry):
+                code = ARM_ENGINE + "sys.path.append(%r)\n" % entry + TRY_RX
+                self.assertEqual(outcome(self, home, code).splitlines(), ["research_clone_on_path", "upstream_absent"])
 
     def test_deps_reached_through_a_link_into_the_research_clone_is_refused(self):
         # The deps directory itself is real, but an ancestor links into the deploy clone (I-13): refused
-        # before its files are read or it is appended.
-        home = make_home(self, deps=True)
-        research = roots.research_clone(home)
-        os.makedirs(research)
-        moved = os.path.join(research, "vendor")
-        os.rename(roots.deps_root(home), moved)
-        os.symlink(moved, roots.deps_root(home))
-        self.assertEqual(outcome(self, home, ARM_ENGINE + TRY_RX).splitlines(),
-                         ["research_clone_on_path", "upstream_absent"])
+        # before its files are read or it is appended, however the link spells its target. (A link to a
+        # /.vol/<dev>/<ino> path does not resolve: the kernel reads that spelling only at the start of a path.)
+        for spell in (lambda path: path, firmlink_spelling):
+            home = make_home(self, deps=True)
+            research = roots.research_clone(home)
+            os.makedirs(research)
+            moved = os.path.join(research, "vendor")
+            os.rename(roots.deps_root(home), moved)
+            os.symlink(spell(moved), roots.deps_root(home))
+            with self.subTest(target=os.readlink(roots.deps_root(home))):
+                self.assertEqual(outcome(self, home, ARM_ENGINE + TRY_RX).splitlines(),
+                                 ["research_clone_on_path", "upstream_absent"])
 
     def test_upstream_imported_before_activation_is_refused(self):
         home = make_home(self, deps=True)
