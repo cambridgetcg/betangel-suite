@@ -71,22 +71,55 @@ def parse_test_args(args, version):
 
 def _test(args):
     import unittest
+    from . import config, runmarker
     verbosity, pattern = parse_test_args(args, sys.version_info)
     from . import rx    # noqa: F401  (verifies the pin and imports upstream under the armed guard)
+    marker = runmarker.marker_path(config.load())
     before = state_listing()
     started = time.monotonic()
     loader = unittest.TestLoader()
     if pattern is not None:
         loader.testNamePatterns = ["*" + pattern + "*"]
     tests = loader.discover(start_dir=os.path.join(REPO_ROOT, "tests"), top_level_dir=REPO_ROOT)
-    result = unittest.TextTestRunner(verbosity=verbosity).run(tests)
+    resultclass = marker_stop_result(unittest.TextTestResult, marker)
+    result = unittest.TextTestRunner(verbosity=verbosity, resultclass=resultclass).run(tests)
     sys.stderr.write("runtime_s=%.1f python=%d.%d\n" % (time.monotonic() - started, *sys.version_info[:2]))
     if state_listing() != before:
         # Tests write only under TMPDIR: anything new elsewhere in the real state root (the install salt,
         # say) means a test escaped its temporary HOME.
         sys.stderr.write("refused:state_root_changed\n")
         return 1
+    if result.run_marker is not None:
+        sys.stderr.write("refused:run_marker_%s\n" % result.run_marker)
+        return 2
     return 0 if result.wasSuccessful() else 1
+
+
+def marker_stop_result(base, path):
+    """A unittest result class (a subclass of base) that ends the run before its next test once the run marker at
+    path is present or cannot be checked (Nuance's PR #4 review, item 14; DESIGN.md 6.8).
+
+    bin/_launch.py checks the marker once, before the run. This checks it again after every test, so a run that
+    Nuance announces while the tests run starts no further test. A test that is running when the marker appears
+    still runs to its end, with anything it started. run_marker says why the run stopped (None: it did not), and a
+    stopped run is never successful, even when every test it ran passed.
+    """
+    from . import runmarker
+
+    class MarkerStopResult(base):
+        run_marker = None
+
+        def stopTest(self, test):
+            super().stopTest(test)
+            if self.run_marker is None:
+                self.run_marker = runmarker.state(path)
+                if self.run_marker is not None:
+                    self.stop()
+
+        def wasSuccessful(self):
+            return self.run_marker is None and super().wasSuccessful()
+
+    return MarkerStopResult
 
 
 def state_listing(home_dir=None):

@@ -57,9 +57,10 @@ context. It is never Yu's instruction, consent or acceptance.
 - No network. Tests that probe the network use TEST-NET-1 (`192.0.2.1`) or the `.invalid` TLD.
 - Ask Yu first for anything that needs the admin password, installs system software or changes
   security settings. Never ask Yu to paste a secret.
-- Keep load modest on the shared 8 GB M1: tests run under `nice -n 10`, and no test tier runs
-  during an announced Nuance run. `bin/suite test` refuses while the run marker exists
-  (adaptation E).
+- Keep load modest on the shared 8 GB M1: tests run under `nice -n 10`, and no test tier starts
+  during an announced Nuance run. `bin/suite test` refuses while the run marker exists, and a run
+  already going stops before its next test once the marker appears; the test then running
+  finishes first (adaptation E).
 
 ## Review routing and merging (DESIGN.md 3.9; Yu's ruling on Q-Y8; Nuance's answer to Q-N12)
 
@@ -157,6 +158,11 @@ reviewed PR changes them.
   - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
     be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
     exists too; stop stays exempt".
+  - A test run checks the marker again after every test, and stops before the next one if the
+    marker is present or cannot be checked (`refused:run_marker_present` or `_unreadable`, exit
+    2). The test then running is not stopped: it finishes first. Nuance's PR #4 review, item 14,
+    also asks for a check "before each engine launch". Tests on this branch start no engine; that
+    check is owed with `engine.py` on phase0/http.
   - `stop` is exempt because it only reduces activity (DESIGN.md 3.9 rule 6).
   - `vendor` refuses too. Nuance, in her PR #1 review: "test and vendor refuse under the marker;
     stop stays exempt". It was first exempt by lab-Claude's own choice, on a reason that left out

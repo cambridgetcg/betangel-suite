@@ -2,16 +2,21 @@
 
 A present marker, an unreadable marker or an unreadable marker directory refuses every command except
 stop, before anything is created. That includes test, on 3.13 and on the 3.11 floor, and vendor (Nuance's
-answers to Q-N14). All markers live under a temporary HOME.
+answers to Q-N14). A test run that is already going stops before its next test once the marker appears
+(Nuance's PR #4 review, item 14). All markers live under a temporary HOME.
 """
 
+import io
 import json
 import os
+import time
 import unittest
 
-from betangel_suite import config, runmarker
+from betangel_suite import cli, config, roots, runmarker
 from betangel_suite.errors import SuiteError
-from tests import child_env, make_home, run_suite, tree_listing
+from tests import child_env, make_home, run_suite, start_suite, tree_listing
+
+PROBE_SENTINEL = "mid-run-marker-probe"     # made only in a temporary HOME, by MidRunTests
 
 
 def marker(home):
@@ -182,6 +187,96 @@ class StartTimeTests(unittest.TestCase):
         self.assertEqual(self.suite(home, "vendor"), (2, "refused:run_marker_unreadable\n"))
         os.chmod(os.path.dirname(path), 0o700)
         self.assertEqual(self.suite(home, "vendor"), (2, "refused:bad_arguments\n"))   # no marker: it starts
+
+
+
+class RunnerStopTests(unittest.TestCase):
+    """cli.marker_stop_result on its own: after each test it checks a marker under a temporary HOME."""
+
+    def run_steps(self, step):
+        """Run two tests; the first calls step(marker path). Returns (tests that ran, result)."""
+        home = make_home(self)
+        path = marker(home)
+        os.makedirs(os.path.dirname(path))
+        ran = []
+
+        class Steps(unittest.TestCase):
+            def test_1(inner):
+                ran.append(1)
+                step(path)
+
+            def test_2(inner):
+                ran.append(2)
+
+        runner = unittest.TextTestRunner(stream=io.StringIO(),
+                                         resultclass=cli.marker_stop_result(unittest.TextTestResult, path))
+        return ran, runner.run(unittest.defaultTestLoader.loadTestsFromTestCase(Steps))
+
+    def test_no_marker_lets_every_test_run(self):
+        ran, result = self.run_steps(lambda path: None)
+        self.assertEqual((ran, result.run_marker, result.wasSuccessful()), ([1, 2], None, True))
+
+    def test_a_marker_that_appears_stops_the_run_before_the_next_test(self):
+        ran, result = self.run_steps(lambda path: open(path, "w").close())
+        self.assertEqual((ran, result.testsRun, result.run_marker), ([1], 1, runmarker.PRESENT))
+        self.assertFalse(result.wasSuccessful())
+
+    def test_a_marker_directory_that_becomes_unreadable_stops_the_run_too(self):
+        def lock(path):
+            os.chmod(os.path.dirname(path), 0)
+            self.addCleanup(os.chmod, os.path.dirname(path), 0o700)
+        ran, result = self.run_steps(lock)
+        self.assertEqual((ran, result.run_marker), ([1], runmarker.UNREADABLE))
+        self.assertFalse(result.wasSuccessful())
+
+
+class MidRunProbe(unittest.TestCase):
+    """Two steps for MidRunTests's nested `bin/suite test -k mid_run_probe`. They act only under a HOME that
+    holds PROBE_SENTINEL, which only MidRunTests makes, in a temporary HOME; anywhere else they pass at once."""
+
+    def probing(self):
+        return os.path.exists(os.path.join(os.environ["HOME"], PROBE_SENTINEL))
+
+    def test_mid_run_probe_1_waits_for_the_marker(self):
+        if self.probing():
+            open(os.path.join(os.environ["TMPDIR"], "probe-1-started"), "w").close()
+            deadline = time.monotonic() + 60
+            while not runmarker.active(marker(os.environ["HOME"])) and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+    def test_mid_run_probe_2_must_not_start(self):
+        if self.probing():
+            open(os.path.join(os.environ["TMPDIR"], "probe-2-started"), "w").close()
+
+
+class MidRunTests(unittest.TestCase):
+
+    def test_a_marker_that_appears_mid_run_stops_bin_suite_test_before_its_next_test(self):
+        # Nuance's PR #4 review, item 14. The launcher checks the marker once, before the run; the runner checks it
+        # again after every test. The nested run's first probe waits until the marker exists, so the marker appears
+        # while that test runs. The second probe must then never start, and the run is refused.
+        home = make_home(self, deps=True)
+        open(os.path.join(home, PROBE_SENTINEL), "w").close()
+        path = marker(home)
+        os.makedirs(os.path.dirname(path))
+        tmp = roots.tmp_dir("test", home)
+        child = start_suite(["test", "-k", "mid_run_probe"], home)
+        try:
+            deadline = time.monotonic() + 60
+            while (not os.path.exists(os.path.join(tmp, "probe-1-started")) and child.poll() is None
+                   and time.monotonic() < deadline):
+                time.sleep(0.05)
+            open(path, "w").close()
+            _out, err = child.communicate(timeout=120)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate()
+        self.assertEqual(child.returncode, 2, err[-2000:])
+        self.assertIn("\nRan 1 test in ", err)
+        self.assertTrue(err.endswith("\nrefused:run_marker_present\n"), err[-2000:])
+        self.assertTrue(os.path.exists(os.path.join(tmp, "probe-1-started")))
+        self.assertFalse(os.path.exists(os.path.join(tmp, "probe-2-started")))
 
 
 if __name__ == "__main__":
