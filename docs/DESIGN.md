@@ -310,7 +310,8 @@ The pin is a **read-only, network-free local clone**:
    - the upstream offline suite at the new commit, from the deps clone: `PATH=/opt/homebrew/bin:$PATH BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 python3.13 -B -m unittest discover -s tests`, never during an announced Nuance run;
    - the suite's own tests.
    
-   Nuance reviews every bump that changes an allowlisted file.
+   Nuance reviews every bump that changes an allowlisted file. "Allowlisted file" means every `PINNED_FILES` entry, the month-roles JSON included (Nuance, Q-N2).
+6. **The pin stays at 76f71dc (Nuance, Q-N2).** Nuance found that up to 041461a only the P0 JSON changed, that its population is equal, and that no suite code reads it. A bump is made only when a closure module the suite needs, or the month roles, change.
 
 ### 3.6 Launcher and Python version policy
 
@@ -461,6 +462,15 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 
 The closure loads no gateway, cli, auth, credentials, transport, api, esa, recorder, killswitch, arming, presence, reconcile, **risk** or **capability**. tests/test_betfair_boundaries.py:22 marks the last two `INTERNAL_ONLY`.
 
+**Nuance accepted this closure (Q-N1, PR #4 review, 2026-10-16):** "Exactly 25 modules load, with no gateway, auth, credentials, transport, risk or capability module and no network module."
+
+**Owed before Phase 1b (Nuance, Q-N1).** `rx.py` gains wrappers, so that:
+- `StatePaths` is built only with explicit roots;
+- `OrderJournal` is built only with `mode="paper"` and an explicit clock;
+- `validate_place` always runs with `mode="paper"`.
+
+`SystemClock` is no longer on the allowlist (Nuance, Q-N1): no suite code uses it, and the journal always gets the suite's `SimClock`.
+
 The **upstream closure** loads no `socket`, `ssl`, `http` or `urllib`. The suite's own server does load `socket` and `http`, which is why the audit hook polices them (section 10). `subprocess` is loaded through `receipts` and `paths`, which is why the hook polices it too.
 
 | Module | Interface (as used; signatures exact) | Citation | Suite use |
@@ -478,7 +488,7 @@ The **upstream closure** loads no `socket`, `ssl`, `http` or `urllib`. The suite
 | pnl, evaluation | `order_pnl_pence(side, avg_price_h, size_settled_p, runner_result)`; `market_realized(orders, runner_results, *, commission_rate)`; `EXCLUDING_RESULTS`; `evaluation.settled_market_costs` | pnl.py:24, :38 (Rule-4 exclusion :53-54, dead heat :55-56, commission rounding :79-82), :15; evaluation.py:136 | What-If, settlement at 2%, the official exclusion, and the indicative Rule-4 figure (section 7.9). |
 | config | `DEFAULTS`; `validate_config(config, *, paths)` | config.py:27-72 (orders :56, caps :58-62, rules :63, paper :65-66), :254 | The paper config and cap profiles, validated by the repo's own validator (section 3.8). |
 | paths | `FORBID_NETWORK_ENV`; `network_forbidden()`; `overrides_allowed()`; `StatePaths(home=..., root_override=...)` | paths.py:22, :29, :36, :58-72 | Startup refusal without FORBID_NETWORK; the validation-only override. `.paper.lock` (:82) is never taken. |
-| receipts | `utc_from_ns(ns)` (int only); `parse_utc_ns(text)`; the `SystemClock` protocol; `canonical_sha256`; `file_sha256`; `atomic_write_json`; `append_jsonl`; `strict_json_loads` | receipts.py:29-34, :52, :78, :104, :113, :180, :208, :247 | The sim clock on the pt axis (always `ms * 1_000_000`, never a float), session hashes, atomic 0600 writes, and strict request bodies (duplicate keys and NaN refused). |
+| receipts | `utc_from_ns(ns)` (int only); `parse_utc_ns(text)`; `canonical_sha256`; `file_sha256`; `atomic_write_json`; `append_jsonl`; `strict_json_loads` | receipts.py:29-34, :52, :104, :113, :180, :208, :247 | The sim clock on the pt axis (always `ms * 1_000_000`, never a float), session hashes, atomic 0600 writes, and strict request bodies (duplicate keys and NaN refused). |
 | secret | `register(value)`; `assert_clean`; `refuse_forbidden` (called by the writers above) | secret.py:20-25, :114-133 | The session token and bootstrap codes are registered, so a journal or receipt write that contains one is refused (journal.py:296; receipts.py:185, :214). |
 | backtest.archive | `CHUNK_BYTES`; `LIMIT_CEILINGS`, `Limits.stricter(**changes)`, `DEFAULT_LIMITS`; `market_month`; `month_gate(month)`; `parse_member_path(name)`; `check_data_root(path)`; `HashingReader`; `safe_path`; `safe_target(root, sha, member_path)` | archive.py:95, :110-132, :168, :179, :200, :209, :245, :273, :383, :643, :662 | Read-only, symlink-safe, bounded, month-gated member loads. The suite uses stricter limits: DEFAULT allows 8 GiB decompressed per member (archive.py:120). `market_month` can return `None` (archive.py:200-206), and `month_gate(None)` raises `TypeError` (archive.py:211), so the suite refuses `None` first. |
 | backtest.market_index | `HEAD_FILE`, `MARKETS_FILE`; `loads_strict(data)`; `market_sort_key(id)`; `load_manifest(root, sha)`; `archive_shas(root)`; head `files[]` entries with `status` and `complete_before_pt` | market_index.py:142-143, :215, :220, :225, :927, :720-724 (refused), :740-741 (indexed or unreadable) | Catalogue build and the strict line parse. Readability comes from the head's `files[]`, never from `evaluator_only_outcome`. |
@@ -492,8 +502,9 @@ The **upstream closure** loads no `socket`, `ssl`, `http` or `urllib`. The suite
 | `paper.run_paper_replay(recording_paths, orders_path, params, out_dir, *, repo_root, snapshot_reader=None, key_type=None)`; `ORDER_FILE_KEYS` | paper.py:956, :61 | The parity oracle, on **small synthetic fixtures only** (capped at about 2,000 messages and 6 runners). It holds every snapshot in a list (paper.py:991-996); *measured (synthetic)* at about 1.98 GB RSS and 141 s for one 60k-message market. It is never run on real data. `repo_root` is always a temp `git clone --local` of the deps clone, never `~/betangel-research`, because `receipts.git_state` runs `git status --porcelain` there, which can rewrite `.git/index` (receipts.py:132-145; paper.py:956-957, :1053). A test asserts this. |
 | `book.snapshots_from_recording(path, *, key_type)` | book.py:526-582 | The oracle for the yield tracker (section 6.2), including 503 windows. |
 | `market_index._messages(stream, limits)` (private) | market_index.py:268-297 | Reader parity: one test imports it, so drift is caught on pin bumps. |
-| `risk.worst_case_market_loss(orders, outcome_ids, *, hedge_credit=False)`; `risk.exposure_by_market`; `STATUS_EXPOSURE_BASIS` | risk.py:136, :167, :52 | The oracle for the suite's own exposure code, on both bases. Note the default is `hedge_credit=False`. The engine never imports risk (INTERNAL_ONLY, tests/test_betfair_boundaries.py:22). Whether even test-only use is acceptable is a question for Nuance. |
 | `archive.ingest_archive(tar_path, data_root)`; `market_index.index_archive(root, sha)` | archive.py:765; market_index.py:870 | End-to-end data tests: a synthetic TAR is ingested and indexed into a temp root. Engine code never calls them (AST test). |
+
+**No `risk` oracle (Nuance, Q-N1).** `risk` is not a test oracle. It is not pinned: Nuance found that a tampered copy of `risk.py` passed `pin.verify`. The suite's exposure code is checked instead against an independent exposure oracle written in the tests, as upstream's own tests do (tests/test_betfair_support_orders.py:724-760). The engine never imports risk (INTERNAL_ONLY, tests/test_betfair_boundaries.py:22).
 
 ### 4.3 Later phases (Air, Nuance-owned), never imported on the lab
 
@@ -541,7 +552,7 @@ The suite mirrors, and does not import, the following:
 | `MarketBookCache` being deep-copyable, for checkpoints | — |
 | The `PaperExchange` state format | paper.py:58, :194-230 |
 
-`tests/test_upstream_contract.py` fails loudly on a pin bump if any of these drift:
+**The contract test.** Nuance agreed it, narrowed (Q-N1, PR #4 review): it does not exist yet, and Nuance found that seven injected breaks passed all tests. `tests/test_upstream_contract.py` lands on phase0/http. Every pin bump is gated on it, and it covers Phase 0's names first (`replay_market_time`, `parse_utc_ns`, `ticks.*`). In full, it fails loudly on a pin bump if any of these drift:
 
 - `PARAM_KEYS`, `ORDER_FILE_KEYS`, `STATE_KEYS` (paper.py:58-61);
 - `INTENT_PAYLOAD_KEYS` and `INTENT_SOURCES` (journal.py:95-97), and `KINDS` (journal.py:80);
@@ -994,7 +1005,7 @@ Parity runs only on small synthetic fixtures; `run_paper_replay` materialises ev
   - **paper** (worst case with hedge credit);
   - **live** (worst case without hedge credit, as live R8-R10 count it; STATUS_EXPOSURE_BASIS, risk.py:52).
   
-  Unmatched, pending and unknown portions count at their full adverse loss in both bases. Tests check it against `risk.worst_case_market_loss(..., hedge_credit=True/False)` on randomised order sets. Showing both bases makes visible that greening at live defaults would use up the £20 daily cap.
+  Unmatched, pending and unknown portions count at their full adverse loss in both bases. Tests check it against an independent exposure oracle written in the tests, on both bases and on randomised order sets. `risk` is not used as the oracle, because it is not pinned (Nuance, Q-N1; section 4.2). Showing both bases makes visible that greening at live defaults would use up the £20 daily cap.
 
 ### 7.8 Green-up / close trade (new suite code; an operator action)
 
@@ -1356,7 +1367,7 @@ These headers apply to error responses too (section 9.1).
 | I-10 | Raw data read-only; no ingest or index by the engine | A read-only open. The AST test forbids `ingest_archive` and `index_archive(s)` outside tests. | A synthetic data tree's hash is unchanged after a full session. |
 | I-11 | No gated month ever replayed | `month_gate` on path and marketTime at catalogue time and at every open. A `None` month is refused as `month_unknown` first. | Synthetic members dated 2026-01, 2026-09, 2026-10 and 2027-01 are refused with the gate reason. A member with no parseable marketTime is refused as `month_unknown`. Research months are refused while no ruling is set. |
 | I-12 | Spoiler-free | Catalogue field allowlist; the tap releases outcome values only at their pt | Planted outcome values never reach SQLite, a frame or the browser before CLOSED. |
-| I-13 | Pin integrity, and never the moving clone | Per-file hashes, the origin assertion, `sys.path` append only | A tampered file in a temp copy gives `pin_mismatch`. `sys.path` never contains `~/betangel-research`. Origin-assertion test. Oracle tests never pass `~/betangel-research` as `repo_root`. |
+| I-13 | Pin integrity, and never the moving clone | Per-file hashes over every `PINNED_FILES` entry, the origin assertion, `sys.path` append only. The pin stays at 76f71dc until a closure module the suite needs, or the month roles, change; Nuance reviews every bump that changes a `PINNED_FILES` entry, and the contract test gates it (Q-N1, Q-N2). | A tampered file in a temp copy gives `pin_mismatch`. `sys.path` never contains `~/betangel-research`. Origin-assertion test. Oracle tests never pass `~/betangel-research` as `repo_root`. |
 | I-14 | Right interpreter | The launcher's absolute path; the version check | 3.15 or below 3.11 is refused. |
 | I-15 | Paper fidelity | Exact mode, the yield tracker, position-based re-seeding | The parity contract (section 7.4), the yield-tracker oracle test, the no-look-ahead re-seed test, the full-cancel test, and `journal.verify()` for every session. |
 | I-16 | Agents are not handed Yu's token or real rows by the code. This is a code-path property: the code never prints them, but a same-uid agent that disobeys rule 6 is out of reach. | Single-use codes printed only by `open` (to `/usr/bin/open`), `ssh-session` and `--print-url`; token in memory and registered with `secret`; aggregate-only diagnostics; error mapping | Test runs capture stdout and stderr and assert no token or code pattern. A `selfcheck` run over fixtures does not print the fixture's synthetic names or prices. A synthetic member with a bad hash or a truncated line produces no market-id or event-id pattern on stdout, stderr, `logs/` or HTTP. |
@@ -1586,8 +1597,8 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 
 | ID | Question | Needed in |
 |---|---|---|
-| Q-N1 | Do you accept the engine importing only the 25-module closure in section 4.1, with no risk or capability? Will you treat the contract-tested names (section 4.5) as an interface and flag breaking changes in PR descriptions? Is test-only use of `risk` as an oracle acceptable under INTERNAL_ONLY? | Phase 0 |
-| Q-N2 | Is the pin by a network-free local clone (`clone --no-checkout --no-hardlinks` from the lab clone, `checkout --detach`, remote removed, read-only) OK? Or do you prefer `git archive`? Who bumps pins? | Phase 0 |
+| Q-N1 | Do you accept the engine importing only the 25-module closure in section 4.1, with no risk or capability? Will you treat the contract-tested names (section 4.5) as an interface and flag breaking changes in PR descriptions? Is test-only use of `risk` as an oracle acceptable under INTERNAL_ONLY? <br>**Answered by Nuance** (PR #4 review, 2026-10-16):<br>- Closure: accepted. Exactly 25 modules load (section 4.1). Before Phase 1b, `rx.py` gains wrappers: `StatePaths` with explicit roots, `OrderJournal` with `mode="paper"` and an explicit clock, and `validate_place` forced to paper. `SystemClock` is dropped from the allowlist; no suite code used it.<br>- Contract test: "yes, narrowed". `tests/test_upstream_contract.py` lands on phase0/http; every bump is gated on it, Phase 0's names first (section 4.5).<br>- `risk` as a test oracle: no. It is unpinned; an independent exposure oracle is used instead (section 4.2). | Answered |
+| Q-N2 | Is the pin by a network-free local clone (`clone --no-checkout --no-hardlinks` from the lab clone, `checkout --detach`, remote removed, read-only) OK? Or do you prefer `git archive`? Who bumps pins? <br>**Answered by Nuance** (PR #4 review, 2026-10-16): keep 76f71dc, and bump only when a closure module the suite needs, or the month roles, change. "Allowlisted file" means every `PINNED_FILES` entry (section 3.5). The review does not say whether Nuance prefers `git archive` or who bumps pins. | Answered |
 | Q-N3 | **State root and the run marker.** Is `~/betangel-data/suite.noindex` acceptable? Following your A5 answer, the suite will not run at all during your runs. Will your run and ingest wrappers write a marker such as `~/.local/state/lab-runs/ACTIVE`, and wait for `~/.local/state/betangel-suite/run/engine.lock` to be free before touching sources or data?<br>**Answered by Nuance: yes to both** (PR #4 review; mailbox, 2026-10-16 13:41Z).<br>- Root: `~/betangel-data/suite.noindex`, on three conditions (section 3.7): (1) Nuance never uses `~/betangel-data` or `suite.noindex` itself as a data or lab-state root; (2) before Phase 1a, the suite refuses a data root that equals, contains or lies inside `suite.noindex`, `lab-state` or `logs`, or lies inside `incoming/`, comparing by file identity (owed before Phase 1a); (3) the marker half is agreed first (it now is). The flag is on.<br>- Marker: `~/.local/state/lab-runs/ACTIVE`. Nuance's wrapper creates it with O_EXCL, waits up to 60 s for `engine.lock`, and refuses its own run if the lock is still held. Nuance agreed that the engine may hold `engine.lock` for about 35 s after the marker appears; Nuance measured the lock free only after 30.23-30.60 s (PR #4 review, item 15). | Answered |
 | Q-N4 | **PRO ingest.** When will you ingest and index it (a date), and what is the final data root (`historic-pro`?)? Is it one archive sha, with index v1 built as for BASIC? A header listing shows 12,208 market files at depth 6, all PRO, including 8 in 2016-May (in no contract split). Is there anything in the index the picker should surface? | Now |
 | Q-N5 | **Paper semantics.** Is direct `PaperExchange` use with a suite `OrderJournal(path, mode="paper", clock=SimClock)` fine, given Yu's R-1? Intent source `paper_replay` with `customer_strategy_ref` `suite-click` (and `suite-test` in synthetic tests), with click provenance in `note` events, until U-9? Is withdrawing a pending order as SUBMITTING → REFUSED (`operator_withdrawn_before_activation`) acceptable? | Phase 0 |
@@ -1633,7 +1644,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 
 Base: the mvp-ux draft. The following were fixed or grafted in:
 
-1. **INTERNAL_ONLY.** The engine no longer imports `risk` or `capability` (tests/test_betfair_boundaries.py:22). Exposure is computed in suite code on both bases, and `risk.worst_case_market_loss` (whose default is `hedge_credit=False`, risk.py:136) is a test oracle only. One `rx.py` facade, enforced by an AST test.
+1. **INTERNAL_ONLY.** The engine no longer imports `risk` or `capability` (tests/test_betfair_boundaries.py:22). Exposure is computed in suite code on both bases, and `risk.worst_case_market_loss` (whose default is `hedge_credit=False`, risk.py:136) is a test oracle only. (Superseded: Nuance answered Q-N1 that risk is not an oracle either; section 4.2.) One `rx.py` facade, enforced by an AST test.
 2. **Sampled stepping removed.** Exact mode is the default whenever orders are pending or open; the clock lags instead of sampling. The reasons: per-step flooring (paper.py:543), and 503 windows raising high-water marks without filling (paper.py:470-482, :552-553).
 3. **Clock-stamped snapshots removed from the default path.** Stamping the activation book at A would count the first interval (paper.py:321, :496-503) and break parity. (Draft 0.1 kept an opt-in relaxation at A − 1 ms; draft 0.2 cut it, section 7.5.)
 4. **Integer timestamps.** `utc_from_ns` takes an integer only (receipts.py:29-31), so the design always uses `ms * 1_000_000`.

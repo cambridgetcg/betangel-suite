@@ -60,8 +60,8 @@ SECTION_4_1 = {
     "evaluation": {"settled_market_costs"},
     "config": {"DEFAULTS", "validate_config"},
     "paths": {"FORBID_NETWORK_ENV", "network_forbidden", "overrides_allowed", "StatePaths"},
-    "receipts": {"utc_from_ns", "parse_utc_ns", "SystemClock", "canonical_sha256", "file_sha256", "atomic_write_json",
-                 "append_jsonl", "strict_json_loads"},
+    "receipts": {"utc_from_ns", "parse_utc_ns", "canonical_sha256", "file_sha256", "atomic_write_json",
+                 "append_jsonl", "strict_json_loads"},     # no SystemClock: nothing uses it (Nuance, Q-N1)
     "secret": {"register", "assert_clean", "refuse_forbidden"},
     "betfair_errors": {"JournalError"},
     "archive": {"CHUNK_BYTES", "LIMIT_CEILINGS", "Limits", "DEFAULT_LIMITS", "market_month", "month_gate",
@@ -86,6 +86,7 @@ RX_IMPORTS = {
     ("betangel_research.betfair.backtest", "market_index"): "market_index",
     ("betangel_research.betfair.backtest", "path_guard"): "path_guard",
 }
+# Names rx must never export. risk's two stay listed although risk is no longer a test oracle (Q-N1).
 TEST_ONLY_NAMES = ("run_paper_replay", "ORDER_FILE_KEYS", "snapshots_from_recording", "_messages", "ingest_archive",
                    "index_archive", "worst_case_market_loss", "exposure_by_market")
 ORDER_METHODS = (_j("place", "Orders"), _j("cancel", "Orders"), _j("replace", "Orders"), _j("update", "Orders"),
