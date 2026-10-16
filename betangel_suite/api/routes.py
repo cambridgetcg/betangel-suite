@@ -310,8 +310,12 @@ class App:
             if not args_ok(body["args"], IMPLEMENTED[name]):
                 self.nonces.forget(nonce, entry)
                 return refused(400, "bad_args")
-            result = {"ok": True} if self.auth.claim(token) else {"ok": False, "code": "unauthorized"}
-            self.watching_changed()             # the clock runs only while the new controller watches
+            try:
+                result = {"ok": True} if self.auth.claim(token) else {"ok": False, "code": "unauthorized"}
+                self.watching_changed()         # the clock runs only while the new controller watches
+            except BaseException:
+                self.nonces.forget(nonce, entry)        # a replay waits for this entry: never leave it unfinished
+                raise
             self.nonces.finish(nonce, entry, result)
             return OK, result
         if not self.auth.is_controller(token):  # before not_implemented: a read-only tab learns nothing else

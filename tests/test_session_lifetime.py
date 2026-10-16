@@ -467,6 +467,17 @@ class AppTests(unittest.TestCase):
         self.assertEqual(app.query(first, {"query": "session", "args": {}})[1]["controller"], False)
         self.assertEqual(app.query(second, {"query": "session", "args": {}})[1]["controller"], True)
 
+    def test_a_claim_control_that_fails_forgets_its_nonce(self):
+        # A replay waits for the first request without a timeout, so a failed claim must not leave its nonce open.
+        app = self.make()
+        token = app.auth.exchange(app.auth.issue_code())
+        self.engine.set_watched = lambda watched: (_ for _ in ()).throw(RuntimeError("synthetic"))
+        with self.assertRaises(RuntimeError):
+            self.command(app, token, "claim_control", "nonce-0001")
+        new, entry = app.nonces.claim("nonce-0001")
+        self.assertTrue(new)                                            # forgotten, so it may be sent again
+        app.nonces.forget("nonce-0001", entry)
+
 
 # --- sshsession.main: the forced command's port --------------------------------------------------------------
 
