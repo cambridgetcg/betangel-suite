@@ -823,6 +823,7 @@ Nuance has answered: during a real run, "a suite elsewhere is harmless but slows
   - a missing lock file counts as free, and any other error as busy;
   - the wrappers run outside betangel_research;
   - the wrapper removes only its own marker, and only after the job exits.
+- **The suite's own lock check** follows the same rule. `control.engine_running`, which `stop` uses, counts only a missing lock file as free; any other error counts as held. So `stop` fails with `control_failed` at its deadline, and never prints `not_running` or `stopped` while a lock it cannot check may be held (Nuance's PR #4 review: it "treats errors as free"). A second engine was already kept out: `acquire_lock` lets an engine start only when it takes the lock, and raises on any error.
 - **No automatic work.** The catalogue is rebuilt only on an explicit command, never on a head change, so nothing fires during Nuance's ingest.
 - **The marker is agreed (Q-N3).** It was a Phase 0 exit criterion, and Phase 1b journal writes on real data do not ship without it. Lab-Claude still runs no real-data commands while a run is announced, and Yu is told before starting.
 

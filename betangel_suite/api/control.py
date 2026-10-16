@@ -16,7 +16,9 @@ Only open and ssh-session ask for a code, and they hand it to /usr/bin/open or t
 module never prints or logs one. The client side (request) connects through guard.permit_unix_connect,
 the only connect the guard allows. stop (stop_main) needs no engine: with no engine holding engine.lock it
 prints not_running, and while one holds the lock without answering yet (it is still starting) it asks again
-until its deadline. It never checks the run marker, because it only reduces activity (DESIGN.md 3.9 rule 6).
+until its deadline. A lock it cannot check (any error but a missing file) counts as held, so stop then fails
+with control_failed at its deadline. It never checks the run marker, because it only reduces activity
+(DESIGN.md 3.9 rule 6).
 Standard library only.
 """
 
@@ -87,15 +89,23 @@ def acquire_lock(home_dir=None):
 
 
 def engine_running(home_dir=None):
-    """True while some process holds run/engine.lock (checked without creating anything)."""
+    """True while some process may hold run/engine.lock (checked without creating anything).
+
+    Fail closed: only a missing lock file (or run directory) is free. Any other error opening or locking it (an
+    unreadable lock or run directory, a link, no descriptors left) counts as held, so stop never prints
+    not_running or stopped while a lock it cannot check may still be held (Nuance's PR #4 review: it "treats
+    errors as free"). A second engine is kept out by acquire_lock, which already fails on any such error.
+    """
     try:
         fd = os.open(lock_path(home_dir), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return True
     try:
         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
         return False
-    except BlockingIOError:
+    except OSError:                     # BlockingIOError: another process holds it; anything else: cannot tell
         return True
     finally:
         os.close(fd)
