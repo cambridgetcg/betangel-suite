@@ -111,6 +111,23 @@ class StateRootTests(unittest.TestCase):
         self.assertIn("refused:state_root_changed", err.splitlines())
         engines[0][0].terminate()
 
+    def test_an_engine_lock_that_cannot_be_checked_explains_nothing(self):
+        # A test that escaped its HOME could leave run/ and a link at run/engine.lock. engine_running counts such a
+        # lock as held, the safe reading for stop and uisnap, but here it would have explained both entries away.
+        # Only a lock that is definitely held explains run/ entries (control.engine_lock_state).
+        home = support.short_home(self)
+        self.assertFalse(os.path.lexists(roots.run_dir(home)))
+
+        def plant():
+            os.mkdir(roots.run_dir(home), 0o700)
+            os.symlink(os.path.join(roots.run_dir(home), "nowhere"), control.lock_path(home))
+            self.assertEqual(control.engine_lock_state(home), control.UNKNOWN)
+            self.assertTrue(control.engine_running(home))
+
+        status, err = self.inner_run(home, plant)
+        self.assertEqual(status, 1, err[-1500:])
+        self.assertIn("refused:state_root_changed", err.splitlines())
+
     def test_the_footprint_of_a_real_engine(self):
         # What a real serve child adds to the state root is exactly what unexplained_changes may explain.
         home = support.short_home(self)

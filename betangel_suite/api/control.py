@@ -96,27 +96,43 @@ def acquire_lock(home_dir=None):
     return fd
 
 
-def engine_running(home_dir=None):
-    """True while some process may hold run/engine.lock (checked without creating anything).
+HELD, FREE, UNKNOWN = "held", "free", "unknown"
 
-    Fail closed: only a missing lock file (or run directory) is free. Any other error opening or locking it (an
-    unreadable lock or run directory, a link, no descriptors left) counts as held, so stop never prints
-    not_running or stopped while a lock it cannot check may still be held (Nuance's PR #4 review: it "treats
-    errors as free"). A second engine is kept out by acquire_lock, which already fails on any such error.
+
+def engine_lock_state(home_dir=None):
+    """HELD while another process holds run/engine.lock, FREE when nobody can (no lock file or run directory, or the
+    lock is free), UNKNOWN when it cannot be checked: an unreadable lock or run directory, a link at the lock path
+    (O_NOFOLLOW), no descriptors left. Nothing is created.
+
+    stop and uisnap read UNKNOWN as held (engine_running). bin/suite test's state-root check reads it as not held:
+    only an engine that definitely holds the lock explains run/ entries (cli.unexplained_changes).
     """
     try:
         fd = os.open(lock_path(home_dir), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except FileNotFoundError:
-        return False
+        return FREE
     except OSError:
-        return True
+        return UNKNOWN
     try:
         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        return False
-    except OSError:                     # BlockingIOError: another process holds it; anything else: cannot tell
-        return True
+        return FREE
+    except BlockingIOError:             # another process holds it
+        return HELD
+    except OSError:                     # anything else: cannot tell
+        return UNKNOWN
     finally:
         os.close(fd)
+
+
+def engine_running(home_dir=None):
+    """True while some process may hold run/engine.lock (checked without creating anything).
+
+    Fail closed: only a missing lock file (or run directory), or a free lock, is free. Any other error opening or
+    locking it (engine_lock_state UNKNOWN) counts as held, so stop never prints not_running or stopped while a lock
+    it cannot check may still be held (Nuance's PR #4 review: it "treats errors as free"). A second engine is kept
+    out by acquire_lock, which already fails on any such error.
+    """
+    return engine_lock_state(home_dir) != FREE
 
 
 # --- the server side -----------------------------------------------------------------------------

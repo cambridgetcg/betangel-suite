@@ -201,7 +201,7 @@ def _test(args):
     from . import rx    # noqa: F401  (verifies the pin and imports upstream under the armed guard)
     from .api import control
     marker = runmarker.marker_path(config.load())
-    before, running_before = state_listing(), control.engine_running()
+    before, running_before = state_listing(), control.engine_lock_state() == control.HELD
     started = time.monotonic()
     tests = _test_loader(pattern).discover(start_dir=os.path.join(REPO_ROOT, "tests"), top_level_dir=REPO_ROOT)
     modules = _test_modules(tests)
@@ -215,10 +215,10 @@ def _test(args):
         passed, stopped = result.wasSuccessful(), result.run_marker
     sys.stderr.write("runtime_s=%.1f python=%d.%d tier=%s jobs=%d\n"
                      % (time.monotonic() - started, *sys.version_info[:2], _test_tier, workers))
-    if unexplained_changes(before, state_listing(), running_before, control.engine_running()):
+    if unexplained_changes(before, state_listing(), running_before, control.engine_lock_state() == control.HELD):
         # Tests write only under TMPDIR: anything new elsewhere in the real state root (the install salt,
-        # say) means a test escaped its temporary HOME. Only an engine Yu started or stopped meanwhile is told
-        # apart (unexplained_changes).
+        # say) means a test escaped its temporary HOME. Only an engine Yu started or stopped meanwhile, one that
+        # definitely holds the lock, is told apart (unexplained_changes).
         sys.stderr.write("refused:state_root_changed\n")
         return 1
     if stopped is not None:
@@ -435,6 +435,9 @@ def unexplained_changes(before, after, running_before, running_after):
     flock'd while it runs) tells it apart: an engine that holds the lock at the end explains run/, run/engine.lock
     and run/control.sock appearing; one that held it at the start explains run/control.sock vanishing. Nothing
     else is ever explained: any other entry, or those three without a live lock to explain them, still counts.
+    running_before and running_after mean the lock was definitely held (control.engine_lock_state HELD): a lock
+    that cannot be checked (a link at run/engine.lock, say, which a test that escaped its HOME could leave) explains
+    nothing, although stop and uisnap count it as held.
     """
     before, after = set(before), set(after)
     explained = set()

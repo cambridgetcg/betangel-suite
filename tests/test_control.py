@@ -347,6 +347,28 @@ results["released"] = control.engine_running()
             "stop_answered": "control_failed", "stop_answered_out": "",
         })
 
+    def test_the_lock_state_tells_held_free_and_unknown_apart(self):
+        # bin/suite test's state-root check must not let a lock it cannot check explain run/ entries, while stop and
+        # uisnap still count such a lock as held (engine_running). So engine_lock_state keeps the three apart.
+        home = support.short_home(self)
+        results = checks(self, home, setup="", body=SERVER + """
+results["missing"] = control.engine_lock_state()
+lock = control.acquire_lock()
+results["held"] = control.engine_lock_state()
+os.chmod(control.lock_path(), 0)
+results["unreadable"] = control.engine_lock_state()
+os.chmod(control.lock_path(), 0o600)
+os.close(lock)
+results["free"] = control.engine_lock_state()
+os.remove(control.lock_path())
+os.symlink(os.path.join(roots.run_dir(), "nowhere"), control.lock_path())
+results["link"] = control.engine_lock_state()
+results["link_running"] = control.engine_running()
+os.remove(control.lock_path())
+""")
+        self.assertEqual(results, {"missing": "free", "held": "held", "unreadable": "unknown", "free": "free",
+                                   "link": "unknown", "link_running": True})
+
     def test_peer_credentials_name_this_uid(self):
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         self.addCleanup(left.close)

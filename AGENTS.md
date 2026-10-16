@@ -227,6 +227,8 @@ reviewed PR changes them.
 
   A test run fails with `refused:state_root_changed` if an entry appears or vanishes in the real
   state root (`~/.local/state/betangel-suite`) outside `tmp/` while it runs. Contents are not
-  compared. Only `run/` entries explained by an engine Yu starts or stops meanwhile are exempt.
+  compared. Only `run/` entries explained by an engine Yu starts or stops meanwhile are exempt, and
+  only when its `run/engine.lock` is definitely held: a lock the check cannot open or lock (a link
+  there, say) explains nothing, although `stop` and `uisnap` count it as held.
   So do not run `bin/suite uisnap` against the real HOME while a test run is in progress: its
   `uisnap/` entries fail that run.
