@@ -22,9 +22,9 @@ make the wrapper wait for it. So:
 
   - the lock is run/realdata.lock in the state root (roots.realdata_lock_path), beside engine.lock and not
     engine.lock itself (a wrapper holding engine.lock makes `bin/suite stop` fail with control_failed: Nuance's
-    probe). The suite creates it once, 0600, and never unlinks, renames or replaces it: a holder of the old file and
-    a wrapper locking a new one would not exclude each other. The guard refuses those calls in every mode
-    (run_lock_protected, guard.py I-6);
+    probe). The suite creates it once, 0600, and never unlinks, renames or replaces it, or renames run/ (which would
+    move the lock with it): a holder of the old file and a wrapper locking a new one would not exclude each other.
+    The guard refuses those calls in every mode (run_lock_protected, guard.py I-6);
   - every command that may read a real data root or write under ~/betangel-data (cli.REALDATA_COMMANDS) calls
     hold_shared() before it creates its TMPDIR: LOCK_SH, without waiting, then the marker checked again under the
     lock, then the lock held until the process exits. The descriptor is close-on-exec, so no child keeps it;

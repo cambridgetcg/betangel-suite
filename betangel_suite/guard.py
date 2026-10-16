@@ -59,9 +59,11 @@ What the hook refuses, in every mode and phase:
        symlink, hard link or rename that puts a name where a root or TMPDIR really is, or moves one away
        (root_replace_refused): os.symlink(<a data root>, suite.noindex) would otherwise pass as a write in
        the roots and steer the next process. Links elsewhere in the roots stay allowed. The same goes for
-       run/realdata.lock, which may not be removed either (run_lock_protected): the suite makes it once and
-       never unlinks it, since a holder of the old file and Nuance's wrapper locking a new one would not
-       exclude each other (runmarker.py).
+       run/realdata.lock, which may not be removed either, and for its directory run/ (run_lock_protected):
+       the suite makes the lock once and never unlinks it, since a holder of the old file and Nuance's wrapper
+       locking a new one would not exclude each other (runmarker.py). Renaming run/ would move the lock with it
+       and split it the same way, so no name may be put where run/ is, and run/ may not be moved away, even
+       while it is missing. (os.rmdir stays allowed: it removes only an empty run/, which holds no lock.)
        chmod, chown, utime and truncate on a descriptor (fchmod and the like) are judged by the file's path
        from F_GETPATH, and refused when it has none: a read-only open is never checked, so a descriptor
        does not show that its file lies in the roots. open() of a descriptor is not judged again.
@@ -223,7 +225,7 @@ class _State:
         self.tmp_root = tmp_root
         # Where each root and TMPDIR really are (casefolded: the lab's APFS volume folds case), and the refusal
         # code for each. No name may be put there, and none moved away or removed, so the placement arm() checked
-        # holds for the life of the process. The realdata lock is added below.
+        # holds for the life of the process. The realdata lock and its run/ are added below.
         self.slots = dict.fromkeys((real.casefold() for real in self.real_roots + (
             (os.path.realpath(tmp_root),) if tmp_root else ())), "root_replace_refused")
         self.agreed = roots.STATE_ROOT_AGREED
@@ -231,7 +233,10 @@ class _State:
         self.run_dir = roots.run_dir(home)
         run_parent, run_name = os.path.split(self.run_dir)
         self.real_run_dir = os.path.join(os.path.realpath(run_parent), run_name)     # where a real run/ resolves
-        self.slots[os.path.join(self.real_run_dir, roots.REALDATA_LOCK_NAME).casefold()] = "run_lock_protected"
+        # run/ itself too, not only the lock's own name: renaming run/ moves the lock with it, and the next holder
+        # would make and lock a fresh run/realdata.lock on another inode (the split the slot is there to prevent).
+        for path in (self.real_run_dir, os.path.join(self.real_run_dir, roots.REALDATA_LOCK_NAME)):
+            self.slots[path.casefold()] = "run_lock_protected"
         self.research = roots.research_clone(home)
         self.deps_root = roots.deps_root(home)
         self.interpreters = frozenset(TEST_INTERPRETERS + (sys.executable,))
@@ -821,7 +826,7 @@ def _check_write(state, path, dir_fd, follow, slot=False):
                 if slot and resolved.casefold() in state.slots:
                     # A link, or a name renamed into place, where a root or TMPDIR is (os.symlink(historic-pro,
                     # suite.noindex), say), or a root or TMPDIR moved away: the next process would trust it. Or the
-                    # realdata lock removed, moved or replaced.
+                    # realdata lock, or its run/, removed, moved or replaced.
                     raise GuardRefusal(state.slots[resolved.casefold()])
                 return
             break

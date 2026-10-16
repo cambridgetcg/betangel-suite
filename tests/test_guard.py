@@ -438,9 +438,9 @@ attempt("permit_trailing_slash", lambda: guard.permit_unix_socket(control + "/")
 guard.seal()
 attempt("permit_after_seal", lambda: guard.permit_loopback_port(9000))
 attempt("loopback_after_seal", lambda: bind(socket.AF_INET, ("127.0.0.1", 0)))
-os.rename(run, run + "-moved")
-os.symlink(os.path.join(os.environ["HOME"], "elsewhere"), run)
-attempt("unix_run_dir_replaced", lambda: audit_bind(control))
+# run/ cannot be moved away from inside the suite (it holds the realdata lock's name: run_lock_protected), so the
+# run directory replaced by a link is tested in test_a_run_directory_replaced_by_a_link_moves_no_socket.
+attempt("rename_run_dir", lambda: os.rename(run, run + "-moved"))
 """ % self.SUN_PATH_MAX)
         self.assertEqual(results["loopback_permitted"], "ok")
         self.assertEqual(results["loopback_after_seal"], "ok")
@@ -457,10 +457,31 @@ attempt("unix_run_dir_replaced", lambda: audit_bind(control))
         self.assertEqual(results["unix_permitted_audit"], "ok")
         self.assertEqual(results["hook_states"], 1)
         for name in ("unix_dotdot_after_link", "unix_permitted_dangling_link", "unix_embedded_nul_forced",
-                     "unix_embedded_nul_bytes_forced", "unix_run_dir_replaced"):
+                     "unix_embedded_nul_bytes_forced"):
             self.assertEqual(results[name], "bind_refused", name)
         for name in ("permit_noncanonical", "permit_trailing_slash", "permit_embedded_nul"):
             self.assertEqual(results[name], "bind_permit_invalid", name)
+        self.assertEqual(results["rename_run_dir"], "run_lock_protected")
+
+    def test_a_run_directory_replaced_by_a_link_moves_no_socket(self):
+        # The suite cannot move run/ away itself (run_lock_protected), but another process can, while the suite runs.
+        # The bind check compares where run/ resolves with where it resolved at arm(), which the setup here models
+        # by making run/ a link before arm(): a permitted socket path in it would be created at the link's target.
+        home = make_home(self)
+        results = checks(self, home, setup="""
+elsewhere = os.path.join(os.environ["HOME"], "elsewhere")
+os.makedirs(elsewhere, mode=0o700)
+os.symlink(elsewhere, roots.run_dir())
+""", body="""
+import socket, sys
+def audit_bind(address):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sys.audit("socket.bind", sock, address)
+control = os.path.join(roots.run_dir(), "c.sock")
+guard.permit_unix_socket(control)
+attempt("unix_run_dir_replaced", lambda: audit_bind(control))
+""")
+        self.assertEqual(results["unix_run_dir_replaced"], "bind_refused")
 
     # Nuance's PR #2 review, item 4: CPython raises no listen event, and listen() on an unbound AF_INET socket binds
     # it to 0.0.0.0. The refused cases use unbound SOCK_DGRAM sockets, which never listen: if the guard let one
@@ -1586,9 +1607,13 @@ results["tmp_is_dir"] = os.path.isdir(tmp) and not os.path.islink(tmp)
     def test_the_realdata_lock_is_never_removed_moved_or_replaced(self):
         # runmarker.py: the suite makes run/realdata.lock once and never unlinks it, since a holder of the old file
         # and Nuance's wrapper locking a new one would not exclude each other. Every mode refuses, however the name
-        # is spelt; other files in run/ stay removable.
+        # is spelt; other files in run/ stay removable. Renaming run/ itself moves the lock with it and splits it the
+        # same way (round-4 review), so run/ may not be moved away or replaced either, nor a name put where it is
+        # while it is missing.
         refused = ("remove", "unlink", "unlink_dir_fd", "unlink_other_case", "unlink_dot_dot", "rename_away",
-                   "rename_onto", "replace_onto", "hard_link_onto", "symlink_onto", "rmtree_run")
+                   "rename_onto", "replace_onto", "hard_link_onto", "symlink_onto", "rmtree_run",
+                   "rename_run_away", "replace_run_away", "rename_run_other_case", "rename_run_trailing_slash",
+                   "move_run_away", "rename_dir_onto_run", "symlink_onto_run")
         for mode in ("engine", "test", "vendor"):
             home = make_home(self)
             os.makedirs(roots.run_dir(home), 0o700)
@@ -1596,9 +1621,13 @@ results["tmp_is_dir"] = os.path.isdir(tmp) and not os.path.islink(tmp)
             results = checks(self, home, mode=mode, body="""
 import shutil
 run = roots.run_dir()
+state = os.path.dirname(run)
 lock, other, spare = (os.path.join(run, name) for name in ("realdata.lock", "other", "spare"))
 for path in (other, spare):
     open(path, "w").close()
+empty = os.path.join(state, "empty")
+os.mkdir(empty)
+info = os.stat(lock)
 fd = os.open(run, os.O_RDONLY)
 attempt("remove", lambda: os.remove(lock))
 attempt("unlink", lambda: os.unlink(lock))
@@ -1612,11 +1641,42 @@ attempt("hard_link_onto", lambda: os.link(other, lock))
 attempt("symlink_onto", lambda: os.symlink(other, lock))
 attempt("remove_spare", lambda: os.remove(spare))
 attempt("rmtree_run", lambda: shutil.rmtree(run))
+attempt("rename_run_away", lambda: os.rename(run, run + ".old"))
+attempt("replace_run_away", lambda: os.replace(run, os.path.join(state, "moved")))
+attempt("rename_run_other_case", lambda: os.rename(os.path.join(state, "RUN"), run + ".old"))
+attempt("rename_run_trailing_slash", lambda: os.rename(run + "/", run + ".old"))
+attempt("move_run_away", lambda: shutil.move(run, os.path.join(state, "moved")))
+attempt("rename_dir_onto_run", lambda: os.rename(empty, run))
+attempt("symlink_onto_run", lambda: os.symlink(empty, run))
+attempt("rename_other_dir", lambda: os.rename(empty, empty + ".2"))
+now = os.lstat(lock) if os.path.lexists(lock) else None
 results["lock_is_file"] = os.path.isfile(lock) and not os.path.islink(lock)
+results["lock_same_inode"] = now is not None and (now.st_dev, now.st_ino) == (info.st_dev, info.st_ino)
+results["nothing_moved"] = (os.path.isdir(run) and not os.path.islink(run)
+                            and not any(os.path.lexists(os.path.join(state, name)) for name in ("run.old", "moved")))
 """)
             for name in refused:
                 self.assertEqual(results[name], "run_lock_protected", (mode, name))
-            self.assertEqual((results["remove_spare"], results["lock_is_file"]), ("ok", True), mode)
+            self.assertEqual((results["remove_spare"], results["rename_other_dir"]), ("ok", "ok"), mode)
+            self.assertEqual((results["lock_is_file"], results["lock_same_inode"], results["nothing_moved"]),
+                             (True, True, True), mode)
+        # While run/ is missing, nothing may take its place either; making it as a real directory stays allowed.
+        for mode in ("engine", "test", "vendor"):
+            home = make_home(self)
+            results = checks(self, home, mode=mode, body="""
+run = roots.run_dir()
+state = os.path.dirname(run)
+os.makedirs(state, exist_ok=True)
+empty = os.path.join(state, "empty")
+os.mkdir(empty)
+attempt("symlink_onto_missing_run", lambda: os.symlink(empty, run))
+attempt("rename_dir_onto_missing_run", lambda: os.rename(empty, run))
+attempt("mkdir_run", lambda: os.mkdir(run, 0o700))
+results["run_is_dir"] = os.path.isdir(run) and not os.path.islink(run)
+""")
+            self.assertEqual((results["symlink_onto_missing_run"], results["rename_dir_onto_missing_run"]),
+                             ("run_lock_protected", "run_lock_protected"), mode)
+            self.assertEqual((results["mkdir_run"], results["run_is_dir"]), ("ok", True), mode)
 
     def test_the_suite_never_creates_or_removes_the_marker_or_the_wrappers_lock(self):
         # Nuance's PR #2 review, item 13: one unlink of lab-runs/ACTIVE lets require_absent pass mid-run. Only her
