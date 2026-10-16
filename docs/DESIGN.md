@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft 0.2, for review (review round 2 applied; see Appendix B). Yu's Phase 0 rulings recorded 2026-10-15, and Yu's Q-Y8 answer 2026-10-16 (section 2.2.1). |
+| Status | Draft 0.2, for review (review round 2 applied; see Appendix B). Yu's Phase 0 rulings recorded 2026-10-15, and Yu's Q-Y8 answer 2026-10-16 (section 2.2.1). Nuance's PR #1 review applied 2026-10-16 (Appendix C). |
 | Date | 2026-10-15 |
 | Author | lab-Claude (Claude Code session 03026dfa on the lab MacBook Pro) |
 | Reviewers | Nuance (Air Claude, owner of betangel-research), Astra (Codex reviewer) |
@@ -38,7 +38,7 @@ Shape:
 
 - **Engine.** One Python 3.13 process, standard library only, started through a fixed launcher (`python3.13 -I -S -B`). It runs with `BETANGEL_BETFAIR_FORBID_NETWORK=1` and has no credential code path.
 - **UI.** A browser UI served on `127.0.0.1:8765`. A single-use bootstrap code in the URL is exchanged for a session token that is held in memory only. Later a native SwiftPM shell replaces the browser, before any live click (section 12, L1).
-- **Viewing.** Yu can use the lab's own screen. From the Air, Yu uses a forced-command SSH tunnel key plus an sshd drop-in that Yu installs (R-2). This is offered from Phase 0, so Yu can look from the Air in week 1-2.
+- **Viewing.** Yu can use the lab's own screen. From the Air, Yu uses a forced-command SSH tunnel key plus an sshd drop-in that Yu installs (R-2). This is offered from Phase 0. Viewing from the Air waits for the merged Phase 0 stack and Yu's release of it (section 8.6).
 - **Upstream code.** betangel-research is reused from a read-only, network-free local clone pinned at 76f71dc. Every file is hash-checked, and imports go through one facade module. The engine imports 25 upstream modules (verified 2026-10-15). None of them is gateway, transport, auth, credentials, esa, api, recorder, killswitch, arming, presence, reconcile, risk or capability.
 - **Book state.** `book.MarketBookCache` rebuilds the book. A small yield tracker mirrors `book.snapshots_from_recording`, so the suite can produce exactly the snapshot the oracle would see at any moment without taking a snapshot of every message.
 - **Paper fills.** These come from `paper.PaperExchange`, driven directly rather than through the gateway, with a suite-owned `journal.OrderJournal(path, mode="paper", clock=<SimClock>)` per session.
@@ -51,7 +51,7 @@ Shape:
 - **Plan.** Phase 0 (scaffold and viewing), Phase 1a (replay ladder), Phase 1b (paper) and Phase 1c (polish and sign-off).
   - *Estimate:* about 8-11 weeks of lab work, plus review waits.
   - Each phase has a lab-done exit and a review-accepted exit.
-  - Nuance is not starting suite work until c2b3b3 and c2b3b4 are done, so review latency, not coding, sets the elapsed time.
+  - Review latency, not coding, sets the elapsed time. (c2b3b3 and c2b3b4, which Nuance was finishing first, are merged; Nuance, PR #1 review.)
   - **The first milestone Yu can see** is a synthetic ladder in the browser. *Estimate:* target 2026-10-29.
   - The first real PRO race is its own milestone, dated once Nuance gives an ingest date.
 - **Later.** The native shell (on the Air, reaching the lab engine over SSH stdio), Air-side work (owned by Nuance, in a repo never cloned on the lab), live stage-and-type, policy-gated live one-click, and automation research. These come later and each needs its own approval.
@@ -137,7 +137,7 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
 | R-2 | **Yes.** Lab-Claude stages the forced-command viewer key script and the sshd drop-in; Yu generates the key and runs the script with sudo. |
 | R-3 | **Stated default, accepted.** `user_package_unverified` until Yu checks the package in My Account. The packet recommended neither label; it stated this default, which Yu's "Lets go with what you recommended for all" accepted. |
 | R-4 | **Agreed by Yu.** `~/betangel-data/suite.noindex`. Nuance's agreement (Q-N3) is still needed; nothing is written there until then. |
-| R-5 | **Yes.** A suite-side, display-only SP parser; no `schemas.py` change. Nuance to confirm (Q-N9). |
+| R-5 | **Yes.** A suite-side, display-only SP parser; no `schemas.py` change. Nuance confirmed it on the terms in section 6.6 (Q-N9, PR #1 review, 2026-10-16). |
 | R-6 | **Confirmed.** No rule-generated paper orders in the MVP. Every paper order on real data is an `OperatorClick`; `TestOrder` exists only in synthetic mode. |
 | R-7 | **Stated default, accepted: practise live v1** (`v1-live-mirror` caps, live-parity mode). The packet left the choice to Yu and stated this default, which Yu's "Lets go with what you recommended for all" accepted. The `practice` profile is still built and selectable. |
 
@@ -173,8 +173,8 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
 - **The PRO year has landed.**
   - `~/betangel-data/historic/incoming/data.tar` (9,718,610,432 bytes) arrived on 2026-10-15.
   - It holds 12,208 `.bz2` members, all PRO and all at depth 6 (`PRO/YYYY/Mon/D/<eventId>/<marketId>.bz2`): market files only.
-  - By path month: 12,200 fall in 2015-05..2016-04, matching the BASIC index's 12,200 engineering-year WIN markets, and 8 fall in 2016-May. These figures come from a header listing of sizes and path components only.
-  - Nuance plans to ingest it after submitting c2b3b3, into a separate data root such as `~/betangel-data/historic-pro`, so that P0's BASIC input descriptor stays unchanged. Nuance asked that `data.tar` and `incoming/` be left as they are.
+  - By path month: 12,200 fall in 2015-05..2016-04, the same count as the BASIC index's 12,200 engineering-year WIN markets, and 8 fall in 2016-May. That is a match of counts, not of markets (Nuance, Q-N4). These figures come from a header listing of sizes and path components only.
+  - Nuance will ingest it into a separate data root, `~/betangel-data/historic-pro`, so that P0's BASIC input descriptor stays unchanged. There is no date yet (Q-N4). Nuance asked that `data.tar` and `incoming/` be left as they are.
   - **The suite reads only an indexed root, never `incoming/`.** A reviewer read the TAR read-only for the aggregates in section 6.7.
 - **Free 2017 PRO samples.** These are not on the lab.
 - **SP fields.**
@@ -229,7 +229,7 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
 3. **Control socket.** A 0600 Unix socket in the 0700 run dir. It lets a later `open`, `ssh-session` or `stop` attach to the running engine: to take over a stale session, to get a fresh bootstrap code, or to pause.
 4. **Later (not MVP):**
    - **The native shell.** A SwiftPM WKWebView shell that runs on the Air (L1). It reaches the lab engine through the forced command `suite ssh-session --stdio`, which bridges the SSH channel to the engine's Unix socket with no port forwarding.
-   - **Air and live code.** This lives in a separate repo, or in betangel-research under Nuance, and is **never cloned on the lab**. It uses its own entrypoint package, which the lab's AST and import tests forbid. `guard.py` has no off-switch: no environment variable or config flag disables it, so nothing in this repo can run with the network on.
+   - **Air and live code.** This lives in a separate repo under Yu's account, never in betangel-research, which is cloned on the lab (Nuance, Q-N13). That repo is **never cloned on the lab**. It uses its own entrypoint package, which the lab's AST and import tests forbid. `guard.py` has no off-switch: no environment variable or config flag disables it, so nothing in this repo can run with the network on.
 
 ### 3.2 Threads
 
@@ -375,7 +375,7 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 | `~/betangel-data/suite.noindex/` (the **suite root**) | 0700 | `catalogue/<index_head_sha256>.sqlite`, `sessions/<YYYY>/<MM>/<session_id>/{journal-paper.sqlite, commands.jsonl, session.json, report.json}`, `ledger/viewed-markets.jsonl`, `reports/` (problem reports, codes only), `exports/`, `logs/` (codes and counts only), `private/` (full tracebacks; agents never read it), `tmp/` | derivatives: yes |
 | `~/.local/state/betangel-suite/` | 0700 | `config.json`, `prefs.json` (UI preferences only), `run/{engine.lock, realdata.lock, engine.pid, STOP, control.sock}`, `tmp/` (synthetic tests) | no |
 | `~/.local/share/betangel-suite/deps/betangel-research-<sha12>/` | read-only | pinned upstream code | no |
-| `~/.local/share/betangel-suite/app/<tag>/` + `current` symlink | read-only | the reviewed release copy that every command Yu runs uses (section 8.6) | no |
+| `~/.local/share/betangel-suite/app/<sha12>/` + `current` symlink | read-only | the reviewed release copy that every command Yu runs uses (section 8.6) | no |
 
 - **Rules for the suite root:**
   - it must pass `archive.check_data_root` (archive.py:273): outside the repo and every worktree;
@@ -396,13 +396,13 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 
 | Key | Default | Notes |
 |---|---|---|
-| `data_roots` | `[]` until Nuance names the PRO root (Q-N4), then `["~/betangel-data/historic-pro"]` | Each must pass `archive.check_data_root`. With no root, the engine runs synthetic mode only. The BASIC root is used only by explicit counts-only commands (section 5.1). |
+| `data_roots` | `[]` until the PRO index exists, then `["~/betangel-data/historic-pro"]` (the root Nuance named, Q-N4) | Each must pass `archive.check_data_root`. With no root, the engine runs synthetic mode only. The BASIC root is used only by explicit counts-only commands (section 5.1). |
 | `state_root` | `~/betangel-data/suite.noindex` | R-4 |
 | `port` | 8765 | loopback only |
 | `frame_hz` | 10 | 5-20 |
 | `cap_profile` | `v1-live-mirror` | or `practice` (section 7.2; R-7) |
 | `commission_source` | `user_package_unverified` | R-3 |
-| `research_months_ruling` | `null` | A ruling id. While it is null, research months are hidden and not written to the catalogue (section 5.3). |
+| `research_months_ruling` | `null` | A ruling id. While it is null, research months are hidden and not written to the catalogue (section 5.3). It stays null until Yu answers Q-Y7; no ruling id is accepted before then (Nuance, PR #1 review). |
 | `run_marker` | `~/.local/state/lab-runs/ACTIVE` (proposed; agreed with Nuance) | section 6.8 |
 | `watch_grace_s` | 600 | pause-unless-watched grace (section 8.6) |
 
@@ -411,7 +411,7 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
   - `orders.customer_strategy_ref` set to the ref the journal intents use: `suite-click` for operator sessions and `suite-test` in synthetic test mode.
   
   So V11 (validate.py:171-173), the config hash and the journal all agree. The DEFAULTS value is `bar-manual` (config.py:57), and the journal fold takes the ref from the intent (journal.py:620, :752).
-- **Validation.** It is checked once at startup by the repo's own `config.validate_config` (config.py:254), against `paths.StatePaths(home=<suite root>/repo-home, root_override=<suite root>/repo-home/state)`. That override is accepted only with FORBID_NETWORK set (paths.py:58-72). Nothing is created; `StatePaths` creates directories only in `ensure()`.
+- **Validation.** It is checked once at startup by the repo's own `config.validate_config` (config.py:254), against `paths.StatePaths(home=<suite root>/repo-home, root_override=<suite root>/repo-home/state)`. That override is accepted only with FORBID_NETWORK set (paths.py:58-72). Nothing is created; `StatePaths` creates directories only in `ensure()`. Nuance's conditions (Q-N8): the suite root is agreed and exists first, else the validation refuses with `subprocess_refused`; and this `StatePaths` object feeds only `validate_config`, because its `kill_engaged()` would be a false all-clear.
 - **Git calls during validation.** Validation spawns `git -C <dir> rev-parse --is-inside-work-tree` through `paths.require_outside_worktrees` (paths.py:149, :158; config.py:224-236). So it runs inside the audit hook's startup phase, which allows exactly that argv (section 10).
 - **Recorded as a hash only.** The validated config is never written whole into `session.json`, `report.json`, a journal note or `commands.jsonl`; only its `canonical_sha256` is. The reason is that every upstream writer the suite reuses runs `secret.refuse_forbidden` (journal.py:289; receipts.py:183, :211). That raises `SecretLeak` for any key, at any depth, that normalises to `session`, `token`, `headers`, `authorization`, `cookie`, `appkey` and similar (secret.py:114-133), and `config.DEFAULTS` has a top-level `session` section (config.py:41).
 
@@ -424,9 +424,8 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
   - **Rule documents: no row yet; asked of Yu, not answered.** AGENTS.md, this document, `docs/data-handling.md`, `docs/proposals/` and `tools/stage/` match no row, so the author judges its own widening. Nuance recommends a governance row (PR #1 review, item 9, amending her view on Q-N12): these files go to Nuance and Astra, accepted at a named SHA; a diff that no row covers goes to Yu; and a change of meaning follows rule 10 unless both reviewers say it does not widen. Yu rules.
 - **Collab.** Edit tasks use `root_path=/Users/user/betangel-suite`.
 - **Upstream changes.** Any betangel-research change goes to Nuance as a proposal (section 14).
-- **Yu's feedback channel.** Yu's acceptance and feedback reach lab-Claude only in two ways:
-  - in a lab-Claude session that Yu types into (on the lab, or one Yu opens from the Air);
-  - in an acceptance checklist file that Yu edits directly.
+- **Yu's feedback channel.** Yu's acceptance and feedback reach lab-Claude only in a lab-Claude session that Yu types into (on the lab, or one Yu opens from the Air).
+  - An acceptance checklist file that Yu edits is a log of Yu's checks, not acceptance in itself (Nuance, PR #1 review).
   
   Relays from Nuance or the mailbox are context, not acceptance.
 - **The suite's AGENTS.md (binding on every agent):**
@@ -440,7 +439,7 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
      - Debugging uses synthetic fixtures. Screenshots are of synthetic markets only (uisnap).
      - No agent captures the screen, on either machine, while a suite page or an `ssh lab-suite` window is open (section 8.6).
      - **Exceptions: not available pending Q-Y9.** Real fields would reach a model context only with Betfair's written agreement naming the model provider, plus Yu's explicit OK each time, in Yu's own words, scoped to one report (section 8.7).
-  6. **Commands agents never run.** Agents never run `open`, `ssh-session` or `--print-url`. They never POST to `/api/v1/command` or `/api/v1/bootstrap` on an engine with real data roots. `serve` and `open` never print a bootstrap code; only `--print-url`, used by Yu, does. `stop` is allowed, because it only reduces activity.
+  6. **Commands agents never run.** Agents never run `open`, `ssh-session` or `--print-url`, and never send `attach` or `new_code` to the control socket (section 9.1). They never POST to `/api/v1/command` or `/api/v1/bootstrap` on an engine with real data roots. `serve` and `open` never print a bootstrap code; only `--print-url`, used by Yu, does. `stop` is allowed, because it only reduces activity.
   7. **Nuance's runs.** While the run marker exists, no suite engine or real-data command runs and nothing writes under `~/betangel-data` (section 6.8).
   8. **No credential fields.** The suite UI never has credential fields. Any login prompt inside it is an attack.
   9. **Live-key data.** Paper or practice never runs on live-key data (section 2.3).
@@ -564,7 +563,7 @@ The suite mirrors, and does not import, the following:
 
 | Source | Where | Use |
 |---|---|---|
-| Free PRO year, horse racing 2015-05..2016-04 (EX_ALL_OFFERS, TRD, TV, LTP, MARKET_DEF, SP_TRADED, SP_PROJECTED, tick-by-tick) | Downloaded by Yu to `incoming/data.tar`. Nuance ingests it, probably into `~/betangel-data/historic-pro`. | **The only replay source.** Ladder replay and paper. The engineering year is already "seen", so using it spends no research months. |
+| Free PRO year, horse racing 2015-05..2016-04 (EX_ALL_OFFERS, TRD, TV, LTP, MARKET_DEF, SP_TRADED, SP_PROJECTED; sold as "tick-by-tick", but the files as observed record changes only, and changes may be conflated) | Downloaded by Yu to `incoming/data.tar`. Nuance ingests it into `~/betangel-data/historic-pro` (Q-N4). | **The only replay source.** Ladder replay and paper. The engineering year is already "seen", so using it spends no research months. |
 | BASIC TAR (GB/IE WIN, 2015-05..2016-04 + 2023-01..2025-12, 1-minute LTP and definitions) | `~/betangel-data/historic` (ingested and indexed) | No UI mode. It is used only for counts-only checks run from the command line, in case the PRO ingest slips: a catalogue build and a reader smoke. Research months stay hidden. |
 | Synthetic fixtures | Generated at test time into temp dirs by `tests/fixtures/gen.py` | All automated tests and every screenshot. |
 
@@ -572,7 +571,7 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
 
 ### 5.2 Data roots and discovery
 
-- The suite reads a configured list of indexed data roots. Each must pass `archive.check_data_root` (archive.py:273). It never reads `incoming/`.
+- The suite reads a configured list of indexed data roots. Each must pass `archive.check_data_root` (archive.py:273). It never reads `incoming/`. No data root is read while the suite root is not agreed (`roots.STATE_ROOT_AGREED` is False; Nuance, PR #1 review).
 - For every `manifests/<sha>.json` found by `market_index.archive_shas(root)` (market_index.py:927), it needs `index/<sha>/head-v1.json`, with these checks:
   - the head's `kind` is `betfair_historical_market_index_head`;
   - its `schema_version` is 1;
@@ -607,7 +606,7 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
   A test plants outcome values in a synthetic record and asserts they never reach SQLite, a frame or the browser before CLOSED.
 - **Records with no view** (no marketTime before the cutoff) are counted and not listed.
 - **Visible by default:** the engineering year.
-  - **Research months.** While `research_months_ruling` is null, research-month records are **not written** to the catalogue at all; only their counts are stored. Enabling them needs a ruling id from Yu with Nuance and Astra. The id is recorded in the ledger, logged at startup, and shown in the picker.
+  - **Research months.** While `research_months_ruling` is null, research-month records are **not written** to the catalogue at all; only their counts are stored. Enabling them needs a ruling id from Yu with Nuance and Astra. The id is recorded in the ledger, logged at startup, and shown in the picker. A research month in which a market is opened becomes inspected (contract.py:39; Nuance's answer to Q-N11).
   - 2017-04 is inspected and 2026 is refused.
 
 ### 5.4 Opening a member
@@ -642,7 +641,8 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
 - **Viewed-markets ledger.**
   - `ledger/viewed-markets.jsonl` records, for every market opened: market id, plan, archive sha, month, role, wall time, furthest replayed pt, whether CLOSED was reached, the attempt count, the session ids, and any research-month ruling id.
   - **Agents never read it.** `bin/suite ledger-summary` prints counts only, by month, role, plan and attempt.
-  - Reconciliation with Nuance's trial ledger is done by code that compares salted hashes of market ids and prints only match counts. The format is agreed with Nuance (Q-N11).
+  - Nuance's trial ledger holds no market ids (trial_ledger.py:96), so there is no hash matching. Reconciliation is at month level, by the counts `ledger-summary` prints (Nuance's answer to Q-N11).
+  - Nuance's answer to Q-N11 sets the fields at month level: a keyed hash, plan, month, role, opened_by, furthest phase, attempts and ruling id. The list above is brought in line with it when the ledger is built in 1a.
 - **Agents never see rows** (section 3.9). `bin/suite selfcheck`, `catalogue`, `diagnose` and `ledger-summary` print codes, counts, salted hashes and timings only.
 
 ### 5.6 What never goes in git
@@ -654,7 +654,7 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
   - venue "Synthetic Park" and runners "Synthetic 1..n".
   
   The scanner fails on any `1.1[0-9]{8}`-shaped market id, or any runner-name table, outside that namespace. In synthetic mode the engine refuses non-synthetic ids and every configured real data root.
-- **Writing:** no real-market screenshots, prices, names or ids in PRs, issues, Collab or the mailbox.
+- **Writing:** no real-market screenshots, prices, names or ids in PRs, issues, Collab or the mailbox. PR descriptions, review replies and other outbound text are scanned with `tools/hygiene_scan.py` before they are posted (Nuance, PR #1 review).
 
 ---
 
@@ -737,7 +737,10 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
   - `rc.spb` and `rc.spl`;
   - `md.runners[].{name, sortPriority, status, adjustmentFactor, removalDate, bsp}`;
   - `md.{status, inPlay, version, marketTime, suspendTime, betDelay, bspMarket}`.
-- **Values.** It keeps the latest values at V. Quoted `"NaN"` and `"Infinity"` SP strings count as missing.
+- **Values.** It keeps the latest values at V. Quoted `"NaN"` and `"Infinity"` SP strings count as missing. On Nuance's terms (PR #1 review; her answer to Q-N9):
+  - it resets at every image (`img`);
+  - `spb` and `spl` are deltas, applied as `book.py` applies them and cleared while the market is not OPEN (book.py:239-255);
+  - a `bsp` is shown only within [1.01, 1000].
 - **Isolation.** It is labelled "SP: suite display parser, not in the betangel-research schema", and it is never passed to `PaperExchange` or `validate`.
 - **But SP content still reaches paper through `book.py`.** A non-finite size in `spb`/`spl` marks the snapshot `non_finite_size`, and a non-finite `spb`/`spl` price poisons the runner (section 2.4). Either one makes V9 refuse and blocks paper fills until the next image. The frame shows the `invalid_reason`, and the debrief counts these refusals.
 - **First PRO measurement.** At the first PRO ingest, count the markets and snapshots whose `non_finite_size` comes from SP fields (counts only), and feed the result into U-2.
@@ -851,7 +854,12 @@ Nuance has answered: during a real run, "a suite elsewhere is harmless but slows
   - more than 30 minutes before the off (V9b, validate.py:122-130);
   - a second order in a market while one is unresolved (R3);
   - any replace, drag or size reduction.
-- **Practice loss limit.** Default £20 per day, mirroring `max_daily_loss`; it is a question for Yu. When the limit is reached, paper is disabled for the rest of the day, with an explanation.
+- **Practice loss limit.** It follows the active cap profile: £20 a day under `v1-live-mirror`, mirroring `max_daily_loss`, and £200 under `practice` (the table above). Whether it is useful is a question for Yu (Q-Y6). When the limit is reached, paper is disabled for the rest of the day, with an explanation.
+  - It is never the journal fold's daily figure. The fold books each order's worst case, so in Nuance's probe a +£3.27 green-up counted as −£36.66 (PR #1 review).
+  - Nuance asked for its day, figure and store to be defined. Proposed (lab-Claude's proposal, for Nuance's review and Yu's Q-Y6):
+    - **the day** is the Europe/London calendar day of the wall clock, not the replayed race's date;
+    - **the figure** is the sum over that day's sessions, voided ones included, of each session's official paper-v1 net where it has one, and otherwise the worst outcome of its matched position, net of 2% where positive;
+    - **the store** is none of its own: the figure is recomputed from the day's `report.json` files under the suite root, plus the open session's position in memory.
 
 ### 7.3 One click, step by step
 
@@ -914,7 +922,7 @@ Nuance has answered: during a real run, "a suite elsewhere is harmless but slows
 3. **Why it is conservative.** Every value the oracle's high-water mark could hold at V is one of the raw values seen up to V. So the suite's high-water mark is **at least** the oracle's at every step.
 4. **When it changes nothing.** When trd never decreases, the re-seed changes nothing: the raw maximum up to V equals the current value, which the oracle also holds.
 
-Whether a suite-built `state` is acceptable is a question for Nuance (Q-N7). The proposed upstream helper is U-6.
+Nuance accepted the suite-built `state` (Q-N7, PR #1 review; Yu can override), with a fresh exchange per attempt and finite trd values only. Its test is in the 1b exit. The proposed upstream helper is U-6.
 
 **The parity contract**, tested in `tests/test_paper_parity.py`:
 
@@ -935,8 +943,8 @@ Parity runs only on small synthetic fixtures; `run_paper_replay` materialises ev
   - in the last 10 minutes, the per-market maximum gap had a median of 1.35 s, a p90 of 2.67 s and a maximum of 17.2 s;
   - only 1 of 39 markets had any gap over 10 s;
   - from T-30 to the off, 13 of 39 markets had such gaps, 36 in total.
-- **MVP: parity only.** Unstamped books are used. The refusal is explained plainly ("no market change for 12 s ...") and counted in the debrief.
-- **Cut from the MVP.** The draft 0.1 opt-in "quiet-book relaxation" (`quiet_books_stamped`) is removed. It is revisited only if the debrief counts show it matters (U-8).
+- **MVP: parity only.** Unstamped books are used. The refusal is explained plainly ("no market change for 12 s ...") and counted in the debrief, split by time to the off (Nuance, Q-N6).
+- **Cut from the MVP.** The draft 0.1 opt-in "quiet-book relaxation" (`quiet_books_stamped`) is removed. It is revisited only if the debrief counts show it matters (U-8): Nuance keeps U-8 parked, and revisits it if stale refusals show in T-10 to the off (Q-N6).
 
 ### 7.6 Cancel, pending orders, STOP, lapse at the off, close and settle
 
@@ -956,6 +964,7 @@ Parity runs only on small synthetic fixtures; `run_paper_replay` materialises ev
   - **The reasons:** `operator_stop_before_activation` for STOP and void-and-rewind; `operator_withdrawn_before_activation` for every other command.
   - **Parity.** The session is labelled "parity not checkable".
   - **Not chosen:** letting the order activate and then cancelling it at A, because it could take immediate fills the operator had tried to prevent.
+  - **Nuance's answer to Q-N5 changes this for live-parity mode** (PR #1 review, 2026-10-16; Yu can override): "The 500 ms models an order in flight and step shows the activation book, so in live-parity Esc on a pending order activates then cancels; withdrawal only for void and badged exploration; readers use the folded error_code." Lab-Claude reads this as: in live-parity mode every cancel command, STOP included, lets a pending order activate at A and then cancels it, and withdrawal stays only for void-and-rewind and for exploration mode, which is badged. The rest of this section, the keys in section 8.3 and the tests in section 11 are brought in line before 1b.
 - **Keys and commands.** Each is one OperatorClick per command; pending orders are withdrawn and EXECUTABLE ones cancelled:
   - Esc: the last unmatched order, which may be pending.
   - Z: every back on the runner. X: every lay on the runner.
@@ -1005,9 +1014,12 @@ Parity runs only on small synthetic fixtures; `run_paper_replay` materialises ev
 
 ### 7.9 Rule 4 and honest settlement
 
-- **The exclusion.** `pnl.market_realized` excludes every market with a REMOVED or REMOVED_VACANT runner (pnl.py:15, :53-54) and every dead heat (pnl.py:55-56). That is 49.5% of the engineering-year WIN markets.
+- **The exclusion.** `pnl.market_realized` excludes every market with a REMOVED or REMOVED_VACANT runner (pnl.py:15, :53-54) and every dead heat (pnl.py:55-56). That is at least 49.5% of the engineering-year WIN markets.
 - **The debrief** always shows the official paper-v1 result, for example "excluded: rule4_adjustment_not_modelled".
-- **Indicative figure.** It appears only when **every matched portion was matched strictly after the market's last removal**, using the pt of the first REMOVED status seen in the stream. In that case Rule-4 deductions cannot apply to Yu's bets. It is labelled "indicative: Rule 4 cannot apply to bets matched after the last removal".
+- **Indicative figure.** It appears only when **every matched portion was matched strictly after the removal cut-off**. In that case Rule-4 deductions cannot apply to Yu's bets.
+  - **The cut-off** (Nuance, PR #1 review) is the latest, over all runners, of each runner's first move into REMOVED or REMOVED_VACANT, taken over the whole stream: not the earliest removal, and not the close. A test with two removals at different pts checks it.
+  - **Label:** "indicative: Rule 4 cannot apply to bets matched after the last removal; removal timing is not in the fact register".
+  - **Out of totals.** The indicative figure never counts in practice totals.
   - **Computation.** Gross is the sum of `order_pnl_pence`. Commission mirrors pnl.py:79-82 exactly:
     - `costs = evaluation.settled_market_costs({market_id: gross}, 0.02)`;
     - `commission_pence = math.ceil(round(costs["markets"][market_id]["commission"], 6))`.
@@ -1021,21 +1033,21 @@ Parity runs only on small synthetic fixtures; `run_paper_replay` materialises ev
 
 ### 7.10 Journal, sessions, attempts and determinism
 
-- **One session per market attempt**, at `sessions/<YYYY>/<MM>/<session_id>/` (0700):
+- **One session per market attempt**, at `sessions/<YYYY>/<MM>/<session_id>/` (0700). `session_id` is random (`secrets.token_hex(8)`), and `<YYYY>/<MM>` is the wall-clock month of the attempt, not the race's month. Agents never read `sessions/` (rule 5). The session holds:
   - `journal-paper.sqlite` (0600; hash-chained; WAL with fullfsync; *measured* about 4.3 ms per append, about 13 ms per click);
   - `commands.jsonl`: every command with its virtual pt, nonce and result code. It never has a key named `token`, `headers`, `authorization` or `session`;
   - `session.json`, which holds:
     - `session_id` (never a key named `session`), market id, plan, archive and member sha256;
-    - the release tag and tree hash, the pin commit and the file-manifest sha, and the interpreter;
+    - the release commit and tree hash, the pin commit and the file-manifest sha, and the interpreter;
     - the paper params' and the validated config's `canonical_sha256` (never the config itself; section 3.8), the commission source and the cap profile;
     - the mode flags (parity, exploration) and the attempt number;
-    - the status: `completed`, `abandoned`, `voided_rewound`, `interrupted_run` or `not_closed_in_recording`;
+    - the status: `completed`, `abandoned`, `voided_rewound`, `stopped`, `max_session`, `engine_failed`, `interrupted_run`, `interrupted_crash` or `not_closed_in_recording` (Nuance, PR #1 review). STOP's order handling (section 7.6) comes before every end except `completed` and `not_closed_in_recording`, which follow the oracle (section 7.6, at CLOSED). `interrupted_run` and `interrupted_crash` end without writing, so for them it is applied at the next start;
   - `report.json`.
   
   All writes go through `receipts.atomic_write_json`, `append_jsonl` or the journal, which run `refuse_forbidden` and `assert_clean`. Tests write a real `session.json`, a `report.json` and a note through these writers.
 - **Positions** come from an incremental `JournalFolder` fed by the events `append` returns (journal.py:483, :689-726). The suite never calls `fold()` per frame (journal.py:444). A test asserts that the folder's state equals `OrderJournal.fold(..., submitting_as_unknown=False)`.
 - **Determinism (synthetic mode only).** Re-running `commands.jsonl` as `ReplayedClick`s over the same synthetic member, into a temp journal, gives an identical journal fold and identical results (test). This re-run never runs on real data (R-6).
-- **Abandoned sessions.** A session is marked `abandoned` only after its watch grace period expires with nobody watching (section 8.6), or at the next start after a crash. Its journal stays readable.
+- **Abandoned sessions.** A session is marked `abandoned` only after its watch grace period expires with nobody watching (section 8.6). After a crash, it is marked `interrupted_crash` at the next start. Either way its journal stays readable.
 - **MVP: no crash resume.** *Later:* journal `paper_state` in `note` events (journal.py docstring, PAPER_STATE_KINDS :88) for resume.
 
 ### 7.11 Fill-model caveats shown to Yu
@@ -1103,7 +1115,7 @@ It is labelled "not a fill" and is never passed to `PaperExchange`. It shows Yu 
 3. **Market overview** (should). Every runner with LTP, projected SP near and far (display-only), total matched, volume %, and price range since open.
 4. **Debrief** (at CLOSED)
    - Winner revealed.
-   - The official paper-v1 settlement (gross, 2% commission, net) and the indicative Rule-4 figure where it is exact.
+   - The official paper-v1 settlement (gross, 2% commission, net) and the indicative Rule-4 figure where it applies (section 7.9).
    - Flat at the off; size lapsed at the off; fills (immediate or passive); fill rate and time resting; the queue tracker for each resting order.
    - Average prices against the final BSP. Commission as ticks needed to cover 2%.
    - Trades drawn on the chart; refusals by rule (stale books and invalid books counted); attempt number; parity status.
@@ -1156,8 +1168,8 @@ There is no auto-keypress and no timed action, because those are automation.
 **Every command Yu runs uses the release copy.** That is `~/.local/share/betangel-suite/app/current/bin/suite`, with a staged alias `suite` for Yu's shell.
 
 - **How a release is made.**
-  - A release is a `git archive` of a tag on the merged main branch, installed by one command, `bin/suite release <tag>`, after review.
-  - That command refuses a dirty tree or an untagged commit. It writes `RELEASE.json` (tag, commit, tree hash, file sha256s) and makes the copy read-only.
+  - A release is a `git archive` of a merge commit on main, named by its full SHA, not a tag, and installed by one command, `bin/suite release <merge-sha>`, after review (Nuance, PR #1 review).
+  - That command refuses a dirty tree or a commit that main does not contain. It writes `RELEASE.json` (commit, tree hash, file sha256s) and makes the copy read-only.
 - **What a working checkout can do.** An engine whose code is not a release copy with a matching `RELEASE.json` runs in **synthetic mode** only: `serve`, `open` and `ssh-session` refuse every non-synthetic data root there.
 - **Headless counts-only commands** (`selfcheck`, `catalogue`, `diagnose`, `ledger-summary`) read real roots only from a release copy, or from a clean checkout of a commit that main contains, because their output goes into an agent's context (Nuance, PR #1 review, item 4).
   - A filter on `sys.stdout` would not be enough: it misses `os.write(1, ...)` and child processes, and a grammar of bare integers passes ids and prices.
@@ -1171,7 +1183,7 @@ There is no auto-keypress and no timed action, because those are automation.
    - The engine starts, and during its startup phase calls `/usr/bin/open` with `http://127.0.0.1:8765/#c=<bootstrap code>`. The URL is never printed.
    - If an engine is already running, `open` attaches through the control socket, gets a fresh code and opens it.
    - The page POSTs the code to `/api/v1/bootstrap`, gets a session token, keeps it in JS memory only, and strips the fragment with `history.replaceState`.
-   - After the data downloads, Yu should sign out of historicdata.betfair.com in the lab's Safari. The lab should hold no Betfair session (mailbox 08:57Z, B4).
+   - Yu should sign out of historicdata.betfair.com in the lab's Safari, and delete saved betfair.com passwords and betfair.com site data there, now rather than after the downloads. The lab should hold no Betfair session (mailbox 08:57Z, B4, which asks for both; Nuance, PR #1 review). Asked of Yu in Q-Y11.
 2. **From the Air: recommended, needs Yu's approval (R-2).** A forced-command, tunnel-only SSH key, plus an sshd drop-in.
    - **Staging.** Lab-Claude stages `tools/stage/suite-viewer-setup.sh` (lab side) and the Air `~/.ssh/config` snippet, and never runs either.
      - Yu generates the key on the Air, with a passphrase. Only the public key moves.
@@ -1221,7 +1233,7 @@ There is no auto-keypress and no timed action, because those are automation.
      - On stdin EOF, `ssh-session` pauses and keeps the session for `watch_grace_s` (default 10 min) instead of stopping.
      - A new `ssh lab-suite` (or `suite open`) during that time **takes over** through the control socket. The engine pauses, journals a note, invalidates the old session token and issues a fresh code. It is not refused.
      - Only when the grace period expires with nobody watching is the session marked `abandoned` and the engine stopped.
-     - A maximum session time (default 4 h) still applies.
+     - A maximum session time (default 4 h) still applies; the session then ends as `max_session`.
      - **The bound for a silent disconnect** (the lid closed or Wi-Fi gone, with no clean close; Nuance, PR #1 review, item 8). Through `ssh -L`, the lab's sshd keeps reading the stream into a 2 MiB window, so the engine's writes do not fail. In Nuance's probes, a loopback sshd sent no keepalive while a 17 KB/s stream flowed and timed out after about 135 s; on a tip copy, a peer that reads and never closes kept the clock running for all 40 s of the probe. So today a silent disconnect pauses only within about 3 min (longer while paused; *inference*).
      - **Owed before Phase 1b, with a test:** the actor pauses with reason `not_watched` after about 5 s with no request from the playing controller.
    - **What the key can and cannot do.** Lab-Claude stages an Air-side self-test, which Yu or Nuance runs right after installing the key. It attempts each of the following and reports what is refused:
@@ -1299,6 +1311,7 @@ A buggy or tampered page could show a fake Betfair login and send what Yu types 
 - **Command enum:** `open_market`, `play`, `pause`, `set_speed`, `seek`, `jump`, `step`, `subscribe`, `claim_control`, `place`, `cancel`, `cancel_side`, `cancel_all`, `stop`, `resume`, `void_and_rewind`, `report_problem`, `set_prefs`, `export_csv`. Exploration mode adds `replace`. A test asserts that no route or command name contains `live`, `account`, `funds`, `login`, `kill`, `upload` or `share`.
 - **Static files** are mapped from the manifest by exact name, never joined from the request path, and there is no directory listing.
 - **Control socket.** `run/control.sock` (0600, in the 0700 run dir) accepts only `attach`, `new_code`, `pause` and `stop`, from the same uid (checked with `getpeereid`).
+  - `new_code` mints a fresh bootstrap code for whichever same-uid process asks, silently: nothing is printed to Yu or opened (Nuance, PR #1 review). Agents never send `attach` or `new_code` themselves (rule 6); that is conduct only (section 9.4).
 
 ### 9.2 Authentication and request checks
 
@@ -1342,7 +1355,7 @@ These headers apply to error responses too (section 9.1).
 | A hostile web page in Yu's browser (CSRF, DNS rebinding, cross-origin reads, clickjacking) | Bearer token in a header, single-use bootstrap code, the Host and Origin checks, JSON-only POST, no CORS, CSP and frame-ancestors, no cookies | None known. |
 | Devices on the home LAN | Loopback-only bind; the viewer key is least-privilege (forced command, one `permitopen`, `from=192.168.50.*`); the sshd drop-in closes `-R` and Unix-socket forwarding | Depends on Yu installing the drop-in with the key; the Air-side self-test confirms it. |
 | **Lab-served JS running in Yu's Air browser** (the only lab-to-Air code path) | No credential fields (any login prompt is an attack); Private window or a profile without a Betfair login; no suite listeners on the Air; reviewed release copies only | A tampered page can still show anything on screen; Yu's rule is never to type credentials into it. It can also send blind requests and WebSocket handshakes to other Air loopback services (section 8.6): a netstat check before R-2, and L1's tested deny-all content rule. |
-| **Same-uid processes, including agents, holding or minting the token** (lab-Claude locally; Nuance through its full-shell key) | Single-use codes; token in memory only and registered with `secret`; `open` and `--print-url` refused over SSH; the agent-conduct rule (agents never run `open`, `ssh-session` or `--print-url`, and never POST commands on a real-data engine); the passphrase-protected viewer key | Not preventable against a determined same-uid process, as in the repo's own threat model (presence.py:1-11). I-8 and I-16 are code-path properties, not proof of a human. |
+| **Same-uid processes, including agents, holding or minting the token** (lab-Claude locally; Nuance through its full-shell key) | Single-use codes; token in memory only and registered with `secret`; `open` and `--print-url` refused over SSH; the agent-conduct rule (agents never run `open`, `ssh-session` or `--print-url`, never send `attach` or `new_code` to the control socket, and never POST commands on a real-data engine); the passphrase-protected viewer key | Not preventable against a determined same-uid process, as in the repo's own threat model (presence.py:1-11). I-8 and I-16 are code-path properties, not proof of a human. |
 | **Screen capture on the Air** while a suite page shows a real race or a bootstrap code (an agent's `screencapture` passes the preflight with no prompt; computer use) | Rule 5: no capture while a suite page or an `ssh lab-suite` window is open; Q-Y10 covers the Air before its first real race (section 8.6) | Conduct only; sessions in other repos never read this repo's AGENTS.md. A line in the Air's CLAUDE.md is asked of Yu, not answered (Q-Y10). |
 | Browser extensions reading licensed data | A Private window, or a profile without extensions | Yu's choice. |
 | Supply chain | No third-party Python or JS. A pinned, hash-checked upstream with an import-origin assertion. `-S` drops site-packages. | Homebrew python@3.13 itself. |
@@ -1372,7 +1385,7 @@ These headers apply to error responses too (section 9.1).
 | I-11 | No gated month ever replayed | `month_gate` on path and marketTime at catalogue time and at every open. A `None` month is refused as `month_unknown` first. | Synthetic members dated 2026-01, 2026-09, 2026-10 and 2027-01 are refused with the gate reason. A member with no parseable marketTime is refused as `month_unknown`. Research months are refused while no ruling is set. |
 | I-12 | Spoiler-free | Catalogue field allowlist; the tap releases outcome values only at their pt | Planted outcome values never reach SQLite, a frame or the browser before CLOSED. |
 | I-13 | Pin integrity, and never the moving clone | Per-file hashes, the origin assertion, `sys.path` append only | A tampered file in a temp copy gives `pin_mismatch`. `sys.path` never contains `~/betangel-research`. Origin-assertion test. Oracle tests never pass `~/betangel-research` as `repo_root`. |
-| I-14 | Right interpreter | The launcher's absolute path; the version check | 3.15 or below 3.11 is refused. |
+| I-14 | Right interpreter | The launcher's absolute path; the version check | Only 3.13 and 3.11 are accepted; 3.12, 3.14 and 3.15 are refused. |
 | I-15 | Paper fidelity | Exact mode, the yield tracker, position-based re-seeding | The parity contract (section 7.4), the yield-tracker oracle test, the no-look-ahead re-seed test, the full-cancel test, and `journal.verify()` for every session. |
 | I-16 | Agents are not handed Yu's token or real rows by the code. This is a code-path property: the code never prints them, but a same-uid agent that disobeys rule 6 is out of reach. | Single-use codes printed only by `open` (to `/usr/bin/open`), `ssh-session` and `--print-url`; token in memory and registered with `secret`; aggregate-only diagnostics; error mapping; headless commands read real roots only from reviewed code (section 8.6) | Test runs capture stdout and stderr and assert no token or code pattern. Planted leaks (`os.write(1, ...)`, a child process, an id-shaped integer) never reach stdout or stderr. A `selfcheck` run over fixtures does not print the fixture's synthetic names or prices. A synthetic member with a bad hash or a truncated line produces no market-id or event-id pattern on stdout, stderr, `logs/` or HTTP. |
 | I-17 | No engine during Nuance's runs | The run marker, checked before anything is written under `~/betangel-data` and on every tick. `run/realdata.lock`, which every real-data process holds shared and Nuance's wrapper takes exclusive (section 6.8). | A marker present at start refuses the engine and real-data commands. An unreadable marker refuses them too. A headless command running when the marker appears stops before its next member, and the wrapper's `LOCK_EX` waits for it. A marker appearing mid-session freezes the engine with no writes (tree diff), and it exits within the grace period. |
@@ -1430,7 +1443,7 @@ Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`
      - What-If equals the sum of `order_pnl_pence`;
      - outcomes after greening are equal within 1p, or the green-up is correctly refused;
      - commission is charged only on positive totals;
-     - the indicative Rule-4 figure equals `market_realized` where both apply;
+     - the indicative Rule-4 figure equals `market_realized` where both apply, and two removals at different pts give the latest first-removal cut-off (section 7.9);
      - the exposure oracle agrees on both bases.
   6. **HTTP security:**
      - section 9.2 items 1-9 and the headers, against a real server on an ephemeral loopback port;
@@ -1439,7 +1452,7 @@ Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`
   7. **UI (uisnap):** synthetic screens, keys and stream handling, at the Air viewport.
   8. **Performance** (heavy tier; generous thresholds): synthetic markets sized like the real p50, p99 and max meet the section 6.7 budgets, and RSS stays at 600 MB or less with 2 cached markets.
   9. **Upstream** (heavy tier, on pin bumps only): the upstream offline suite at the pin (section 3.5), plus the contract test.
-- **Real-data smoke** (local only; never in git; never while the run marker exists). `bin/suite selfcheck --sample N` opens N random engineering-year members. For each it verifies hashes, replays to CLOSED, and writes a journal containing only notes. It **places no orders**: scripted orders on real data would need a ruling (R-6). It prints **counts and timings only**.
+- **Real-data smoke** (local only; never in git; never while the run marker exists; only from reviewed code, section 8.6). `bin/suite selfcheck --sample N` opens N random engineering-year members. For each it verifies hashes, replays to CLOSED, and writes a journal containing only notes. It **places no orders**: scripted orders on real data would need a ruling (R-6). It prints **counts and timings only**.
 - **Manual acceptance.** After each phase, Yu works through a written checklist in Yu's direct channel (section 3.9): keys, latency, readability on the Air through the tunnel.
 - **Review gates.** As routed in section 3.9. Lab-Claude never accepts its own Collab edit tasks.
 
@@ -1456,13 +1469,13 @@ Lab-Claude continues on stacked branches while reviews queue. Lab-Claude also ca
 
 | Phase | Scope | Lab-done exit | Review-accepted exit | Estimate (lab work) |
 |---|---|---|---|---|
-| **0: Scaffold, governance, pin, guards and viewing** (lab, synthetic only) | **Governance and pin:** the suite's AGENTS.md, README and this document; `pin/betangel-research.json` and `tools/vendor_research.py`.<br>**Engine and guards:** the launcher (SSH checks before `env -i`); `guard.py`; `rx.py` with error mapping; `roots.py`; `release.py`; `runmarker.py`; the hygiene scanner and pre-commit.<br>**Fixtures:** the synthetic generator, including the synthetic TAR through the vendored ingest and index.<br>**HTTP:** the skeleton (bootstrap code, token, Host, Origin, CSP, closed routes, HTTP/1.1 chunked stream) streaming one synthetic market's best prices.<br>**Viewing:** `ssh-session` with pause-unless-watched, heartbeat and takeover; `bin/suite release`; the staged viewer-key and sshd drop-in script; the Air-side self-test; `tools/uisnap`.<br>**Tests:** I-1..I-14 and I-16..I-19.<br>**Coordination:** the Phase 0 packet to Yu (R-1..R-7, Q-Y8) and to Nuance (Q-N1..Q-N5, Q-N12), and a Collab coordination task. | Tests green on 3.13 and 3.11. The closure is the 25 allowlisted modules. The hook refuses TEST-NET. A tampered pin is refused. Nothing is written outside the roots. uisnap PNGs of the synthetic ladder. **M1: Yu sees a synthetic ladder** on the lab screen, and from the Air if R-2 is approved and installed (*target 2026-10-29*). | Nuance agrees the allowlist, pin, state root and **run marker**. Astra has reviewed the guard, boundaries and launcher. Yu has answered the packet. | 1.5-2 weeks |
-| **1a: Data layer, catalogue and read-only replay ladder** | Discovery of indexed roots; head and manifest checks; the spoiler-free catalogue (roles by `market_month`, research months not written); the verified in-memory member reader with the tighter limits; the yield tracker, checkpoints on the new schedule, clock and frames; the SP and definition tap. UI: picker, canvas ladder, one-click grid, countdown, banner, replay controls, chart strip, problem reports. The viewed-markets ledger and `ledger-summary`. Synthetic first. Real-data checks are counts only. | The synthetic UI is complete and accepted through uisnap and Yu's checklist **without PRO**. Real BASIC checks (counts only, from a release copy or a clean checkout of a commit main contains; section 8.6): the catalogue shows 12,200 engineering-year WIN markets, hides research months and holds no outcome fields; 200 BASIC members pass the reader smoke. Reader and yield-tracker parity pass, as does seek determinism. | Nuance reviews the data path. Yu accepts the synthetic UI. | 2.5-3.5 weeks |
+| **0: Scaffold, governance, pin, guards and viewing** (lab, synthetic only) | **Governance and pin:** the suite's AGENTS.md, README and this document; `pin/betangel-research.json` and `tools/vendor_research.py`.<br>**Engine and guards:** the launcher (SSH checks before `env -i`); `guard.py`; `rx.py` with error mapping; `roots.py`; `release.py`; `runmarker.py`; the hygiene scanner and pre-commit.<br>**Fixtures:** the synthetic generator, including the synthetic TAR through the vendored ingest and index.<br>**HTTP:** the skeleton (bootstrap code, token, Host, Origin, CSP, closed routes, HTTP/1.1 chunked stream) streaming one synthetic market's best prices.<br>**Viewing:** `ssh-session` with pause-unless-watched, heartbeat and takeover; `bin/suite release`; the staged viewer-key and sshd drop-in script; the Air-side self-test; `tools/uisnap`.<br>**Tests:** I-1..I-14 and I-16..I-19, with I-8, I-11 and I-12 in part only (synthetic mode); the rest is in the 1a and 1b exits.<br>**Coordination:** the Phase 0 packet to Yu (R-1..R-7, Q-Y8) and to Nuance (Q-N1..Q-N5, Q-N12), and a Collab coordination task. | Tests green on 3.13 and 3.11. The closure is the 25 allowlisted modules. The hook refuses TEST-NET. A tampered pin is refused. Nothing is written outside the roots. uisnap PNGs of the synthetic ladder. **M1: Yu sees a synthetic ladder** on the lab screen (*target 2026-10-29*); from the Air once R-2 is installed, the Phase 0 stack is merged and Yu has released it (section 8.6). | Nuance agrees the allowlist, pin, state root and **run marker**. Astra has reviewed the guard, boundaries and launcher. Yu has answered the packet. | 1.5-2 weeks |
+| **1a: Data layer, catalogue and read-only replay ladder** | Discovery of indexed roots; head and manifest checks; the spoiler-free catalogue (roles by `market_month`, research months not written); the verified in-memory member reader with the tighter limits; the yield tracker, checkpoints on the new schedule, clock and frames; the SP and definition tap. UI: picker, canvas ladder, one-click grid, countdown, banner, replay controls, chart strip, problem reports. The viewed-markets ledger and `ledger-summary`. Synthetic first. Real-data checks are counts only. | The synthetic UI is complete and accepted through uisnap and Yu's checklist **without PRO**. Real BASIC checks (counts only, from a release copy or a clean checkout of a commit main contains; section 8.6): the catalogue shows 12,200 engineering-year WIN markets, hides research months and holds no outcome fields; 200 BASIC members pass the reader smoke. Reader and yield-tracker parity pass, as does seek determinism. I-11 and I-12 are tested in full (catalogue, reader and tap). | Nuance reviews the data path. Yu accepts the synthetic UI. | 2.5-3.5 weeks |
 | **M-PRO: first real PRO race** (its own milestone) | Needs Nuance's PRO ingest and index (Q-N4). Ingest and index are single-threaded and read every line of every member: about 100 GB decompressed and about 380M lines, so *inference* about 1.5-3 h of CPU. The run marker covers it. | PRO catalogue built (counts only); open budgets met on real members (p99 ≤ 2 s, max ≤ 8 s); the SP non-finite counts recorded. Yu watches a real PRO race from T-10 to CLOSED at 1-10x, on the lab screen or through the tunnel, from the release copy. | Yu's acceptance. | Dated once Nuance gives an ingest date; about 2-3 days of lab work after that |
-| **1b: Paper trading** (after R-1, R-6 and R-7; real-data journal writes only once the run marker is agreed; conditional on Nuance's ladder-key count, section 7.1) | PaperDesk with OperatorClick, and `TestOrder` in synthetic mode only; `validate_place`; exact mode with position-based re-seeding; activation, including at CLOSED and at the end of the member; cancel with the correct split, pending withdrawal and keys; STOP; lapse at the off and at close; settle at 2%; positions, exposure on both bases, green-up; the queue tracker; Rule-4 official and indicative figures; journals, `commands.jsonl`, sessions, attempts and void; the live v1 shadow badge; cap profiles; the debrief. With R-7 = ladder trading: exploration mode (replace, drag, size reduction). | The parity contract and conservative property hold; `journal.verify` passes for every session; deterministic synthetic re-run; the arithmetic and exposure property tests pass; the withdrawal and full-cancel tests pass; the 5 s `not_watched` pause test passes (section 8.6). Real paper clicks pass V9's ladder check: Nuance's count finds the key present, or U-10, and any V9 ruling by Yu under D-5, has landed (section 7.1). | Nuance and Astra review the paper path. Yu completes 10 practice races with no confusing refusal or mismatch and confirms the keymap. | 3-4 weeks |
+| **1b: Paper trading** (after R-1, R-6 and R-7; real-data journal writes only once the run marker is agreed; conditional on Nuance's ladder-key count, section 7.1) | PaperDesk with OperatorClick, and `TestOrder` in synthetic mode only; `validate_place`; exact mode with position-based re-seeding; activation, including at CLOSED and at the end of the member; cancel with the correct split, pending withdrawal and keys; STOP; lapse at the off and at close; settle at 2%; positions, exposure on both bases, green-up; the queue tracker; Rule-4 official and indicative figures; journals, `commands.jsonl`, sessions, attempts and void; the live v1 shadow badge; cap profiles; the debrief. With R-7 = ladder trading: exploration mode (replace, drag, size reduction). | The parity contract and conservative property hold; `journal.verify` passes for every session; deterministic synthetic re-run; the arithmetic and exposure property tests pass; the withdrawal and full-cancel tests pass; the 5 s `not_watched` pause test passes (section 8.6); I-8 is tested in full (`PaperDesk` and `OperatorClick`); the re-seed test of Q-N7 passes. Real paper clicks pass V9's ladder check: Nuance's count finds the key present, or U-10, and any V9 ruling by Yu under D-5, has landed (section 7.1). | Nuance and Astra review the paper path. Yu completes 10 practice races with no confusing refusal or mismatch and confirms the keymap. | 3-4 weeks |
 | **1c: Practice log, polish and MVP sign-off** | Practice log and CSV export; sounds; keymap overlay and settings; market overview; exploration mode if not already in 1b; docs (data-handling, keymap, threat model). | No data-hygiene findings in the scanner. MVP tagged. | A week of short sessions by Yu and a written feedback round. Release copy installed. | 1-1.5 weeks |
 | **Total to MVP** | | | | **about 8-11 weeks of lab work, plus review waits** |
-| **Later L1: native macOS shell** (before any live click) | A SwiftPM executable (AppKit, WKWebView with `WKWebsiteDataStore.nonPersistent()`, `WKURLSchemeHandler` `suite://`), grown from uisnap.<br>**It runs on the Air**, and reaches the lab engine with no forwarding: the forced command `suite ssh-session --stdio` bridges the SSH channel's stdin and stdout to the engine's Unix socket. The viewer key then becomes plain `restrict`, with no port-forwarding.<br>The browser TCP tunnel stays only for the browser MVP.<br>It is built from a reviewed tag, preferably on the Air by Nuance if the Air has the CLT (Q-N13). Otherwise it is built on the lab with CLT Swift 6.3.3 and copied with its hash verified, ad-hoc signed for arm64 (M2). There is no Xcode, Apple ID or distribution.<br>Menu-bar STOP. Global hotkeys need Accessibility or Input Monitoring, which only Yu can grant. | Every MVP feature works with no TCP port open on either machine (`lsof`). A peer from another uid is refused. A tested deny-all content rule keeps the page from reaching any Air loopback port (section 8.6). | Astra's security review; Nuance agrees the Air-side install. | 2.5-4 weeks, including the Air-side install, which depends on Nuance and Q-N13 |
+| **Later L1: native macOS shell** (before any live click) | A SwiftPM executable (AppKit, WKWebView with `WKWebsiteDataStore.nonPersistent()`, `WKURLSchemeHandler` `suite://`), grown from uisnap.<br>**It runs on the Air**, and reaches the lab engine with no forwarding: the forced command `suite ssh-session --stdio` bridges the SSH channel's stdin and stdout to the engine's Unix socket. The viewer key then becomes plain `restrict`, with no port-forwarding.<br>The browser TCP tunnel stays only for the browser MVP.<br>It is built on the Air from the reviewed merge SHA: the Air has the Command Line Tools 26.4 and Swift 6.3.0 (Nuance, Q-N13). There is no lab-build fallback. It is ad-hoc signed for arm64 (M2). There is no Xcode, Apple ID or distribution.<br>Menu-bar STOP. Global hotkeys need Accessibility or Input Monitoring, which only Yu can grant. | Every MVP feature works with no TCP port open on either machine (`lsof`). A peer from another uid is refused. A tested deny-all content rule keeps the page from reaching any Air loopback port (section 8.6). | Astra's security review; Nuance agrees the Air-side install. | 2.5-4 weeks, including the Air-side install, which depends on Nuance and Q-N13 |
 | **Later L2: delayed stream on the Air** (Nuance-owned) | An Air-side package, in a separate repo never cloned on the lab, reuses the suite UI against a delayed-stream view or Air recordings, for integration only. DELAYED banner; 3 levels, 180 s conflation (constants.py:164-167), so practice value is low; recorder ceiling 180 markets (constants.py:216). DELAYED is the only paper source on the Air. Recordings never come to the lab. | An Air session with 0 orders and the DELAYED banner. The lab stays credential-free. | Nuance and Astra. | 1-2 weeks (Nuance) |
 | **Later L3: live stage-and-type within D1-D5** (Air, after the £499 key and gate G1) | The suite shows the exact `cli.py place` command and the `presence.order_echo_line` text. Yu types it in Yu's own Terminal at `/dev/tty`. The gateway fetches its own live book and runs every check. The suite never types keystrokes or automates Terminal. A live-journal display would need P-12. Live-key market data is shown only in sessions that place real bets, never for paper (section 2.3).<br>**G1:** buy the key (Yu has committed to it); before buying, ask Betfair Developer Support whether low-volume betting from a mostly-viewing ladder risks read-only deactivation; set a website loss limit and confirm it covers Exchange losses; Nuance runs the outstanding live T-tests. | The first live orders are journaled and reconciled within the default caps, and Yu has reviewed them. | Yu. | 1-2 weeks of suite work, plus Nuance's testing |
 | **Later L4: policy-gated live one-click** | Only after P-2..P-6 are approved. Native shell only, never a browser tab. Orders still go through `gateway.py` with an `operator_gui` source. | Each amendment has Nuance and Astra review and Yu's written approval. Upstream boundary tests updated by Nuance. | Staged rollout at minimum caps. | 4-8+ weeks, mostly upstream |
@@ -1583,37 +1596,39 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 | Q-Y3 | **Commission label (R-3).** You said "Basic 2%". `user_package_verified` on your word, or `user_package_unverified` until you have checked My Account? | Phase 0 packet |
 | Q-Y4 | **State root (R-4).** Is `~/betangel-data/suite.noindex` OK for practice journals, the catalogue and exports? | Phase 0 packet |
 | Q-Y5 | **Practice defaults.** Start at T-10 min; 2x until auto-slow at T-3; pause at the off? One-click on by default, or confirm every order at first? | 1b |
-| Q-Y6 | **Practice loss limit** of £20 a day: useful or annoying? | 1b |
+| Q-Y6 | **Practice loss limit** of £20 a day (£200 under the `practice` profile; its definition is in section 7.2): useful or annoying? | 1b |
 | Q-Y7 | **Research-corpus months** (2023-2025): keep them hidden (the default, which protects later research)? Or open them, which needs a ruling id with Nuance and Astra and is logged? | Later |
 | Q-Y8 | **Repo workflow.** Lab-Claude pushes branches and opens PRs that Nuance or Astra review (routing in section 3.9). Who merges: you, or lab-Claude after review? May UI-only PRs go on your acceptance alone? <br>**Answered by Yu on 2026-10-16:** "Its all good :) Merge when sensible". Section 2.2.1 records it, with lab-Claude's reading of "sensible", labelled as lab-Claude's. It was not one of the 2026-10-15 answers; an earlier version listed it there, with "Yu can veto or revert any merge", which has no source in your words. **Asked of you, not answered:** the UI-only half, which your answer does not take up separately; and Nuance's governance row for rule documents (section 3.9; her PR #1 review, item 9). | Answered 2026-10-16, except the UI-only half and the governance row |
 | Q-Y9 | **Agents and data.** Confirm that agents never see real rows, the viewed-markets ledger or real-data screenshots. **Caveat:** your OK alone cannot make an exception. A model context counts as an upload, the licence bars use "by another organization" without Betfair's written agreement, and Betfair has not ruled on model providers (proposal 001, sections 5.1-5.2; Astra is run by OpenAI). Recommended (Nuance, PR #1 review, item 2): agents never read real values; you describe the shape, or a code-only `diagnose` check runs; real fields only with Betfair's written agreement naming the provider, plus your OK each time, scoped to one problem report. Until then exceptions are not available (rule 5; section 8.7).<br>**Also asked of you, not answered** (Nuance's recommendation, PR #1 review, item 3): deny rules in the lab's Claude Code settings, `Read(~/betangel-data/**)`, `Edit(~/betangel-data/**)` and `Read(<the install salt>)`, so lab-Claude's file tools cannot read, search or list them. A Read deny also covers Grep and Glob; that is to be verified on the lab. Optionally a `~/.ignore` with `/betangel-data/`. Bash, Nuance's SSH shell and Astra stay conduct-only. No settings file is created or edited until you rule. | Before 1a |
 | Q-Y10 | **Screen Recording: recommended No.** It would be granted to the host terminal (iTerm2) and cover every process under it, and `screencapture` takes the whole display. Any real race on the lab screen would then go into model context, which counts as an upload. `tools/uisnap` gives lab-Claude synthetic screenshots without it. If you still want it, capture would go only through a suite subcommand: that subcommand starts a synthetic-only engine, captures only its own window (`screencapture -l <id>`), and refuses while a real-data engine runs. You would revoke the permission when it is not in use.<br>**The Air too** (Nuance, PR #1 review, item 6). This question also covers the Air, before its first real race. There an agent's shell already passes the screen-capture preflight with no prompt (section 8.6). **Asked of you, not answered:** a line in the Air's CLAUDE.md that no agent captures the screen while a suite page or an `ssh lab-suite` window is open. Nuance recommends it. | Lab: not needed. Air: before its first real race |
-| Q-Y11 | **Browser.** A Safari Private window for the suite on both machines (recommended), or a dedicated profile with no Betfair login, no extensions and no iCloud sync? After data downloads, sign out of historicdata.betfair.com in the lab's Safari. | 1a |
+| Q-Y11 | **Browser.** A Safari Private window for the suite on both machines (recommended), or a dedicated profile with no Betfair login, no extensions and no iCloud sync? Also, in the lab's Safari: sign out of historicdata.betfair.com, and delete saved betfair.com passwords and betfair.com site data, now rather than after the downloads (mailbox B4 asks for both; Nuance, PR #1 review). | Now (the clean-up); 1a (the browser) |
 | Q-Y12 | **Backups.** Is `~/betangel-data` backed up, for example by Time Machine? Journals and exports are licensed derivatives, so where copies go matters. | 1b |
 | Q-Y13 | **Ladder.** Higher odds at the top or the bottom? Keep Bet Angel's keys (Z/X, C)? | 1a |
 | Q-Y14 | **Analytics.** Mac Analytics auto-submit is on, so a native crash report from python3.13 or Safari could carry data to Apple. Turn sharing off? This is a privacy setting only you can change. | 1a |
 | Q-Y15 | **Spotlight.** Add `~/betangel-data` to Spotlight Privacy? The suite root is already `.noindex`, but the data roots and index JSONL are not. | 1a |
-| Q-Y16 | **PRO ingest timing.** The PRO year goes to a separate root and leaves P0's BASIC descriptor untouched. May Nuance ingest it before c2b3b3 lands, if Nuance agrees? | Now (with Q-N4) |
+| Q-Y16 | **PRO ingest timing.** The PRO year goes to a separate root and leaves P0's BASIC descriptor untouched. May Nuance ingest it before c2b3b3 lands, if Nuance agrees? <br>**Closed as moot** (Nuance asked for this in her answer to Q-N4): c2b3b3 is merged. The ingest has no date; it comes after the runbook's section 10.1 releases the TAR, under the run marker, and you are told. | Closed |
 
 ### 15.2 For Nuance
 
 **Phase 0:** Q-N1..Q-N5 and Q-N12. The others are deferred to the phase that needs them.
+
+Nuance's PR #1 review (2026-10-16) answered Q-N4..Q-N11 and Q-N13. The answers below are Nuance's, and Yu can override them. Q-N14 and Q-N15 are asked only on the later branches, so her answers to them are recorded there.
 
 | ID | Question | Needed in |
 |---|---|---|
 | Q-N1 | Do you accept the engine importing only the 25-module closure in section 4.1, with no risk or capability? Will you treat the contract-tested names (section 4.5) as an interface and flag breaking changes in PR descriptions? Is test-only use of `risk` as an oracle acceptable under INTERNAL_ONLY? | Phase 0 |
 | Q-N2 | Is the pin by a network-free local clone (`clone --no-checkout --no-hardlinks` from the lab clone, `checkout --detach`, remote removed, read-only) OK? Or do you prefer `git archive`? Who bumps pins? | Phase 0 |
 | Q-N3 | **State root and the run marker.** Is `~/betangel-data/suite.noindex` acceptable? Following your A5 answer, the suite will not run at all during your runs. Will your run and ingest wrappers write a marker such as `~/.local/state/lab-runs/ACTIVE`, and wait for `~/.local/state/betangel-suite/run/engine.lock` to be free before touching sources or data? <br>**Nuance's PR #1 review (item 5) adds:** the marker covers every upstream step on real roots, by rule; Nuance adds a marker step to each block of the runbook's section 10.1; and `run/realdata.lock`, which real-data processes hold shared and Nuance's wrapper takes exclusive (section 6.8). | Phase 0 |
-| Q-N4 | **PRO ingest.** When will you ingest and index it (a date), and what is the final data root (`historic-pro`?)? Is it one archive sha, with index v1 built as for BASIC? A header listing shows 12,208 market files at depth 6, all PRO, including 8 in 2016-May (in no contract split). Is there anything in the index the picker should surface? | Now |
-| Q-N5 | **Paper semantics.** Is direct `PaperExchange` use with a suite `OrderJournal(path, mode="paper", clock=SimClock)` fine, given Yu's R-1? Intent source `paper_replay` with `customer_strategy_ref` `suite-click` (and `suite-test` in synthetic tests), with click provenance in `note` events, until U-9? Is withdrawing a pending order as SUBMITTING → REFUSED (`operator_withdrawn_before_activation`) acceptable? | Phase 0 |
-| Q-N6 | **Quiet-market staleness.** Paper V10 and `_activation_refusal` measure age from the market's last change. Real data shows it is rare near the off. Do you want U-8 at all? (Low priority; the relaxation mode is cut.) | Later |
-| Q-N7 | **High-water seeding.** Is it acceptable to rebuild `PaperExchange` with a suite-built `state` whose `traded_hwm` is raised to the raw running maximum up to the replay time (conservative, no look-ahead)? Or would you rather publish U-6? | 1b |
-| Q-N8 | Is `config.validate_config` under `StatePaths(home=..., root_override=...)` with FORBID_NETWORK (the test-harness override) an acceptable way to validate the suite's paper config? | 1b |
-| Q-N9 | **SP display (R-5).** Do you confirm a suite-side, display-only parser needs no repo ruling? Do you plan U-2, including whether SP non-finites should invalidate the whole book? | 1a |
-| Q-N10 | **Rule 4.** Will you take U-1? Until then, is the "indicative, exact-case" figure acceptable? | 1b |
-| Q-N11 | **Viewed-markets ledger.** Which fields and format do you want, so markets opened in the suite reconcile with your trial ledger? Agents never read the ledger; reconciliation is by code over salted hashes, printing match counts only. Does human practice on the engineering year matter to P0 or P1? | 1a |
+| Q-N4 | **PRO ingest.** When will you ingest and index it (a date), and what is the final data root (`historic-pro`?)? Is it one archive sha, with index v1 built as for BASIC? A header listing shows 12,208 market files at depth 6, all PRO, including 8 in 2016-May (in no contract split). Is there anything in the index the picker should surface? <br>**Answered by Nuance** (PR #1 review, 2026-10-16):<br>- No date. The ingest comes after the runbook's section 10.1 releases the TAR, under the run marker, and Yu is told.<br>- A separate root, `~/betangel-data/historic-pro`, with one archive sha and the stock index built at code equal to 76f71dc (the BASIC index was built at da44d71).<br>- "12,200 = 12,200" is a match of counts, not of markets (section 2.4).<br>- For the picker: `files[].status` and `complete_before_pt` (section 5.3).<br>- Close Q-Y16 (done). | Answered |
+| Q-N5 | **Paper semantics.** Is direct `PaperExchange` use with a suite `OrderJournal(path, mode="paper", clock=SimClock)` fine, given Yu's R-1? Intent source `paper_replay` with `customer_strategy_ref` `suite-click` (and `suite-test` in synthetic tests), with click provenance in `note` events, until U-9? Is withdrawing a pending order as SUBMITTING → REFUSED (`operator_withdrawn_before_activation`) acceptable? <br>**Answered by Nuance: yes** (PR #1 review, 2026-10-16), through an `rx.py` wrapper (paper mode, `SimClock`), with `suite-click` refs; journals stay under the suite root. On pending orders, in her words: "The 500 ms models an order in flight and step shows the activation book, so in live-parity Esc on a pending order activates then cancels; withdrawal only for void and badged exploration; readers use the folded error_code." Section 7.6 records what this changes. | Answered |
+| Q-N6 | **Quiet-market staleness.** Paper V10 and `_activation_refusal` measure age from the market's last change. Real data shows it is rare near the off. Do you want U-8 at all? (Low priority; the relaxation mode is cut.) <br>**Answered by Nuance: not now** (PR #1 review, 2026-10-16). U-8 stays parked. Split stale refusals by time to the off, and revisit if they show in T-10 to the off (from T-30, 13 of 39 markets had gaps over 10 s; section 7.5). | Answered |
+| Q-N7 | **High-water seeding.** Is it acceptable to rebuild `PaperExchange` with a suite-built `state` whose `traded_hwm` is raised to the raw running maximum up to the replay time (conservative, no look-ahead)? Or would you rather publish U-6? <br>**Answered by Nuance: accepted** (PR #1 review, 2026-10-16), with a fresh exchange per attempt (her probe) and finite trd values only; the test is in the 1b exit (section 7.4). | Answered |
+| Q-N8 | Is `config.validate_config` under `StatePaths(home=..., root_override=...)` with FORBID_NETWORK (the test-harness override) an acceptable way to validate the suite's paper config? <br>**Answered by Nuance: yes** (PR #1 review, 2026-10-16), if the suite root is agreed and exists first (else `subprocess_refused`), and the object feeds only `validate_config`: its `kill_engaged()` is a false all-clear (section 3.8). | Answered |
+| Q-N9 | **SP display (R-5).** Do you confirm a suite-side, display-only parser needs no repo ruling? Do you plan U-2, including whether SP non-finites should invalidate the whole book? <br>**Answered by Nuance: confirmed** on the terms in section 6.6 (her PR #1 review, item 11: the tap resets at each image; `spb` and `spl` are deltas, cleared while not OPEN; `bsp` only within [1.01, 1000]). U-2 waits for the M-PRO counts. | Answered |
+| Q-N10 | **Rule 4.** Will you take U-1? Until then, is the "indicative, exact-case" figure acceptable? <br>**Answered by Nuance:** U-1 not now; it needs a fact row and per-fill pts (PR #1 review, 2026-10-16). Her item 11 sets the indicative figure's cut-off, label and exclusion from totals (section 7.9). | Answered |
+| Q-N11 | **Viewed-markets ledger.** Which fields and format do you want, so markets opened in the suite reconcile with your trial ledger? Agents never read the ledger; reconciliation is by code over salted hashes, printing match counts only. Does human practice on the engineering year matter to P0 or P1? <br>**Answered by Nuance** (PR #1 review, 2026-10-16): month level. The fields are a keyed hash, plan, month, role, opened_by, furthest phase, attempts and ruling id. Counts come from `ledger-summary`, with no hash matching: the trial ledger holds no market ids (trial_ledger.py:96). Human practice on the engineering year has no effect on P0 or P1. A research month that is opened becomes inspected (contract.py:39). Sections 5.3 and 5.5 record this. | Answered |
 | Q-N12 | **Review routing.** Do you agree the routing in section 3.9 (Astra for guard, rx, errors, release, run marker, api, boundaries, scanner and pins; you for data and paper; Yu alone for UI-only PRs)? Should lab-originated review requests arrive as a lab-journal coordination task plus a mailbox note? <br>**Nuance's PR #1 review (item 9) amends her view:** a governance row for rule documents (AGENTS.md, this document, `docs/data-handling.md`, `docs/proposals/`, `tools/stage/`) to Nuance and Astra at a named SHA, which Yu rules on (section 3.9). Asked of Yu, not answered. | Phase 0 |
-| Q-N13 | **The Air later.** Does the Air have the Command Line Tools and Swift? Which Python is there? Will you host the Air-side package (L1/L2) in a separate repo, or in betangel-research, never cloned on the lab? | Later (L1) |
+| Q-N13 | **The Air later.** Does the Air have the Command Line Tools and Swift? Which Python is there? Will you host the Air-side package (L1/L2) in a separate repo, or in betangel-research, never cloned on the lab? <br>**Answered by Nuance** (PR #1 review, 2026-10-16):<br>- The Air: M2, the Command Line Tools 26.4, Swift 6.3.0, and python3.13 3.13.15 (installed after her PR #4 review).<br>- The Air-side package goes in a separate repo under Yu's account, never betangel-research, which is cloned on the lab (section 3.1).<br>- L1 is built on the Air from the merge SHA. The lab-build fallback is dropped (section 12). | Answered |
 
 ---
 
@@ -1621,10 +1636,10 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| **Review capacity.** Nuance is not starting suite work until c2b3b3 and c2b3b4 are done; each of its tasks needs an Astra round. Lab-Claude carries other workstreams. | Elapsed time set by review latency, not coding. | Lab-done and review-accepted exits; stacked branches; one Phase 0 packet; routing proposed up front; UI-only PRs on Yu's acceptance (proposed; section 2.2.1). |
-| **PRO ingest timing.** It has no date yet and comes after c2b3b3. | Real-data milestones slip. | The synthetic UI is accepted without PRO; M-PRO is its own milestone; Q-N4 and Q-Y16 now. |
+| **Review capacity.** Each of Nuance's tasks needs an Astra round (c2b3b3 and c2b3b4, which Nuance was finishing first, are merged). Lab-Claude carries other workstreams. | Elapsed time set by review latency, not coding. | Lab-done and review-accepted exits; stacked branches; one Phase 0 packet; routing proposed up front; UI-only PRs on Yu's acceptance (proposed; section 2.2.1). |
+| **PRO ingest timing.** It has no date yet (Q-N4). | Real-data milestones slip. | The synthetic UI is accepted without PRO; M-PRO is its own milestone; Q-N4 is answered and Q-Y16 closed. |
 | paper-v1 is deliberately pessimistic: half of displayed size, no credit for cancellations ahead, unknown queues never fill. Practice may teach that resting orders rarely fill. | Skills and expectations are miscalibrated. | Verbatim assumptions, the queue tracker, fill-quality debrief, the R-7 choice, U-7. |
-| About half of races have a non-runner, so there is no official P&L. | Frustration, and pressure for ad hoc fixes. | The exact-case indicative figure, the library filter, U-1. |
+| About half of races have a non-runner, so there is no official P&L. | Frustration, and pressure for ad hoc fixes. | The indicative figure (section 7.9), the library filter, U-1. |
 | 2015-16 liquidity and behaviour may not transfer to 2026. Replaying a race teaches its result. | False confidence. | "Not execution evidence" labels, attempt counter, forward-only sessions, the spoiler-free picker. More recent PRO months cost £230 each and touch research and holdout rules (Nuance and Astra). |
 | Exact mode on big fields lags near the off (about 8x at 44 runners; about 3x in the busiest second). | Slower than requested speed. | Labelled effective speed; prefetch never during exact mode; open budgets by percentile. |
 | 8 GB memory pressure shared with Nuance's work and two Claude sessions. | Swapping, interference. | 600 MB target, 1 and 1.5 GB caps, an LRU of 2, `run_paper_replay` banned on real data, nice, no engine during runs, heavy tests opt-in. |
@@ -1637,7 +1652,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 | The viewer key's residual capabilities are misjudged. | A least-privilege gap on a key Yu adds. | The sshd drop-in (no `-R`, no streamlocal); the Air-side self-test; the forced command runs a release copy; Yu can remove the line at any time. |
 | An Air disconnect (lid closed, Wi-Fi blip) during a race. | A spent race or a locked-out session. | Pause unless watched; heartbeat; grace and takeover; `ClientAliveInterval` in the drop-in. A silent disconnect is bounded by about 3 min until the 5 s `not_watched` pause lands, before 1b (section 8.6). |
 | Lab-Claude cannot see the UI. | Late UI bugs and round trips with Yu. | uisnap from Phase 0; JS logic tests; problem reports and `diagnose` for real-data issues. |
-| Real-data-only bugs that agents cannot see. | Slow fixes. | Problem reports (codes only), `diagnose`, the per-incident consent flow, a generator sized like real markets. |
+| Real-data-only bugs that agents cannot see. | Slow fixes. | Problem reports (codes only), `diagnose` with code-only checks, Yu describing the shape (real values are not available pending Q-Y9; section 8.7), a generator sized like real markets. |
 | Scope creep toward live features or automation. | Policy breach. | The suite's AGENTS.md, closed routes, the OperatorClick test, synthetic-only `TestOrder`, the proposal process, the live v1 shadow badge instead of live features, live code kept out of this repo. |
 | Later live-key risks: Betfair forbids read-only use of the live key, with no published detection rules. The delayed key also places real bets, and there is no sandbox. | Deactivation of a non-refundable £499 key; accidental real bets. | G1: ask Betfair Developer Support first. Paper never on live-key data; live-key data only in sessions placing real bets. The Heartbeat API is never used (it cancels all LIMIT bets). |
 | Toolchain: Homebrew could change python@3.13. 3.15 must stay frozen. There is no Xcode or Apple ID for the shell. | Breakage or certification conflicts. | Absolute interpreter path; the version is recorded in `session.json`; nobody runs `brew upgrade`; CLT-only Swift with ad-hoc signing (verified by uisnap). |
@@ -1707,3 +1722,20 @@ Three reviewers (interfaces, safety, feasibility) raised 51 issues. All majors w
   - Problem reports and `diagnose`; the L1 shell on the Air over SSH stdio.
   - Real-data performance figures; BASIC chart mode and the quiet-book relaxation cut.
   - The checkpoint schedule; tighter limits; prefetch under the GIL; fast and heavy test tiers; HTTP/1.1 chunked streaming.
+
+## Appendix C. Nuance's PR #1 review (2026-10-16)
+
+Nuance reviewed this document at daf9c64 from the upstream and data side: one conditional P1, nine P2s and a list of P3s. Yu's rulings are not reopened. Changes to files that exist only on the later branches (AGENTS.md, `docs/data-handling.md`, proposal 002, code) are made there.
+
+- **1 (conditional P1).** The ladder-type condition: sections 0, 7.1, 7.3, 11 and 12, and U-10.
+- **2.** Real values in a model context are not available pending Q-Y9: rule 5, section 8.7, Q-Y9.
+- **3.** Rule 5 covers all of `~/betangel-data` and the install salt; deny rules are asked of Yu: rule 5, sections 9.2 and 9.4, Q-Y9.
+- **4.** Headless real-data commands run only reviewed code: sections 8.6, 10 (I-16, I-18) and 12.
+- **5.** The marker's scope by rule, and `run/realdata.lock`: section 2.3, rule 7, sections 6.8 and 10 (I-17), Q-N3.
+- **6.** Screen capture on the Air: rule 5, sections 8.6 and 9.4, Q-Y10.
+- **7.** Other Air loopback services: sections 8.6, 9.4, 12 (L1) and 16.
+- **8.** The silent-disconnect bound, and the 5 s `not_watched` pause owed before 1b: sections 8.6, 10 (I-19), 12 and 16.
+- **9.** The governance row for rule documents, asked of Yu: section 3.9, Q-N12, Q-Y8.
+- **10.** Q-Y8 corrected, and R-3 and R-7 marked as stated defaults: sections 2.2.1, 3.9 and 15.1.
+- **11 (P3).** The Rule-4 cut-off (7.9); the SP tap's terms (6.6); the trial ledger and inspected months (5.3, 5.5); session ids and end statuses (7.10); partial invariants and the Air viewing gate (0, 12); no data-root read before the root is agreed (5.2); the practice loss limit (7.2); the Air-side repo (3.1); "tick-by-tick" (5.1); the Safari clean-up now (8.6, Q-Y11); `research_months_ruling` (3.8); release by merge SHA, silent codes, the checklist as a log and scanned outbound text (8.6, 9.1, 3.9, 5.6); stale I-14 and c2b3b3/c2b3b4 (0, 2.4, 10, 16, Q-Y16).
+- **Questions.** Nuance's answers to Q-N4..Q-N11 and Q-N13 are recorded as hers, and Yu can override them (section 15.2).
