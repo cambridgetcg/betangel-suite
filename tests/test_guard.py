@@ -462,6 +462,85 @@ attempt("unix_run_dir_replaced", lambda: audit_bind(control))
         for name in ("permit_noncanonical", "permit_trailing_slash", "permit_embedded_nul"):
             self.assertEqual(results[name], "bind_permit_invalid", name)
 
+    # Nuance's PR #2 review, item 4: CPython raises no listen event, and listen() on an unbound AF_INET socket binds
+    # it to 0.0.0.0. The refused cases use unbound SOCK_DGRAM sockets, which never listen: if the guard let one
+    # through, the kernel would refuse it (EOPNOTSUPP, "other:OSError"), so this test never listens on 0.0.0.0.
+    LISTEN = """
+import socket, _socket
+def unbound(family):
+    with socket.socket(family, socket.SOCK_DGRAM) as sock:
+        sock.listen(1)
+def loopback():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+"""
+
+    def test_listen(self):
+        home = make_home(self)
+        results = checks(self, home, setup="os.makedirs(roots.run_dir(), mode=0o700)\n", body=self.LISTEN + """
+def loopback_datagram():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+def unix(path):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind(path)
+        sock.listen(1)
+class Plain(socket.socket):
+    pass
+class OwnListen(socket.socket):
+    def listen(self, *args):
+        return _socket.socket.listen(self, *args)
+def subclass(cls):
+    with cls(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.listen(1)
+control = os.path.join(roots.run_dir(), "c.sock")
+guard.permit_loopback_port(0)
+guard.permit_unix_socket(control)
+attempt("inet_unbound", lambda: unbound(socket.AF_INET))
+attempt("inet6_unbound", lambda: unbound(socket.AF_INET6))
+attempt("unix_unbound", lambda: unbound(socket.AF_UNIX))
+attempt("loopback_port_0", loopback)
+attempt("loopback_datagram", loopback_datagram)
+attempt("plain_subclass", lambda: subclass(Plain))
+attempt("own_listen_subclass", lambda: subclass(OwnListen))
+attempt("bare_socket", lambda: _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM).close())
+results["absolute_fits"] = len(os.fsencode(control)) < %d
+if results["absolute_fits"]:
+    attempt("unix_permitted", lambda: unix(control))
+guard.seal()
+attempt("inet_unbound_after_seal", lambda: unbound(socket.AF_INET))
+attempt("loopback_after_seal", loopback)
+""" % self.SUN_PATH_MAX)
+        for name in ("loopback_port_0", "loopback_after_seal"):
+            self.assertEqual(results[name], "ok", name)
+        # Let through by the guard (127.0.0.1 and a port), then refused by the kernel: a datagram socket.
+        self.assertEqual(results["loopback_datagram"], "other:OSError")
+        for name in ("inet_unbound", "inet6_unbound", "unix_unbound", "plain_subclass", "own_listen_subclass",
+                     "bare_socket", "inet_unbound_after_seal"):
+            self.assertEqual(results[name], "listen_refused", name)
+        if results["absolute_fits"]:
+            self.assertEqual(results["unix_permitted"], "ok")
+
+    def test_listen_in_every_mode_and_on_sockets_made_before_arm(self):
+        # A socket made before arm() is covered because arm() installs the wrapper at once when socket is loaded,
+        # and arm() fails closed if socket.socket already has a listen of its own.
+        home = make_home(self)
+        early = "import socket\nearly = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+        for mode in ("engine", "test", "vendor"):
+            results = checks(self, home, setup=early, mode=mode, body=self.LISTEN + """
+attempt("early_unbound", lambda: early.listen(1))
+early.close()
+attempt("inet_unbound", lambda: unbound(socket.AF_INET))
+""")
+            self.assertEqual(results, {"early_unbound": "listen_refused", "inet_unbound": "listen_refused"}, mode)
+        code = (ATTEMPT + "import socket\nsocket.socket.listen = lambda self, *args: None\n"
+                + "attempt('arm', lambda: guard.arm('engine'))\nprint(json.dumps(results))\n")
+        result = run_python(code, home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["arm"], "call_replaced_early")
+
 
 class SubprocessTests(unittest.TestCase):
     """I-5: exactly two argv shapes during startup, nothing after seal(), no fork, exec or dlopen."""

@@ -23,7 +23,13 @@ What the hook refuses, in every mode and phase:
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
        run directory still resolves where it did at arm() and the socket path is not itself a link (bind
        follows a dangling one and creates the socket at its target); a relative path, or one with a NUL in
-       it (the kernel ends the socket name at the first NUL), is never permitted;
+       it (the kernel ends the socket name at the first NUL), is never permitted. And listen(), except on an
+       AF_INET socket bound to 127.0.0.1 with a non-zero port (a permitted port-0 bind has its port by then)
+       or an AF_UNIX socket bound to a name (listen_refused): CPython raises no listen event, and listen() on
+       an unbound AF_INET socket binds it to 0.0.0.0 with no bind event. AF_INET6 is always refused. The hook
+       puts a wrapper that raises "socket.listen" on socket.socket.listen at the first socket.__new__ event
+       (arm() does it at once if socket is already loaded, and never imports socket), and refuses to create a
+       socket whose class would not call that wrapper: a bare _socket.socket, or a subclass with its own listen;
   I-5  importing ctypes or _ctypes, with any submodule (import_refused): _ctypes reaches libc through dlsym and
        call_function without any dlopen, so arm() also refuses (module_loaded_early) if either is already
        loaded. ctypes.dlopen, ctypes.dlsym and ctypes.call_function (a backstop: ctypes cannot load) and
@@ -90,8 +96,9 @@ This is defence in depth, not a sandbox: same-user code can still write through 
 journal beside a database, and its temp files if a PRAGMA sets temp_store back), a child process (in test
 mode, an isolated interpreter the runner starts is unguarded unless it imports betangel_suite), a file
 descriptor or hard link made before a check, a reference to os.mkfifo or _posixsubprocess.fork_exec taken
-before arm(), subprocess's private _fork_exec called directly, or sqlite3.Connection.setlimit called on a
-connection directly. Refusals raise GuardRefusal, whose str() is the code only, never the path or address.
+before arm(), subprocess's private _fork_exec or _socket.socket.listen called directly, or
+sqlite3.Connection.setlimit called on a connection directly. Refusals raise GuardRefusal, whose str() is
+the code only, never the path or address.
 Standard library only.
 """
 
@@ -164,7 +171,8 @@ _MUTATIONS = {
     "os.mknod": ((0, 3, False, False),),    # likewise
 }
 _WATCHED = frozenset(set(_NETWORK) | _SPAWN | set(_MUTATIONS) | _LIBRARY_LOADS
-                     | {"socket.bind", "os.putenv", "os.unsetenv", "open", "sqlite3.connect", "import"})
+                     | {"socket.bind", "socket.__new__", "socket.listen", "os.putenv", "os.unsetenv", "open",
+                        "sqlite3.connect", "import"})
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 _DEVICES = frozenset({"/dev/null"})
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -172,6 +180,9 @@ _PARTIAL_RE = re.compile(r"betangel-research-[0-9a-f]{12}\.partial")
 _URL_RE = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})/#c=[A-Za-z0-9_-]{22}")
 _ORIGINAL_NODE_CALLS = {name: getattr(os, name) for name in ("mkfifo", "mknod") if hasattr(os, name)}
 _BUILTIN_FUNCTION = type(len)
+# _socket.socket's own listen, getsockname and family, and AF_INET and AF_UNIX, kept when the listen wrapper is
+# installed (_install_listen). Nothing here imports socket or _socket: arm() must not load them.
+_SOCKET_CALLS = {}
 
 _LOCK = threading.Lock()
 _STATE = None
@@ -242,6 +253,7 @@ def arm(mode):
         _wrap_node_calls()
         _wrap_sqlite_connect(state)
         _wrap_fork_exec()
+        _wrap_listen()
         sys.addaudithook(_make_hook(state))
         _STATE = state
 
@@ -462,6 +474,47 @@ def _wrap_fork_exec():
     _posixsubprocess.fork_exec = fork_exec
 
 
+def _listen(self, *args):
+    """socket.socket.listen once the listen wrapper is installed: raises "socket.listen" for the hook first."""
+    sys.audit("socket.listen", self)
+    return _SOCKET_CALLS["listen"](self, *args)
+
+
+def _install_listen():
+    """Put _listen on socket.socket, once (Nuance's PR #2 review, item 4); False when that cannot be done safely.
+
+    CPython raises no audit event for listen(), and listen() on an unbound AF_INET socket binds it to 0.0.0.0 and
+    a free port first, with no socket.bind event. The wrapper raises "socket.listen", which the hook judges
+    (_check_listen). It is set on socket.socket, so every socket that module makes (accept, dup, socketpair,
+    fromfd and socketserver's included) and every subclass that does not define its own listen calls it. False
+    (fail closed) when socket or _socket is not loaded, or when socket.socket already has a listen of its own,
+    put there by something other than the guard.
+    """
+    sockets = sys.modules.get("socket")
+    raw = sys.modules.get("_socket")
+    base = getattr(sockets, "socket", None)
+    raw_class = getattr(raw, "socket", None)
+    if not (isinstance(base, type) and isinstance(raw_class, type) and issubclass(base, raw_class)):
+        return False
+    current = base.__dict__.get("listen")
+    if current is _listen:
+        return True
+    if current is not None:
+        return False
+    _SOCKET_CALLS.update(listen=raw_class.listen, getsockname=raw_class.getsockname, family=raw_class.family,
+                         AF_INET=raw.AF_INET, AF_UNIX=raw.AF_UNIX)
+    base.listen = _listen
+    return True
+
+
+def _wrap_listen():
+    """arm(): install the listen wrapper now if socket is already loaded (call_replaced_early if it cannot be);
+    otherwise the hook installs it at the first socket.__new__ event. A socket made before arm() is then
+    covered too, since the wrapper is on the class."""
+    if sys.modules.get("socket") is not None and not _install_listen():
+        raise SuiteError("call_replaced_early")
+
+
 # --- the hook ------------------------------------------------------------------------------------
 
 def _make_hook(state):
@@ -486,6 +539,13 @@ def _check(state, event, args):
         raise GuardRefusal(code)
     if event == "socket.bind":
         _check_bind(state, args[0], args[1])
+    elif event == "socket.__new__":
+        # Every new socket must call the listen wrapper: installed here the first time, and a socket whose class
+        # would bypass it (a bare _socket.socket, or a subclass with its own listen) is refused.
+        if not _install_listen() or getattr(type(args[0]), "listen", None) is not _listen:
+            raise GuardRefusal("listen_refused")
+    elif event == "socket.listen":
+        _check_listen(args[0])
     elif event in _SPAWN:
         _check_spawn(state, event, args)
     elif event in _LIBRARY_LOADS:
@@ -527,6 +587,27 @@ def _check_bind(state, sock, address):
                     and os.path.realpath(os.path.dirname(text)) == state.real_run_dir and not os.path.islink(text)):
                 return
     raise GuardRefusal("bind_refused")
+
+
+def _check_listen(sock):
+    """listen() only on a socket the bind check has already placed: AF_INET bound to 127.0.0.1 with a non-zero port
+    (a permitted port-0 bind has been given one by then) or AF_UNIX bound to a name. Anything else is refused
+    (listen_refused): an unbound AF_INET socket would be bound to 0.0.0.0, and the suite never uses AF_INET6.
+    _socket's own family and getsockname are used, so a subclass cannot answer for the socket."""
+    calls = _SOCKET_CALLS
+    family = calls["family"].__get__(sock)
+    try:
+        name = calls["getsockname"](sock)
+    except OSError:
+        raise GuardRefusal("listen_refused") from None
+    if family == calls["AF_INET"]:
+        if (isinstance(name, tuple) and len(name) == 2 and name[0] == "127.0.0.1" and type(name[1]) is int
+                and name[1] != 0):
+            return
+    elif family == calls["AF_UNIX"]:
+        if isinstance(name, (str, bytes)) and len(name) > 0:
+            return
+    raise GuardRefusal("listen_refused")
 
 
 def _check_spawn(state, event, args):
