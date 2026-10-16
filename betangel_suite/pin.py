@@ -12,8 +12,11 @@ stale .pyc beside a matching .py) or anything Python would import in preference 
 extension module such as paper.cpython-313-darwin.so, a .pyc, or a package directory named like a pinned
 module), refuses a deps directory or any sys.path entry that lies in ~/betangel-research (the moving
 deploy clone) by name in any case or by identity, and only then APPENDS the deps directory to sys.path,
-so the standard library can never be shadowed. assert_origins() then checks that every loaded
-betangel_research module came from that directory.
+so the standard library can never be shadowed. It also puts _ClosureFinder first on sys.meta_path: from then on
+the import system loads a betangel_research module only if it is one of the 25 of the closure, only from its
+pinned file in the deps directory, and only from bytes that still match the pin (read_pinned), never from a
+bytecode cache; any other betangel_research name is refused (upstream_import_refused), however it is imported.
+assert_origins() then checks that every loaded betangel_research module came from that directory.
 
 Standard library only.
 """
@@ -21,6 +24,7 @@ Standard library only.
 import fcntl
 import hashlib
 import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -67,6 +71,10 @@ PINNED_FILES = (
     "research/experiments/backtest-p0-bsp-v1.json",
 )
 PACKAGE_DIRS = ("betangel_research", "betangel_research/betfair", "betangel_research/betfair/backtest")
+# The 25 modules of the closure, by name, with their pinned files: the only betangel_research modules the import
+# system may load once activate() has run (_ClosureFinder).
+CLOSURE = {(relpath[:-len("/__init__.py")] if relpath.endswith("/__init__.py") else relpath[:-len(".py")]).replace(
+    "/", "."): relpath for relpath in PINNED_FILES if relpath.endswith(".py")}
 # Files the import system would load instead of (or as well as) a hashed .py: extension modules for any
 # interpreter and sourceless bytecode.
 SHADOW_SUFFIXES = tuple(sorted(set(importlib.machinery.EXTENSION_SUFFIXES) | set(importlib.machinery.BYTECODE_SUFFIXES)
@@ -179,7 +187,57 @@ def activate(*, home_dir=None, pin_path=PIN_FILE):
     sys.path.append(deps)
     _HASHES = dict(pin["files"])
     _ACTIVE = deps
+    sys.meta_path.insert(0, _ClosureFinder(deps))
     return deps
+
+
+class _PinnedLoader(importlib.machinery.SourceFileLoader):
+    """Loads one closure module from its pinned bytes (read_pinned, which checks them against the pin at load time),
+    never from a bytecode cache, and writes none."""
+
+    def __init__(self, fullname, path, relpath):
+        super().__init__(fullname, path)
+        self.relpath = relpath
+
+    def get_data(self, path):
+        if path != self.path:
+            raise OSError("only the pinned source is read")     # a bytecode cache: the import system then compiles
+        return read_pinned(self.relpath)
+
+    def set_data(self, path, data, *, _mode=0o666):
+        return None                                            # no bytecode is ever written into the deps tree
+
+
+class _ClosureFinder:
+    """The first sys.meta_path entry once activate() has run (Nuance's PR #2 review, item 7).
+
+    The deps directory is on sys.path, so without this `import betangel_research.betfair.risk` after seal() would
+    load an unhashed module from the deps clone. An "import" audit hook would not do: importlib.import_module raises
+    no import event for a pure-Python module. Every import of a module not yet loaded asks the meta_path finders,
+    whatever spelling made it (import statement, __import__, import_module, find_spec), so here:
+    - a name outside betangel_research is left to the other finders (None);
+    - a betangel_research name outside the 25 of the closure raises SuiteError(upstream_import_refused), which is
+      not an ImportError, so no `except ImportError` can quietly carry on without it;
+    - one of the 25 gets a spec at its pinned file in the deps directory, whatever sys.path says, and a loader
+      that reads only those bytes, checked against the pin when the module is loaded.
+    Same-process code can still remove this finder or insert one before it (the same-uid limit of guard.py).
+    """
+
+    def __init__(self, deps):
+        self.deps = deps
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != "betangel_research" and not fullname.startswith("betangel_research."):
+            return None
+        relpath = CLOSURE.get(fullname)
+        if relpath is None:
+            raise SuiteError("upstream_import_refused")
+        origin = os.path.join(self.deps, relpath)
+        return importlib.util.spec_from_file_location(fullname, origin,
+                                                      loader=_PinnedLoader(fullname, origin, relpath))
+
+    def invalidate_caches(self):
+        return None
 
 
 def read_pinned(relpath):

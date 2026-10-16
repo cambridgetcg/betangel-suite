@@ -357,15 +357,71 @@ print(results)
         code = ARM_ENGINE + "sys.path.insert(0, %r)\nimport betangel_research\n" % fake + TRY_RX
         self.assertEqual(outcome(self, home, code).splitlines(), ["upstream_imported_early", "upstream_loaded"])
 
-    def test_module_loaded_from_elsewhere_fails_the_origin_check(self):
+    def test_a_copy_earlier_on_sys_path_is_never_loaded(self):
+        # Until the closure finder, a copy of the closure put before the deps directory on sys.path after activate()
+        # was loaded, and only the origin check refused it. Now every closure module comes from the deps directory.
         home = make_home(self, deps=True)
         fake = os.path.join(home, "fake")
         for relpath in pin.PINNED_FILES:
             if relpath.startswith("betangel_research/"):
                 os.makedirs(os.path.dirname(os.path.join(fake, relpath)), exist_ok=True)
                 shutil.copyfile(os.path.join(DEPS, relpath), os.path.join(fake, relpath))
-        code = ARM_ENGINE + ("from betangel_suite import pin\npin.activate()\nsys.path.insert(0, %r)\n" % fake) + TRY_RX
-        self.assertEqual(outcome(self, home, code).splitlines()[0], "upstream_origin_mismatch")
+        code = ARM_ENGINE + ("from betangel_suite import pin\ndeps = pin.activate()\nsys.path.insert(0, %r)\n" % fake) + TRY_RX + (
+            "import os\n"
+            "print(all(os.path.realpath(m.__file__).startswith(os.path.realpath(deps) + os.sep)\n"
+            "          for name, m in sys.modules.items() if name.startswith('betangel_research')))\n")
+        self.assertEqual(outcome(self, home, code).splitlines(), ["imported", "upstream_loaded", "True"])
+
+    def test_module_from_elsewhere_fails_the_origin_check(self):
+        # assert_origins stays as a cross-check: a module object put into sys.modules from elsewhere is refused.
+        home = make_home(self, deps=True)
+        code = ARM_ENGINE + TRY_RX + (
+            "import types\nfrom betangel_suite import pin\n"
+            "planted = types.ModuleType('betangel_research.betfair.planted')\n"
+            "planted.__file__ = %r\n"
+            "sys.modules[planted.__name__] = planted\n"
+            "try:\n    pin.assert_origins(pin.activate())\nexcept SuiteError as exc:\n    print(exc)\n"
+        ) % os.path.join(home, "fake", "planted.py")
+        self.assertEqual(outcome(self, home, code).splitlines(), ["imported", "upstream_loaded", "upstream_origin_mismatch"])
+
+    def test_only_the_closure_is_imported_after_activation(self):
+        # Nuance's PR #2 review, item 7: the deps directory is on sys.path, so after seal() an unpinned module there
+        # (risk.py, say) could be imported and its unhashed code run. The finder refuses it, however it is imported
+        # (an import hook would miss import_module), and its code never runs.
+        home = make_home(self, deps=True)
+        deps = pin.deps_dir(pin.load(), home)
+        with open(os.path.join(deps, "betangel_research", "betfair", "risk.py"), "w", encoding="utf-8") as handle:
+            handle.write("print('synthetic unpinned module ran')\n")
+        code = ARM_ENGINE + TRY_RX + """
+import importlib
+for name, call in (("statement", lambda: exec("import betangel_research.betfair.risk")),
+                   ("from", lambda: exec("from betangel_research.betfair import risk")),
+                   ("import_module", lambda: importlib.import_module("betangel_research.betfair.risk")),
+                   ("dunder", lambda: __import__("betangel_research.betfair.risk")),
+                   ("relative", lambda: importlib.import_module(".risk", "betangel_research.betfair")),
+                   ("find_spec", lambda: importlib.util.find_spec("betangel_research.betfair.gateway"))):
+    try:
+        call()
+        print(name, "imported")
+    except SuiteError as exc:
+        print(name, exc)
+print("betangel_research.betfair.risk" in sys.modules)
+"""
+        self.assertEqual(outcome(self, home, code).splitlines(),
+                         ["imported", "upstream_loaded"] + ["%s upstream_import_refused" % name for name in (
+                             "statement", "from", "import_module", "dunder", "relative", "find_spec")] + ["False"])
+
+    def test_closure_module_changed_after_activation_is_refused_when_loaded(self):
+        # The finder's loader reads each closure module through read_pinned when it is imported, so bytes changed
+        # between activate() and the import are refused (the origin check would pass them). The child is armed in
+        # vendor mode, whose write roots hold the deps tree, so it can change them itself.
+        home = make_home(self, deps=True)
+        code = PRELUDE + "from betangel_suite import guard\nguard.arm('vendor')\n" + (
+            "from betangel_suite import pin\ndeps = pin.activate()\n"
+            "with open(deps + '/betangel_research/betfair/ticks.py', 'a', encoding='utf-8') as handle:\n"
+            "    handle.write('\\nSYNTHETIC_CHANGE = 1\\n')\n") + TRY_RX + (
+            "print('betangel_research.betfair.ticks' in sys.modules)\n")
+        self.assertEqual(outcome(self, home, code).splitlines(), ["pin_mismatch", "upstream_loaded", "False"])
 
 
 class MovingCloneTests(unittest.TestCase):
