@@ -140,7 +140,9 @@ reviewed PR changes them.
   - With the flag False, any write or mkdir under `~/betangel-data` would be refused with code
     `state_root_not_agreed`, and every command would use `~/.local/state/betangel-suite/tmp`.
 - **B. Install salt.** The per-install salt for identifier hashes lives at
-  `~/.local/state/betangel-suite/install-salt` (mode 0600), not under the suite root.
+  `~/.local/state/betangel-suite/install-salt` (mode 0600), not under the suite root. It stayed
+  there when the root was agreed: the first process that hashes makes it, and only the engine may
+  write the suite root. Whether it should move is open; a move must keep the same bytes.
 - **C. Pin.** betangel-research `76f71dc94588a50f0df56dde2c3fabcf6e102f88`. The deps clone is at
   `~/.local/share/betangel-suite/deps/betangel-research-76f71dc94588/`, made by
   `tools/vendor_research.py` exactly as DESIGN.md 3.5 describes. Nuance answered Q-N2: keep this

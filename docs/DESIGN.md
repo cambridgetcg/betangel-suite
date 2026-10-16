@@ -1321,7 +1321,7 @@ A buggy or tampered page could show a fake Betfair login and send what Yu types 
 8. **One controller tab.** A second tab is read-only until it sends `claim_control`.
 9. **Errors are codes only.** No tracebacks, request bodies, data rows or identifiers. Upstream exceptions are mapped at the `rx.py` boundary:
    - The caught exceptions are `IndexProblem`, `ArchiveProblem`, `PathDenied`, `ValueError` and `JournalError`. These embed member paths, which contain real event and market ids: for example `where = f"raw:{member['path']}"` (market_index.py:726) and `_label(name)` (archive.py:298, :348, :815).
-   - The boundary keeps only the reason after the last colon, from a closed enum. Any identifier is replaced with a salted hash; the salt is per install and kept under the suite root.
+   - The boundary keeps only the reason after the last colon, from a closed enum. Any identifier is replaced with a salted hash. The salt is per install, in a 0600 file at `~/.local/state/betangel-suite/install-salt`, not under the suite root (AGENTS.md adaptation B): the first process that hashes makes it, and only the engine may write the suite root. Whether it should move is open; a move must keep the same bytes.
    
    This applies to stdout, stderr, `logs/` and HTTP alike.
 
