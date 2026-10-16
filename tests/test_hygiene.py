@@ -1299,6 +1299,19 @@ class HistoryTests(_RepoCase):
                 self.assertEqual(rc, 1, out)
                 self.assertIn("market_id", self.codes(out))
 
+    def test_push_input_past_the_limit_is_refused_not_cut_short(self):
+        # Round-4 review: only the first 1 MiB of git's pre-push lines was read. A cut at a line end dropped every
+        # later ref, so a push of about 8,900 refs or more could publish commits that no scan saw.
+        _base, _added, tip = self.history_only_file()
+        filler = f"(delete) {ZERO} refs/heads/{'f' * 25} {ZERO}\n"
+        self.assertEqual(len(filler), 128)                               # 8192 lines fill exactly 1 MiB
+        real = f"refs/heads/main {tip} refs/heads/main {ZERO}\n"
+        rc, out = self.scan("--push", "origin", stdin=(filler * 8192 + real).encode())
+        self.assertEqual((rc, out.strip()), (2, "hygiene_scan: refused:push_input"))
+        rc, out = self.scan("--push", "origin", stdin=(filler * 8191 + real).encode())     # under the limit
+        self.assertEqual(rc, 1, out)
+        self.assertIn("market_id", self.codes(out))
+
     def test_message_files(self):
         member = bz2.compress(_stream_text().encode())
         cases = {"market_id": f"synthetic subject\n\nsee {MARKET_2015}\n".encode(),

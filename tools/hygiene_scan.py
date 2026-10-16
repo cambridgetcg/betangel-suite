@@ -991,6 +991,9 @@ def _staged_entries():
 
 _OBJECT_ID = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
 MAX_OBJECT_BYTES = 2 * MAX_FILE_BYTES  # a commit or tag object read whole: headers and message
+# git's pre-push lines, about 8,900 ref updates. More is refused (push_input), never cut short: a cut at a line end
+# would drop every later ref, and the push would publish commits no scan saw (round-4 review).
+MAX_PUSH_INPUT = 1 << 20
 
 
 def _message_findings(message: bytes) -> list:
@@ -1376,7 +1379,10 @@ def _main(argv) -> int:
     if args.staged:
         return _report(_staged_entries(), "staged")
     if args.push is not None:
-        revisions, tips = _push_targets(args.push, sys.stdin.buffer.read(1 << 20))
+        lines = sys.stdin.buffer.read(MAX_PUSH_INPUT + 1)
+        if len(lines) > MAX_PUSH_INPUT:
+            raise Refusal("push_input")
+        revisions, tips = _push_targets(args.push, lines)
         return _report(_history_entries(revisions, tips), "push", "item(s)")
     if args.revisions is not None:
         return _report(_history_entries([args.revisions]), "range", "item(s)")
