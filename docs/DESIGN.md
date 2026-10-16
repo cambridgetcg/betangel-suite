@@ -1195,7 +1195,7 @@ There is no auto-keypress and no timed action, because those are automation.
      - Yu pastes the URL into a Safari Private window (Cmd-click would open a normal window).
      - Pressing Enter in the ssh window prints a fresh code, for example after a page reload.
    - **Session lifetime: pause unless watched** (an MVP invariant, I-19):
-     - The actor auto-pauses when the controller tab's stream drops or the page reports `visibilitychange` hidden.
+     - The actor auto-pauses when the controller tab's stream drops or the page reports `visibilitychange` hidden. While hidden, the page asks again on any stream message that shows the clock running (a Play accepted just before hiding, or a pause that failed), one request at a time, and stops asking after `not_controller`.
      - The engine writes a heartbeat to the ssh-session's stdout every 15 s. A failed write means pause.
      - On stdin EOF, `ssh-session` pauses and keeps the session for `watch_grace_s` (default 10 min) instead of stopping.
      - A new `ssh lab-suite` (or `suite open`) during that time **takes over** through the control socket. The engine pauses, journals a note, invalidates the old session token and issues a fresh code. It is not refused.

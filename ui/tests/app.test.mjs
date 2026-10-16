@@ -2,7 +2,9 @@
 // is stripped before anything is sent, the code is exchanged for a token that only travels in the
 // Authorization header, frames render into the header, grid and ladder, controls and keys send
 // commands, hiding the page while the clock runs sends one pause (DESIGN.md 8.6, I-19), and a 401 ends
-// the session. No browser and no network: everything here is in memory.
+// the session. While hidden, any later message that shows the clock running asks for a pause again (a Play
+// accepted just before hiding, a pause refused), one request at a time, and never after not_controller.
+// No browser and no network: everything here is in memory.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -377,4 +379,166 @@ test('boot: strip the fragment, bootstrap, stream, render, command, and end on 4
     release();
   }
   assert.ok(refused >= 1);
+});
+
+const SESSION_ENDED = 'session ended, run suite open again';
+const settle = async () => {
+  for (let i = 0; i < 20; i += 1) {
+    await tick();
+  }
+};
+
+// A fresh app.js instance (its own module URL, so its own session) booted against a new fake document and
+// server, showing frame 1 (paused). answer(body) gives each command's [status, reply], or a promise of one
+// to hold the reply back.
+async function bootApp(tag, answer) {
+  const { doc, byId } = fakeDocument();
+  const requests = [];
+  const chunks = [encode([frame(1, true)])];
+  let wake = null;
+  let waiting = false;
+  let released = false;
+  let streams = 0;
+  const awaken = () => {
+    if (wake !== null) {
+      const resolve = wake;
+      wake = null;
+      resolve();
+    }
+  };
+  const location = { hash: '#c=' + CODE, pathname: '/', search: '' };
+  const fetchImpl = async (url, init = {}) => {
+    requests.push({ url, init });
+    const json = (status, body) => ({ status, ok: status < 300, json: async () => body });
+    if (url === '/ticks.json') {
+      return json(200, TICKS);
+    }
+    if (url === '/api/v1/bootstrap') {
+      return json(200, { ok: true, token: TOKEN });
+    }
+    if (url === '/api/v1/command') {
+      const [status, body] = await answer(JSON.parse(init.body));
+      return json(status, body);
+    }
+    if (url === '/api/v1/stream') {
+      streams += 1;
+      if (streams > 1 || released) {
+        return { status: 401, ok: false, body: null };
+      }
+      const read = async () => {
+        while (chunks.length === 0 && !released) {
+          waiting = true;                                       // every earlier message has been handled
+          await new Promise((resolve) => { wake = resolve; });
+        }
+        return chunks.length ? { done: false, value: chunks.shift() } : { done: true };
+      };
+      return { status: 200, ok: true, body: { getReader: () => ({ read: read, cancel: async () => {} }) } };
+    }
+    throw new Error('unexpected request ' + url);
+  };
+  globalThis.document = doc;
+  globalThis.window = {
+    location: location,
+    history: { replaceState: () => { location.hash = ''; } },
+    fetch: fetchImpl,
+    crypto: { getRandomValues: (bytes) => bytes.fill(7) },
+    performance: { now: () => 1000 },
+    requestAnimationFrame: () => {},
+    setInterval: () => 1,
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ addEventListener: () => {} }),
+    devicePixelRatio: 2,
+  };
+  await import('../app.js?' + tag);
+  const app = {
+    byId: byId,
+    commands: () => requests.filter((r) => r.url === '/api/v1/command').map((r) => JSON.parse(r.init.body).command),
+    note: () => byId.get('note').textContent,
+    // Messages on the open stream; resolves once the app has handled them.
+    push: async (messages) => {
+      waiting = false;
+      chunks.push(encode(messages));
+      awaken();
+      await until(() => waiting, 'the pushed messages');
+    },
+    show: (state) => {
+      doc.visibilityState = state;
+      doc.fire('visibilitychange');
+    },
+    // End the stream and answer the reconnect 401, and wait for the client to stop for good, so that it never
+    // calls the next test's fake window.
+    close: async () => {
+      released = true;
+      awaken();
+      for (let i = 0; i < 400 && byId.get('conn').textContent !== SESSION_ENDED; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    },
+  };
+  await until(() => waiting && byId.get('conn').textContent === 'connected', 'the first frame');
+  return app;
+}
+
+test('hidden: a Play accepted just before hiding is paused by the next running frame, one request at a time', async () => {
+  let release = null;
+  const app = await bootApp('play', (body) => {
+    if (body.command === 'pause' && release === null) {
+      return new Promise((resolve) => { release = () => resolve([200, { ok: true }]); });     // held back
+    }
+    return [200, { ok: true }];
+  });
+  try {
+    app.byId.get('play').fire('click');                 // the last frame says paused: the click sends play
+    app.show('hidden');                                 // hidden before the engine's next frame
+    await until(() => app.note() === 'play: ok', 'the play reply');
+    await settle();
+    assert.deepEqual(app.commands(), ['play'], 'nothing shows the clock running yet');
+    await app.push([frame(2, false)]);                  // the accepted play, seen while hidden
+    await until(() => app.commands().length === 2, 'the pause');
+    assert.deepEqual(app.commands(), ['play', 'pause']);
+    await app.push([frame(3, false)]);                  // still running while that pause is in flight
+    await settle();
+    assert.deepEqual(app.commands(), ['play', 'pause'], 'one pause request at a time');
+    release();
+    await until(() => app.note() === 'pause: ok', 'the pause reply');
+    await app.push([frame(4, true)]);
+    await settle();
+    assert.deepEqual(app.commands(), ['play', 'pause'], 'paused: nothing more to ask');
+  } finally {
+    await app.close();
+  }
+});
+
+test('hidden: a refused pause is asked again on the next running frame, but never after not_controller', async () => {
+  const answers = [];
+  const app = await bootApp('refused', () => answers.shift() || [200, { ok: true }]);
+  try {
+    await app.push([frame(2, false)]);                  // the clock runs while the page is shown
+    assert.deepEqual(app.commands(), []);
+    answers.push([409, { ok: false, code: 'engine_busy' }]);
+    app.show('hidden');
+    await until(() => app.note() === 'pause: engine_busy', 'the refused pause');
+    assert.deepEqual(app.commands(), ['pause']);
+    await app.push([frame(3, false)]);                  // the engine still plays: ask again
+    await until(() => app.note() === 'pause: ok', 'the second pause');
+    assert.deepEqual(app.commands(), ['pause', 'pause']);
+
+    // A read-only tab: not_controller. Asking at frame rate would only spend the command rate limit.
+    app.show('visible');
+    answers.push([409, { ok: false, code: 'not_controller' }]);
+    app.show('hidden');
+    await until(() => app.note() === 'pause: not_controller', 'the not_controller reply');
+    await app.push([frame(4, false)]);
+    await app.push([{ t: 'hb', seq: 4, paused: false }, frame(5, false)]);
+    await settle();
+    assert.deepEqual(app.commands(), ['pause', 'pause', 'pause'], 'no pause after not_controller while hidden');
+    app.show('visible');
+    assert.deepEqual(app.commands(), ['pause', 'pause', 'pause'], 'showing the page sends nothing');
+    app.show('hidden');                                 // hidden again: ask once more
+    await until(() => app.commands().length === 4, 'the pause on hiding again');
+    await settle();
+    assert.deepEqual(app.commands(), ['pause', 'pause', 'pause', 'pause']);
+  } finally {
+    await app.close();
+  }
 });

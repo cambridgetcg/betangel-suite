@@ -375,13 +375,30 @@ function boot() {
     }
   }, { passive: false });
 
-  // Pause unless watched (DESIGN.md 8.6, I-19): a hidden page asks the engine to pause.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden' && !ended && sessionToken !== null && view.frame !== null
-        && !view.paused) {
-      send('pause', {});
+  // Pause unless watched (DESIGN.md 8.6, I-19): while the page is hidden, a running clock asks the engine to
+  // pause, on hiding and again on any later message that shows it running (a Play accepted just before the
+  // page was hidden, or a pause that did not get through). One request at a time; a tab answered
+  // not_controller stops asking until it is shown again. Called from onMessage, not render: a hidden page
+  // gets no animation frames.
+  let hiddenPause = 'idle';                     // idle, sending or refused
+  function pauseIfHidden() {
+    if (document.visibilityState !== 'hidden') {
+      hiddenPause = 'idle';
+      return;
     }
-  });
+    if (hiddenPause !== 'idle' || ended || sessionToken === null || view.frame === null || view.paused) {
+      return;
+    }
+    hiddenPause = 'sending';
+    api.command('pause', {}).then((result) => {
+      hiddenPause = !result.ok && result.code === 'not_controller' && document.visibilityState === 'hidden'
+        ? 'refused' : 'idle';
+      if (!ended) {
+        setNote(result.ok ? 'pause: ok' : 'pause: ' + safeCode(result.code));
+      }
+    });
+  }
+  document.addEventListener('visibilitychange', pauseIfHidden);
 
   window.setInterval(renderCountdown, 100);
   setEnabled(false);
@@ -439,6 +456,7 @@ function boot() {
         if (applyMessage(view, msg, window.performance.now())) {
           scheduleRender();
         }
+        pauseIfHidden();                        // every message, a heartbeat included
       },
       onStatus: (status) => {
         if (!ended) {
