@@ -17,6 +17,10 @@ Two ways to run, both driven by Viewer:
   (ControlLink: attach_viewer, viewer_code, viewer_heartbeat, viewer_away) and this process exits as soon as its
   viewer is away, superseded or the engine has gone; the engine keeps the session itself (api/lifetime.py).
 
+The forced command (no --port) uses only VIEWER_PORT, 8765, the one port the viewer key's permitopen and the Air's
+LocalForward name: with another config port it refuses viewer_port_mismatch before any engine starts, and an engine
+running on another port refuses its attach_viewer the same way, before the takeover.
+
 Either way: each takeover pauses the clock, invalidates every earlier code and token and issues a fresh code.
 stdin EOF, SIGHUP or a failed stdout write makes the viewer away: the engine pauses and keeps the session for
 watch_grace_s; a new ssh-session or open within it takes over; after it, with no tab connected, the engine
@@ -39,6 +43,7 @@ from ..errors import SuiteError
 from . import auth as auth_module
 from . import control
 
+VIEWER_PORT = 8765                  # the viewer key's permitopen and the Air's LocalForward (DESIGN.md 8.6)
 HEARTBEAT_S = 15.0
 POLL_S = 0.25
 MAX_INPUT_BYTES = 1024
@@ -198,15 +203,19 @@ class LocalLink:
 
 
 class ControlLink:
-    """A running engine, reached through its control socket (same uid; api/control.py)."""
+    """A running engine, reached through its control socket (same uid; api/control.py). port is the port the engine
+    must serve (VIEWER_PORT for the forced command; 0, from --port 0 in tests, accepts any)."""
 
-    def __init__(self, home_dir=None):
+    def __init__(self, home_dir=None, port=0):
         self._home = home_dir
+        self._port = port
 
     def attach(self):
-        reply = control.request("attach_viewer", self._home)
+        reply = control.request("attach_viewer", self._home, args={"port": self._port})
         if reply is None:
             raise SuiteError("control_unavailable")
+        if reply.get("code") == "viewer_port_mismatch":
+            raise SuiteError("viewer_port_mismatch")    # refused before the takeover: the session is as it was
         port, code, viewer = reply.get("port"), reply.get("code"), reply.get("viewer")
         if not reply.get("ok") or not _port_ok(port) or not _code_ok(code) or not _viewer_ok(viewer):
             raise SuiteError("control_failed")
@@ -258,8 +267,9 @@ class Session:
     """What server.run needs for ssh-session: the viewer in the engine's own process, or attached to another."""
 
     def __init__(self, stdin, stdout, *, clock=time.monotonic, sleep=time.sleep, heartbeat_s=HEARTBEAT_S,
-                 poll_s=POLL_S, home_dir=None, on_fail=None):
+                 poll_s=POLL_S, home_dir=None, on_fail=None, port=0):
         self.terminal = Terminal(stdin, stdout, on_fail=on_fail)
+        self.port = port                        # the port an attached engine must serve (ControlLink)
         self._clock = clock
         self._sleep = sleep
         self._heartbeat_s = heartbeat_s
@@ -293,7 +303,8 @@ class Session:
 
     def run_attached(self):
         """Take a running engine over through the control socket, then serve the viewer until it is done."""
-        self.viewer = Viewer(ControlLink(self._home), self.terminal, clock=self._clock, heartbeat_s=self._heartbeat_s)
+        self.viewer = Viewer(ControlLink(self._home, self.port), self.terminal, clock=self._clock,
+                             heartbeat_s=self._heartbeat_s)
         self.viewer.attach()                    # the control connect is permitted here, before the seal
         guard.seal()
         self._install_signal_handlers()
@@ -316,15 +327,19 @@ class Session:
 def main(cfg, *, port=None, stdin=None, stdout=None, home_dir=None, **options):
     """bin/suite ssh-session: the engine here, or attached to the running one. Returns the exit status.
 
-    options go to Session (clock, sleep, heartbeat_s, poll_s) or to server.run (the test seams).
+    port None is the forced command: the config port, which must be VIEWER_PORT (viewer_port_mismatch, before any
+    engine starts). options go to Session (clock, sleep, heartbeat_s, poll_s) or to server.run (the test seams).
     """
+    if port is None:
+        if cfg["port"] != VIEWER_PORT:
+            raise SuiteError("viewer_port_mismatch")
+        port = VIEWER_PORT
     from . import server            # here, not at the top: server.run takes a Session, it never imports this module
     session_keys = ("clock", "sleep", "heartbeat_s", "poll_s")
     session = Session(_stdin() if stdin is None else stdin, sys.stdout if stdout is None else stdout,
-                      home_dir=home_dir, on_fail=_silence_stdout if stdout is None else None,
+                      home_dir=home_dir, on_fail=_silence_stdout if stdout is None else None, port=port,
                       **{key: options.pop(key) for key in session_keys if key in options})
-    return server.run(cfg, command="ssh-session", port=cfg["port"] if port is None else port, session=session,
-                      home_dir=home_dir, **options)
+    return server.run(cfg, command="ssh-session", port=port, session=session, home_dir=home_dir, **options)
 
 
 class FdReader:

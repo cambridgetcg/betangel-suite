@@ -12,8 +12,9 @@ keys}, at most MAX_LINE bytes, and gets one line back:
     new_code          a fresh single-use code, {"ok": true, "port": n, "code": c}
     pause             pause the clock, {"ok": true}
     stop              end the engine, {"ok": true}
-    attach_viewer     ssh-session's takeover (as attach), which also starts a terminal viewer:
-                      {"ok": true, "port": n, "code": c, "viewer": g}
+    attach_viewer     {"port": p}: ssh-session's takeover (as attach), which also starts a terminal viewer:
+                      {"ok": true, "port": n, "code": c, "viewer": g}; viewer_port_mismatch, before any
+                      takeover, when p is neither 0 (any) nor this engine's port
     viewer_code       {"viewer": g}: a fresh code for that viewer (Enter), {"ok": true, "port": n, "code": c}
     viewer_heartbeat  {"viewer": g}: the viewer is there (every 15 s), {"ok": true}
     viewer_away       {"viewer": g}: stdin EOF or a failed write; pause, keep the session for the grace period
@@ -39,7 +40,7 @@ import time
 
 from .. import guard, roots
 from ..errors import SuiteError
-from .routes import CONTROL_ARGS, viewer_ok
+from .routes import CONTROL_ARGS, control_arg_ok
 
 SOCKET_NAME = "control.sock"
 LOCK_NAME = "engine.lock"
@@ -193,13 +194,13 @@ class ControlServer:
 
 
 def request_ok(request):
-    """A request object with a known command and exactly that command's extra keys, each a valid viewer."""
+    """A request object with a known command and exactly that command's extra keys, each valid (control_arg_ok)."""
     if not isinstance(request, dict) or not isinstance(request.get("command"), str):
         return False
     extra = CONTROL_ARGS.get(request["command"])
     if extra is None or set(request) != {"command", *extra}:
         return False
-    return all(viewer_ok(request[key]) for key in extra)
+    return all(control_arg_ok(key, request[key]) for key in extra)
 
 
 def _read_line(connection):

@@ -21,7 +21,8 @@ release copy (guard mode release) and never needs upstream. Output is codes and 
                        the viewer key's forced command (Phase 0c; DESIGN.md 8.6 item 2, I-19; only with
                        SUITE_VIA_SSH=1 from bin/suite): start the engine, or take the running one over, and
                        print a single-use URL on this SSH session's stdout, a fresh one per Enter
-                       (betangel_suite/api/sshsession.py; agents never run it)
+                       (betangel_suite/api/sshsession.py; agents never run it). Without --port only on 8765,
+                       the viewer key's port: any other config or engine port is viewer_port_mismatch
     stop               ask a running engine to stop through the control socket; prints stopped or not_running
     uisnap [--seed N] [--out DIR]
                        PNG snapshots of the UI on a synthetic-only engine (betangel_suite/uisnap.py; guard mode

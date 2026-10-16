@@ -35,8 +35,8 @@ PHASE_0B_COMMANDS = {"open_market": {"seed": int}, "play": {}, "pause": {}, "set
                      "stop": {}}
 PHASE_0C_COMMANDS = dict(PHASE_0B_COMMANDS, claim_control={})      # 9.2 item 8, handled by the App itself
 # 9.1's four control commands, plus the ssh-session viewer's (Phase 0c, DESIGN.md 8.6 item 2): command -> extra keys
-CONTROL_ARGS = {"attach": (), "new_code": (), "pause": (), "stop": (), "attach_viewer": (), "viewer_code": ("viewer",),
-                "viewer_heartbeat": ("viewer",), "viewer_away": ("viewer",)}
+CONTROL_ARGS = {"attach": (), "new_code": (), "pause": (), "stop": (), "attach_viewer": ("port",),
+                "viewer_code": ("viewer",), "viewer_heartbeat": ("viewer",), "viewer_away": ("viewer",)}
 DESIGN_QUERIES = ("session", "catalogue", "journal", "green_up_preview")       # 9.1: read-only queries
 FORBIDDEN = ("live", "account", "funds", "login", "kill", "upload", "share")
 

@@ -45,6 +45,8 @@ CODES = frozenset({
     "no_market", "not_watched", "end_of_market", "engine_stopping", "engine_busy",
     # session lifetime and viewing (Phase 0c; DESIGN.md 8.6 item 2, I-19): viewer and session end reasons
     "superseded", "abandoned", "max_session", "engine_gone", "stopped", "run_marker",
+    # ssh-session's forced command serves and attaches only on the viewer key's port (DESIGN.md 8.6 item 2)
+    "viewer_port_mismatch",
     # the local API (DESIGN.md 9.1-9.3): code-only HTTP error bodies
     "bad_request", "bad_json", "bad_args", "bad_host", "bad_origin", "unsupported_media_type",
     "body_too_large", "length_required", "unauthorized", "bad_code", "not_found", "method_not_allowed",

@@ -9,8 +9,9 @@ print stay in those files and pipes and in this process's memory. Assertions com
 no failure message carries a code; client children never print a code or a token.
 
 Nothing here runs /usr/bin/open: the open children replace server.system_opener with one that records a call and
-exits, and run with --print-url or an injected opener. bin/suite ssh-session runs once, with SSH_CONNECTION set by
-this test and the temporary HOME, on an ephemeral port; never against the real HOME.
+exits, and run with --print-url or an injected opener. bin/suite ssh-session runs only with SSH_CONNECTION set by
+this test and the temporary HOME: on an ephemeral port, or refused before any engine starts or is taken over; never
+against the real HOME.
 """
 
 import json
@@ -363,9 +364,13 @@ REFUSED = (2, "", "refused:synthetic_only\n")
 
 
 def set_data_roots(home, value):
+    write_config(home, {"data_roots": value})
+
+
+def write_config(home, values):
     path = roots.config_path(home)
     with open(path, "w") as handle:
-        json.dump({"data_roots": value}, handle)
+        json.dump(values, handle)
     os.chmod(path, 0o600)
 
 
@@ -556,6 +561,37 @@ results["bootstrap"] = request("POST", "/api/v1/bootstrap", {"code": open(os.pat
                          r"\Ahttp://127\.0\.0\.1:%s/#c=<code>\n(heartbeat [0-9:]+\n)*ended reason=stopped\n\Z" % port)
         self.assertEqual(session.stderr(), "")
         self.assertFalse(os.path.lexists(support.control_path(home)))
+
+    def test_the_forced_command_serves_and_attaches_only_on_the_viewer_port(self):
+        # bin/suite ssh-session exactly as the viewer key runs it, with no --port (DESIGN.md 8.6 item 2): another
+        # config port is refused before any lock, socket or engine; an engine on another port (serve --port 0) is
+        # refused before the takeover, so its tokens stay live and nothing is printed.
+        home = support.short_home(self)
+        env = child_env(home, SSH_CONNECTION=SSH)
+        write_config(home, {"port": 8766})
+        result = run_suite(["ssh-session"], home, env=env)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (2, "", "refused:viewer_port_mismatch\n"))
+        self.assertFalse(os.path.lexists(roots.run_dir(home)))
+        os.remove(roots.config_path(home))                     # the default port, 8765, from here on
+        serving = support.run_child(self, home, SERVE % (60.0, 120))
+        port = serving.wait_ready()
+        self.assertNotEqual(port, 8765)
+        before = support.client(self, home, port, """
+token = bootstrap()
+fd = os.open(os.path.join(HOME, "token-1"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+os.write(fd, token.encode())
+os.close(fd)
+results["controller"] = query(token)[1]["controller"]
+""")
+        self.assertEqual(before, {"controller": True})
+        result = run_suite(["ssh-session"], home, env=env)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (2, "", "refused:viewer_port_mismatch\n"))
+        after = support.client(self, home, port, """
+results["controller"] = query(open(os.path.join(HOME, "token-1")).read())[1]["controller"]
+""")
+        self.assertEqual(after, {"controller": True})          # no takeover: the old token is still the controller
+        self.assertEqual(serving.terminate(), 0)
+        self.assertEqual((serving.stdout(), serving.stderr()), ("serving port=%d\n" % port, ""))
 
     def test_the_ssh_flag_is_checked_again_after_env_i(self):
         # _launch.py run directly (no bin/suite, so no SUITE_VIA_SSH=1) refuses ssh-session; with the flag set,

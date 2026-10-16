@@ -361,6 +361,23 @@ class StagedFilesTests(unittest.TestCase):
         expected = DESIGN_HOST_BLOCK + [line for line in HOST_HARDENING if line not in DESIGN_HOST_BLOCK]
         self.assertEqual(_read(SNIPPET), "\n".join(expected) + "\n")
 
+    def test_staged_files_use_the_viewer_port(self):
+        # ssh-session's forced command serves and attaches only on VIEWER_PORT (viewer_port_mismatch otherwise), so
+        # the key's permitopen, the Air's LocalForward and the self-test must all name that one port.
+        from betangel_suite import config
+        from betangel_suite.api import sshsession
+        port = str(sshsession.VIEWER_PORT)
+        self.assertEqual(sshsession.VIEWER_PORT, config.DEFAULTS["port"])
+        permitopen = r'permitopen="127\.0\.0\.1:([0-9]+)"'
+        forward = r"^ *LocalForward 127\.0\.0\.1:([0-9]+) 127\.0\.0\.1:([0-9]+)$"
+        options = re.findall(r"^OPTIONS='(.*)'$", _read(SETUP), re.M)
+        self.assertEqual(len(options), 1)
+        self.assertEqual(re.findall(permitopen, DESIGN_AK_LINE[0]), [port])
+        self.assertEqual(re.findall(permitopen, options[0]), [port])
+        self.assertEqual(re.findall(forward, "\n".join(DESIGN_HOST_BLOCK), re.M), [(port, port)])
+        self.assertEqual(re.findall(forward, _read(SNIPPET), re.M), [(port, port)])
+        self.assertEqual(re.findall(r"^VIEWER_PORT=([0-9]+)$", _read(SELFTEST), re.M), [port])
+
     def test_alias_points_at_the_release_copy(self):
         lines = [line for line in _read(ALIAS).splitlines() if line and not line.startswith("#")]
         self.assertEqual(lines, ["alias suite='%s'" % APP_SUITE])

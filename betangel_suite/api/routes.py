@@ -18,6 +18,8 @@ The control socket's closed command set (CONTROL_ARGS, each with its exact extra
 new_code, pause and stop, plus the ssh-session viewer's attach_viewer, viewer_code, viewer_heartbeat and
 viewer_away (Phase 0c: session lifetime, DESIGN.md 8.6 item 2 and I-19), which name the viewer generation that
 attach_viewer returned, so an ssh-session that was taken over cannot ask for codes or keep the session alive.
+attach_viewer names the port its ssh-session expects (sshsession.VIEWER_PORT for the forced command, 0 for any);
+an engine on another port answers viewer_port_mismatch before the takeover, so nothing is paused or invalidated.
 
 The App joins the engine, the session tokens, the session lifetime (api/lifetime.py) and the control socket.
 Its methods return (HTTP status, JSON object); every failure object is {"ok": false, "code": <errors.CODES
@@ -43,10 +45,11 @@ COMMANDS = ("open_market", "play", "pause", "set_speed", "seek", "jump", "step",
 EXPLORATION_COMMANDS = ("replace",)         # exploration mode (R-7) adds it; not accepted in Phase 0b
 QUERIES = ("session", "catalogue", "journal", "green_up_preview")
 FORBIDDEN_WORDS = ("live", "account", "funds", "login", "kill", "upload", "share")
-# The control socket: command -> the exact extra keys of its request line (each an int viewer generation).
+# The control socket: command -> the exact extra keys of its request line (viewer: an int viewer generation;
+# port: the port attach_viewer's caller expects, 0 for any).
 CONTROL_ARGS = {
     "attach": (), "new_code": (), "pause": (), "stop": (),
-    "attach_viewer": (), "viewer_code": ("viewer",), "viewer_heartbeat": ("viewer",), "viewer_away": ("viewer",),
+    "attach_viewer": ("port",), "viewer_code": ("viewer",), "viewer_heartbeat": ("viewer",), "viewer_away": ("viewer",),
 }
 CONTROL_COMMANDS = tuple(CONTROL_ARGS)
 VIEWER_MAX = 2 ** 31 - 1
@@ -150,6 +153,13 @@ def viewer_ok(value):
     return type(value) is int and 0 < value <= VIEWER_MAX
 
 
+def control_arg_ok(key, value):
+    """One extra key of a control request: viewer, a viewer generation; port, 0 (any) or a TCP port (never a bool)."""
+    if key == "port":
+        return type(value) is int and 0 <= value <= 65535
+    return viewer_ok(value)
+
+
 def args_ok(args, schema):
     """args has exactly the schema's keys, each of exactly its type (bool is never an int here)."""
     if not exact_object(args, schema):
@@ -188,8 +198,10 @@ class App:
         args = {} if args is None else args
         if command not in CONTROL_ARGS or set(args) != set(CONTROL_ARGS[command]):
             return {"ok": False, "code": "control_bad_request"}
-        if "viewer" in args and not viewer_ok(args["viewer"]):
+        if not all(control_arg_ok(key, value) for key, value in args.items()):
             return {"ok": False, "code": "control_bad_request"}
+        if command == "attach_viewer" and args["port"] not in (0, self.port):
+            return {"ok": False, "code": "viewer_port_mismatch"}     # before the takeover: nothing changes
         if command in ("attach", "attach_viewer"):
             port, code, generation = self.takeover(terminal=command == "attach_viewer")
             reply = {"ok": True, "port": port, "code": code}

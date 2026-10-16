@@ -14,9 +14,10 @@ import re
 import threading
 import time
 import unittest
+from unittest import mock
 
 from betangel_suite import cli
-from betangel_suite.api import auth, lifetime, routes, sshsession
+from betangel_suite.api import auth, lifetime, routes, server, sshsession
 from betangel_suite.errors import SuiteError
 
 URL_RE = re.compile(r"http://127\.0\.0\.1:([0-9]+)/#c=([A-Za-z0-9_-]{22})\n")
@@ -367,7 +368,7 @@ class AppTests(unittest.TestCase):
     def test_attach_viewer_takes_over_and_viewer_commands_name_their_generation(self):
         app = self.make()
         old = app.auth.exchange(app.auth.issue_code())
-        reply = app.control("attach_viewer", {})
+        reply = app.control("attach_viewer", {"port": 8765})
         self.assertEqual(sorted(reply), ["code", "ok", "port", "viewer"])
         self.assertEqual((reply["ok"], reply["port"], reply["viewer"]), (True, 8765, 1))
         self.assertFalse(app.auth.valid(old))                          # the old token is dead
@@ -376,22 +377,55 @@ class AppTests(unittest.TestCase):
         self.assertTrue(fresh["ok"] and fresh["code"] != reply["code"])
         self.assertIsNotNone(app.auth.exchange(fresh["code"]))
         self.assertEqual(app.control("viewer_heartbeat", {"viewer": 1}), {"ok": True})
-        second = app.control("attach_viewer", {})
+        second = app.control("attach_viewer", {"port": 0})               # 0: any port (ssh-session --port 0)
         self.assertEqual(second["viewer"], 2)
         for command in ("viewer_code", "viewer_heartbeat", "viewer_away"):
             self.assertEqual(app.control(command, {"viewer": 1}), {"ok": False, "code": "superseded"}, command)
         self.assertEqual(app.control("viewer_away", {"viewer": 2}), {"ok": True})
         self.assertEqual(self.engine.pauses, ["takeover", "takeover", "not_watched"])
         for command, args in (("viewer_code", {}), ("viewer_away", {"viewer": True}), ("stop", {"viewer": 2}),
-                              ("attach", {"x": 1}), ("kill", {})):
+                              ("attach", {"x": 1}), ("kill", {}), ("attach_viewer", {}), ("attach", {"port": 8765}),
+                              ("attach_viewer", {"port": True}), ("attach_viewer", {"port": 65536}),
+                              ("attach_viewer", {"viewer": 1})):
             self.assertEqual(app.control(command, args), {"ok": False, "code": "control_bad_request"}, command)
         attach = app.control("attach")
         self.assertEqual(sorted(attach), ["code", "ok", "port"])        # open's takeover: no viewer
         self.assertEqual(app.control("viewer_heartbeat", {"viewer": 2}), {"ok": False, "code": "superseded"})
 
+    def test_attach_viewer_on_another_port_is_refused_before_the_takeover(self):
+        # The forced command expects 8765 (DESIGN.md 8.6 item 2); an engine started with --port N is not taken over.
+        app = self.make()
+        app.port = 8766
+        old = app.auth.exchange(app.auth.issue_code())
+        self.assertEqual(app.control("attach_viewer", {"port": 8765}), {"ok": False, "code": "viewer_port_mismatch"})
+        self.assertTrue(app.auth.valid(old))                           # nothing was invalidated ...
+        self.assertEqual(self.engine.pauses, [])                       # ... or paused
+        self.assertEqual(app.control("viewer_heartbeat", {"viewer": 1}), {"ok": False, "code": "superseded"})
+        self.assertEqual(app.control("attach_viewer", {"port": 8766})["viewer"], 1)     # no takeover was counted
+        self.assertEqual(self.engine.pauses, ["takeover"])
+
+    def test_control_link_refuses_another_port_and_prints_no_url(self):
+        app = self.make()
+        app.port = 8766
+        old = app.auth.exchange(app.auth.issue_code())
+
+        def request(command, home_dir=None, *, timeout=None, args=None):
+            return app.control(command, args)
+
+        stdout = Stdout()
+        viewer = sshsession.Viewer(sshsession.ControlLink(None, sshsession.VIEWER_PORT),
+                                   sshsession.Terminal(None, stdout), clock=Clock())
+        with mock.patch.object(sshsession.control, "request", request):
+            with self.assertRaises(SuiteError) as caught:
+                viewer.attach()
+            self.assertEqual(caught.exception.code, "viewer_port_mismatch")
+            self.assertEqual((stdout.getvalue(), self.engine.pauses, app.auth.valid(old)), ("", [], True))
+            port, _code, generation = sshsession.ControlLink(None, 0).attach()             # --port 0: any port
+        self.assertEqual((port, generation, self.engine.pauses), (8766, 1, ["takeover"]))
+
     def test_the_lifetime_check_pauses_and_ends_the_session(self):
         app = self.make(grace_s=10, max_session_s=100)
-        app.control("attach_viewer")
+        app.control("attach_viewer", {"port": 0})
         app.control("viewer_away", {"viewer": 1})
         self.assertIsNone(app.check_lifetime())
         self.clock.advance(10)
@@ -405,7 +439,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(app.check_lifetime(), "max_session")
         self.assertEqual(self.engine.stops, ["max_session"])
         app = self.make()
-        app.control("attach_viewer")
+        app.control("attach_viewer", {"port": 0})
         self.clock.advance(lifetime.VIEWER_TIMEOUT_S)                 # a silent attached viewer
         self.assertIsNone(app.check_lifetime())
         self.assertEqual(self.engine.pauses, ["takeover", "not_watched"])
@@ -432,6 +466,38 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.engine.watched[-1], True)
         self.assertEqual(app.query(first, {"query": "session", "args": {}})[1]["controller"], False)
         self.assertEqual(app.query(second, {"query": "session", "args": {}})[1]["controller"], True)
+
+
+# --- sshsession.main: the forced command's port --------------------------------------------------------------
+
+class ViewerPortTests(unittest.TestCase):
+    """Without --port (the forced command) ssh-session serves or attaches only on VIEWER_PORT, the port of the viewer
+    key's permitopen and the Air's LocalForward (DESIGN.md 8.6 item 2). server.run is replaced: nothing starts here."""
+
+    def main(self, cfg, port):
+        stdout = Stdout()
+        with mock.patch.object(server, "run", return_value=0) as run:
+            try:
+                result = sshsession.main(cfg, port=port, stdin=Stdin(), stdout=stdout)
+            except SuiteError as exc:
+                result = exc.code
+        return result, run.call_args_list, stdout.getvalue()
+
+    def test_the_forced_command_refuses_another_config_port_before_any_engine(self):
+        self.assertEqual(self.main({"port": 8766}, None), ("viewer_port_mismatch", [], ""))
+
+    def test_the_viewer_port_and_an_explicit_port_reach_server_run(self):
+        for cfg, port, expected in (({"port": 8765}, None, 8765), ({"port": 8766}, 0, 0), ({"port": 8766}, 9000, 9000)):
+            with self.subTest(cfg=cfg, port=port):
+                result, calls, out = self.main(cfg, port)
+                self.assertEqual((result, len(calls), out), (0, 1, ""))
+                self.assertEqual((calls[0].kwargs["command"], calls[0].kwargs["port"]), ("ssh-session", expected))
+                self.assertEqual(calls[0].kwargs["session"].port, expected)     # what an attach will expect
+
+    def test_the_viewer_port_is_the_config_default(self):
+        from betangel_suite import config
+        self.assertEqual(sshsession.VIEWER_PORT, config.DEFAULTS["port"])
+        self.assertEqual(sshsession.VIEWER_PORT, 8765)
 
 
 # --- cli.py: arguments, the SSH flag, and the state-root comparison of bin/suite test --------------------------
