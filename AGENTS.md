@@ -188,8 +188,10 @@ reviewed PR changes them.
   `_launch.py` refuses any mismatch between them (`tmpdir_mismatch`), so a half-done change fails
   closed. Tests cover both settings under a temporary HOME.
   - Every command except `test`, `uisnap` and `vendor` uses `~/betangel-data/suite.noindex/tmp`
-    as `TMPDIR` and `SQLITE_TMPDIR`, created 0700 only after the run-marker check. The first
-    engine command run with the real HOME creates the suite root itself.
+    as `TMPDIR` and `SQLITE_TMPDIR`, created 0700 only after the run-marker check and, for a
+    real-data command, after it holds `run/realdata.lock` shared and has checked the marker again
+    under it (adaptation E). The first engine command run with the real HOME creates the suite
+    root itself.
   - Only the engine may write the suite root. The test runner and `vendor` write only under
     `~/.local/state/betangel-suite` (`vendor` also its deps clone and `pin/`). Any other write
     under `~/betangel-data` is refused (`write_outside_roots`).
@@ -231,13 +233,25 @@ reviewed PR changes them.
 - **D. Synthetic only.** No data-root reading, no paper trading, no HTTP server yet (Phase 0b),
   and no release copies or `ssh-session` yet (Phase 0c). `cli.py` commands that are not built
   yet refuse with code `not_implemented` and exit 2.
-- **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE`, agreed with Nuance (Q-N3).
+- **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE` (Q-N3: agreed by Nuance in
+  her PR #4 review; her PR #2 review makes the marker half conditional again, on her item 6).
   The config key `run_marker` accepts only that path, so no config edit can point the check at a
   file that never exists; only a reviewed change could move it. Nuance's wrapper creates the
-  marker with O_EXCL, waits up to 60 s for `engine.lock`, and refuses its own run if the lock is
-  still held. The engine may hold the lock for about 35 s after the marker appears. Lab-Claude
-  never creates or removes the marker. Every command except `stop` refuses to start while the
-  marker is present, unreadable, or in an unreadable directory (DESIGN.md 6.8).
+  marker with O_EXCL, waits at least 60 s for `engine.lock`, failing closed, and takes `LOCK_EX`
+  on `~/.local/state/betangel-suite/run/realdata.lock`, waiting 60 s or more and failing closed
+  (her PR #4 and PR #2 terms; DESIGN.md 6.8). The engine may hold both locks for about 35 s
+  after the marker appears. Lab-Claude never creates or removes the marker, and the suite never
+  creates or removes `lab-runs/ACTIVE` or `lab-runs/LOCK`: the guard refuses any suite write in
+  `lab-runs/`. Every command except `stop` refuses to start while the marker is present,
+  unreadable, or in an unreadable directory (DESIGN.md 6.8).
+  - Real-data commands (`serve`, `open`, `ssh-session`, `catalogue`, `selfcheck`, `diagnose`,
+    `ledger-summary`) take `LOCK_SH` on `run/realdata.lock` without waiting, before their
+    `TMPDIR`, check the marker again under it, and hold it until they exit (`run_lock_busy` while
+    the wrapper holds it). The suite makes the file once (0600) and never removes or replaces it;
+    the guard refuses that (`run_lock_protected`). This is Nuance's PR #2 review, item 6 (596d052,
+    18de53e, fbbc0c3); her agreement of the marker half is still owed.
+  - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing (lab-Claude's
+    decision, asked of Nuance; DESIGN.md 6.8 gives the reasons).
   - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
     be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
     exists too; stop stays exempt".
@@ -250,4 +264,8 @@ reviewed PR changes them.
   - `vendor` refuses too. Nuance, in her PR #1 review: "test and vendor refuse under the marker;
     stop stays exempt". It was first exempt by lab-Claude's own choice, on a reason that left out
     its writes to `pin/` with `--bump` and its clone of the whole of `~/betangel-research`.
-  - `runmarker.py` exposes a check function that later phases call on every tick.
+  - Nuance's PR #2 review answers Q-N14 the same way ("No. Drop `test` from
+    NO_RUN_MARKER_CHECK"). Her per-module check in `_run_workers.assign()` belongs to the parallel
+    test runner on phase0/viewing.
+  - `runmarker.py` exposes `active()`, which later phases call on every tick, and
+    `require_clear()`, which headless commands call between members.

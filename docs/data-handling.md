@@ -25,7 +25,8 @@ Phase 0 is synthetic-only, so it writes no licensed derivative. The suite root i
 (AGENTS.md, Phase 0 status A): an engine command creates `~/betangel-data/suite.noindex/` and its
 `tmp/` (both 0700), and only the engine may write there. Tests use temporary HOMEs and never
 write under the real `~/betangel-data`. A `suite.noindex` that is a link, or a state root that a
-link puts in `~/betangel-data`, is refused before anything is written (62c39c6).
+link puts in `~/betangel-data`, is refused before anything is written (62c39c6). The suite never
+writes `~/.local/state/lab-runs/`, where Nuance's run wrapper keeps its marker and lock.
 
 ## Exceptions: not available pending Q-Y9
 
