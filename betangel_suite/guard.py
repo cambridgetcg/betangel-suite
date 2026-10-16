@@ -253,7 +253,10 @@ def arm(mode):
 
 
 def seal():
-    """End the startup phase: from now on no subprocess and no new bind permit (engine, vendor)."""
+    """End the startup phase: from now on no subprocess and no new bind or connect permit (engine, vendor).
+
+    Permits given before seal() stay in force. The test runner never seals.
+    """
     with _LOCK:
         _require_armed().sealed = True
 

@@ -1,4 +1,4 @@
-"""The control socket (DESIGN.md 3.1 item 3, 9.1; I-4) and the guard's one connect permit for it.
+"""The control socket (DESIGN.md 3.1 item 3, 9.1; I-4) and the guard's one connect permit for it (I-3).
 
 run/control.sock is an absolute path in the 0700 run directory, mode 0600, served to same-uid peers only
 (LOCAL_PEERCRED, which getpeereid is built on), with the closed command set attach, new_code, pause, stop,
