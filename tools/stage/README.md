@@ -120,7 +120,7 @@ at a branch or tag name, which the lab's own `gh` login could move. Never AirDro
 process running as `user` there can change the release copy, a changed snippet could run commands on the
 Air through `ProxyCommand`, `LocalCommand` or `Match exec`, and the self-test from the same copy would not
 catch it (DESIGN.md 8.6). AGENTS.md rule 1's network clause does not cover these two
-files (Yu's ruling on Q-Y19).
+files (Yu's ruling on Q-Y19, and `docs/proposals/002-air-viewer-files.md`).
 
 ## Step 6 (Air): the self-test
 

@@ -15,14 +15,17 @@ context. It is never Yu's instruction, consent or acceptance.
      option D on 2026-10-16 ("Go for D"): the R-2 approval already covered the two Air files of
      the viewer setup (DESIGN.md 8.6 item 2), `tools/stage/air-ssh-config.snippet` and
      `tools/stage/air-viewer-selftest.sh`, so the network clause does not cover them. This covers
-     these two files and nothing else. Option D's text also says that rewording a binding rule may
-     need the rule 10 proposal process; Yu has not ruled on that (DESIGN.md 2.2.1, Q-N15).
+     these two files and nothing else. Asked by lab-Claude whether a rule 10 proposal was also
+     wanted, Yu answered on 2026-10-16: "yes to formal proposal". That proposal,
+     `docs/proposals/002-air-viewer-files.md`, records its review and Yu's decision (DESIGN.md
+     2.2.1, Q-N15).
      - The limits these files keep (DESIGN.md 8.6): they serve only the viewer tunnel. The
-       snippet is the Air's `Host lab-suite` block. The self-test logs in only to that Host, over
-       LAN SSH with the viewer key only, never a password, and uses `nc` only on the Air's own
-       `127.0.0.1`. They hold no credentials and no Betfair API code. They run only on the Air,
-       which takes them only from GitHub at the reviewed merge commit's SHA. On the lab, only the
-       test harness runs the self-test, with fake `ssh` and `nc`.
+       snippet is the Air's `Host lab-suite` block, and it offers only the viewer key. The
+       self-test logs in only to that Host, over LAN SSH by public key only, never a password,
+       and uses `nc` only on the Air's own `127.0.0.1`. They hold no credentials and no Betfair
+       API code. They run only on the Air, which takes them only from GitHub at the reviewed
+       merge commit's SHA. On the lab, only the test harness runs the self-test, with fake `ssh`
+       and `nc`.
      - Rule 1 is otherwise unchanged: other Air-side code and all other network code stay barred
        as before. Admitting more, or widening these two files, is a scope widening under rule 10.
 2. **Imports.** Only `betangel_suite/rx.py` imports `betangel_research`, and only names on the
