@@ -7,6 +7,7 @@ a fresh engine-mode child.
 """
 
 import ast
+import io
 import json
 import os
 import socket
@@ -484,6 +485,55 @@ class HostAndTypeTests(unittest.TestCase):
     def test_bootstrap_url_shape_is_the_one_the_guard_allows(self):
         url = server.bootstrap_url(8765, "a" * 22)
         self.assertTrue(guard.engine_argv_ok([server.OPEN_ARGV0, url], ("/h/.local/state/betangel-suite",), {8765}))
+
+
+class RequestLineRefusalTests(unittest.TestCase):
+    """9.1 and 9.3 on whichever interpreter runs this suite (bin/suite test --py311 included): a request line
+    the base class refuses still gets a status line and every 9.3 header. The socket-level checks in
+    test_http_security.py run the server through the launcher, which is always 3.13, and 3.11's parser
+    refuses a bad line or version, and HTTP/2.0, before it sets request_version (Astra's review of #4)."""
+
+    def respond(self, head):
+        """What Handler writes for one request head, fed in memory (no socket)."""
+        class Connection:
+            def settimeout(self, value):
+                pass
+
+        class Server:
+            def __init__(self):
+                self.lines = []
+
+            def log(self, text):
+                self.lines.append(text)
+
+        handler = server.Handler.__new__(server.Handler)
+        handler.connection, handler.server = Connection(), Server()
+        handler.rfile, handler.wfile = io.BufferedReader(io.BytesIO(head)), io.BytesIO()
+        handler.handle_one_request()
+        return handler.wfile.getvalue(), handler.server.lines
+
+    def test_request_line_refusals_have_a_status_line_and_every_header(self):
+        cases = {
+            b"GARBAGE\r\n\r\n": (400, "bad_request"),
+            b"GET / HTTP/x.y\r\n\r\n": (400, "bad_request"),
+            b"GET / HTTP/1.1 extra\r\n\r\n": (400, "bad_request"),
+            b"GET / HTTP/2.0\r\n\r\n": (505, "http_version_not_supported"),
+            b"POST /\r\n": (400, "bad_request"),
+            b"GET /\r\n": (400, "bad_request"),           # HTTP/0.9, refused by Handler.parse_request
+        }
+        for head, (status, code) in cases.items():
+            with self.subTest(head=head):
+                written, logged = self.respond(head)
+                top, _, body = written.partition(b"\r\n\r\n")
+                lines = top.decode("latin-1").split("\r\n")
+                self.assertTrue(lines[0].startswith("HTTP/1.1 %d " % status), lines[0])
+                headers = [(name.lower(), value) for name, _, value in (line.partition(": ") for line in lines[1:])]
+                for name, value in support.SECURITY_HEADERS.items():
+                    self.assertEqual([v for n, v in headers if n == name], [value], name)
+                self.assertEqual([v for n, v in headers if n == "content-type"], ["application/json"])
+                self.assertEqual([v for n, v in headers if n == "connection"], ["close"])
+                self.assertEqual(json.loads(body), {"ok": False, "code": code})
+                self.assertEqual(logged, ["http:%d:%s" % (status, code)])
 
 
 if __name__ == "__main__":

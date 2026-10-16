@@ -176,6 +176,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def send_error(self, code, message=None, explain=None):
         """Every error, pre-routing ones included: code-only JSON, the 9.3 headers, then close."""
+        if self.request_version == "HTTP/0.9":
+            # the base class writes no status line or header for HTTP/0.9, and 3.11's parse_request refuses a bad
+            # request line or version, and HTTP/2.0, before it sets request_version (3.13 resets it first)
+            self.request_version = "HTTP/1.0"
         status = int(code)
         self.reply(status, routes.refused(status, STATUS_CODES.get(status, "bad_request"))[1], close=True)
 
@@ -207,8 +211,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not parsed:
             return False
         if self.request_version == "HTTP/0.9":
-            self.request_version = "HTTP/1.0"    # so that the refusal carries a status line and headers
-            self.send_error(400)
+            self.send_error(400)                 # send_error gives the refusal a status line and headers
             return False
         # super() accepted only "HTTP/<digits>.<digits>" below 2.0 here
         major, minor = (int(part) for part in self.request_version.split("/", 1)[1].split("."))
