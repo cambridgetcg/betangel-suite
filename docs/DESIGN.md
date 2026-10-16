@@ -44,7 +44,7 @@ Shape:
 - **Paper fills.** These come from `paper.PaperExchange`, driven directly rather than through the gateway, with a suite-owned `journal.OrderJournal(path, mode="paper", clock=<SimClock>)` per session.
   - While any paper order is pending or open, the suite steps the exchange on every message that changes the market, as the oracle does. If the CPU cannot keep up, the replay clock lags; it never skips messages.
   - Parity with the oracle is tested on synthetic fixtures under a stated contract (section 7.4).
-- **Coexistence.** No engine runs during Nuance's announced runs or ingests. An agreed marker file outside `~/betangel-data` stops it (section 6.8).
+- **Coexistence.** No engine runs during Nuance's announced runs or ingests. A marker file outside `~/betangel-data`, on Nuance's terms, stops it, and a lock her wrapper takes waits for real-data commands (section 6.8).
 - **No policy amendment needed, on one condition.** The MVP needs no amendment to trading policy and no change to betangel-research, provided the PRO market definitions carry `priceLadderDefinition` (Nuance counts this; section 7.1). If they do not, V9 refuses every real paper click, and Phase 1b then also needs Nuance's U-10 and any V9 change Yu rules on under D-5.
   - It does need a one-page **Phase 0 packet** of rulings from Yu (R-1..R-7, section 2.2).
   - The packet includes the three points Nuance said need Yu's ruling before code (mailbox, 2026-10-15 12:30Z): driving `PaperExchange` directly (R-1), SP display (R-5), and rule-generated paper orders (R-6; the MVP has none).
@@ -279,7 +279,7 @@ betangel_suite/
   rx.py                       THE ONLY module that imports betangel_research (section 4); maps upstream errors to codes
   roots.py                    state roots, the single writer helper (O_EXCL|O_NOFOLLOW, 0600/0700)
   release.py                  RELEASE.json check (release copy or synthetic mode)
-  runmarker.py                the agreed run marker (section 6.8)
+  runmarker.py                the run marker and the real-data lock (section 6.8)
   errors.py                   closed error-code enum, salted identifier hashes, excepthooks
   config.py                   suite config, cap profiles, repo validate_config call
   data/      discover.py catalogue.py member.py reader.py roles.py ledger.py
@@ -842,7 +842,7 @@ Nuance has answered: during a real run, "a suite elsewhere is harmless but slows
 - **The real-data lock** (Nuance, PR #1 review, item 5, and PR #2 review, item 6, which she merges with it). The headless commands check the marker only at start and would hold nothing Nuance's wrapper waits on, so one started just before the marker would keep reading. So:
   - every real-data command (the engine and the four commands above) takes `LOCK_SH` on `~/.local/state/betangel-suite/run/realdata.lock` before it creates anything, `TMPDIR` included, re-checks the marker under the lock, and holds the lock for its life. In Nuance's words: "Every marker-checked command takes LOCK_SH before TMPDIR, re-checks the marker under it and holds it for life". She wrote that at 93e26e6, when `test` and `vendor` were not yet marker-checked;
   - headless commands also check the marker between members, and the catalogue is built under a temporary name and renamed into place;
-  - Nuance's wrapper takes `LOCK_EX` on it: "The wrapper waits 60 s+ for LOCK_EX, failing closed" (her PR #2 review, item 6). It is a separate lock, not `engine.lock`: if headless commands held `engine.lock`, `stop` would fail with `control_failed` (Nuance's probe);
+  - Nuance's wrapper takes `LOCK_EX` on it: "The wrapper waits 60 s+ for LOCK_EX, failing closed" (her PR #2 review, item 6). It is a separate lock, not `engine.lock`: in her words, "not engine.lock (stop would fail with control_failed)" (Nuance's probe);
   - I-17 has one test per marker-checked command (section 10);
   - **the lock's name is open with Nuance.** Her PR #1 review names it `run/realdata.lock` and her PR #2 review `run/active.lock`, for the same lock. This document and the code use `realdata.lock`; lab-Claude has put that name to Nuance, and her answer is open.
 - **The real-data lock as built** (596d052, 18de53e, fbbc0c3):
@@ -1455,7 +1455,7 @@ These headers apply to error responses too (section 9.1).
 | Accidental real betting | No live code in this repo, no credential path, FORBID_NETWORK, the audit hook with no off-switch, boundary tests | None in the MVP. |
 | Crafted or corrupt data files | Hash of the exact bytes parsed, decompressed size checked against the manifest, tight bounded decompression, the strict reader, `book.py`'s own refusals | — |
 | Licensed-data leakage (git, logs, error text, screenshots, model context, browser history, Spotlight, crash reports, SQLite temp files, exports) | Hygiene scanner and its four git hooks (pre-commit, pre-merge-commit, commit-msg, pre-push); synthetic-only fixtures and uisnap screenshots; error mapping; aggregate-only diagnostics; agents never read, search or list `~/betangel-data` or the install salt (rule 5); `.noindex`; `TMPDIR`/`SQLITE_TMPDIR` and `temp_store=MEMORY`; no-store; exports under `~/betangel-data` only | Human error, covered by review. The lab's home is not a git worktree, so a search from `~` walks into `~/betangel-data`, whose `raw/` paths carry market ids (Nuance, PR #1 review, item 3). Lab-Claude's file tools have deny rules for `~/betangel-data` and the install salt, which Yu approved on 2026-10-16 (Q-Y9); that a Read deny also covers Grep and Glob is still to be verified. For Bash, Nuance's SSH shell and Astra, rule 5 is conduct only. Analytics and Spotlight Privacy are Yu's decisions (Q-Y14, Q-Y15). |
-| Interfering with Nuance's runs | No engine while the run marker exists; no automatic catalogue rebuilds | Until the marker is agreed: conduct only. |
+| Interfering with Nuance's runs | No engine or real-data command while the run marker exists; the real-data lock her wrapper waits on; no automatic catalogue rebuilds | Until Nuance agrees the marker half of Q-N3 again, lab-Claude also runs no real-data command while a run is announced (section 6.8). |
 | Agent or scope drift toward live features or automation | The suite's AGENTS.md, the closed route test, the OperatorClick test, synthetic-only `TestOrder`, the proposal process | — |
 
 ---
