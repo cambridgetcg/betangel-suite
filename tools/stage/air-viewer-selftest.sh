@@ -149,14 +149,21 @@ forwards() {                # forwards KEY: the form's KEY lines without bracket
 sorted() { printf '%s\n' "$@" | LC_ALL=C sort; }
 
 CONFIG_HINT="put the lab-suite block (tools/stage/air-ssh-config.snippet) at the TOP of ~/.ssh/config: ssh keeps the first value it reads"
+# IdentityFile and the three forward keywords add up across blocks instead, so moving the block never clears them.
+LIST_HINT="IdentityFile and forwards add up from every Host and Match block, wherever lab-suite sits, so moving it does not help."
+LIST_HINT="$LIST_HINT Keep the lab-suite block exactly as tools/stage/air-ssh-config.snippet, and remove the extra key or forward"
+LIST_HINT="$LIST_HINT from the block that adds it, or keep that block off lab-suite (Host * !lab-suite, or !originalhost lab-suite"
+LIST_HINT="$LIST_HINT on its Match line)"
 VIEWER_FORWARD="localforward 127.0.0.1:$VIEWER_PORT 127.0.0.1:$VIEWER_PORT"
 
 check_form() {              # check_form FORM WHAT: ssh -G for FORM's exact arguments shows the lab-suite block in force
     cf_form=$1
     cf_hint=$CONFIG_HINT
+    cf_list_hint=$LIST_HINT
     if [ "$cf_form" != plain ]; then
         cf_hint="ssh -G shows this for $2, not for ssh lab-suite: a Match block in ~/.ssh/config (such as"
         cf_hint="$cf_hint Match sessiontype or Match command) changes that login. Add !originalhost lab-suite to its Match line"
+        cf_list_hint=$cf_hint
     fi
     CFG=$(with_form "$cf_form" ssh -G 2>/dev/null | awk '{ $1 = tolower($1); print }') || CFG=
     if [ -z "$CFG" ]; then refuse air_config_unreadable "ssh -G failed for $2"; fi
@@ -198,7 +205,7 @@ check_form() {              # check_form FORM WHAT: ssh -G for FORM's exact argu
         *) cf_key= ;;
     esac
     if [ -z "$cf_key" ]; then
-        refuse air_config_identityfile "lab-suite must offer one key only, ~/.ssh/$KEY_NAME: $cf_hint"
+        refuse air_config_identityfile "lab-suite must offer one key only, ~/.ssh/$KEY_NAME: $cf_list_hint"
     fi
     KEY_PATH=$cf_key
     # Forwards add up across blocks too. Each form may have the Host's LocalForward and the probe's own forwards,
@@ -212,13 +219,13 @@ check_form() {              # check_form FORM WHAT: ssh -G for FORM's exact argu
         stdio) cf_local= ;;
         remote) cf_remote=$(sorted "remoteforward 127.0.0.1:0 127.0.0.1:9" "remoteforward $SOCK 127.0.0.1:9") ;;
     esac
-    [ "$(forwards localforward)" = "$cf_local" ] || refuse air_config_localforward "$cf_hint"
-    [ "$(forwards remoteforward)" = "$cf_remote" ] || refuse air_config_remoteforward "$cf_hint"
+    [ "$(forwards localforward)" = "$cf_local" ] || refuse air_config_localforward "$cf_list_hint"
+    [ "$(forwards remoteforward)" = "$cf_remote" ] || refuse air_config_remoteforward "$cf_list_hint"
     # ssh -G (OpenSSH 10.2) prints a -L to a Unix socket a second time, as a dynamicforward line with the same
     # listen address. Probe 6's own line is accepted; any other dynamicforward line refuses.
     cf_dynamic=$(forwards dynamicforward)
     if [ "$cf_form" = local ] && [ "$cf_dynamic" = "dynamicforward 127.0.0.1:$P6" ]; then cf_dynamic=; fi
-    [ -z "$cf_dynamic" ] || refuse air_config_dynamicforward "$cf_hint"
+    [ -z "$cf_dynamic" ] || refuse air_config_dynamicforward "$cf_list_hint"
 }
 
 check_form plain "ssh lab-suite"

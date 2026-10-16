@@ -94,8 +94,9 @@ fingerprint again, and the name of the `authorized_keys` backup.
 ## Step 5 (Air): the ssh config
 
 Put the block from `air-ssh-config.snippet` at the **top** of the Air's `~/.ssh/config`, before any
-`Host *` or `Match` block. ssh keeps the first value it reads, so a `Host *` block above it could add other keys or
-the Keychain.
+`Host *` or `Match` block. For most settings ssh keeps the first value it reads, so a `Host *` block above it
+could turn the Keychain or an agent back on. Keys and forwards are different: they add up from every block, above
+or below (see the `Match` paragraph below).
 
 The block also switches off what a later `Host *` block could otherwise add: connection sharing
 (`ControlMaster`, `ControlPath`, `ControlPersist`), the ssh-agent (`IdentityAgent none`), proxies and
@@ -115,7 +116,9 @@ add a key or a forward to those logins, because ssh adds up `IdentityFile` and f
 such a block must stay, add `!originalhost lab-suite` to its `Match` line. Before it logs in, the self-test runs
 `ssh -G` (which reads the config and connects nowhere) for `ssh lab-suite` and for each of its own five logins.
 It refuses to start if any of them shows another key, a forward other than the block's `LocalForward` and the
-probe's own, or a setting the block does not have.
+probe's own, or another value for a line it checks: every line of the block except `UseKeychain`, `RequestTTY`
+and `ServerAliveInterval`. It does not check settings the block does not name, such as `Port`, `ForwardAgent` or
+`ForwardX11` (the lab's `restrict` refuses agent and X11 forwarding).
 
 The block has `StrictHostKeyChecking yes`, so `~/.ssh/known_hosts` on the Air must already hold the lab's
 host key for `192.168.50.88`. It does if the Air has logged in to the lab before. If the self-test reports
@@ -236,4 +239,4 @@ Then, on the Air:
 | `sshd_keyword_conflict`, `sshd_include_*`, `dropin_differs` | The lab's sshd configuration is not what the script expects. Nothing was changed. Ask lab-Claude. |
 | `home_mismatch`, `run_as_root` | Run it as `user` on the lab, without sudo in front. |
 | `viewer_port_mismatch` | Printed by `ssh lab-suite`, which serves and attaches only on port 8765 (the key's `permitopen`). The lab's suite `config.json` sets another `port`, or an engine started with `--port` is running. Nothing was started or taken over. Run `suite stop` on the lab, or set the port back to 8765. |
-| `air_config_*` | Printed by the self-test on the Air, before any login: `ssh -G` shows a setting, key or forward that the lab-suite block does not have. If the line under the code names a probe, a `Match` block changes that probe's login: add `!originalhost lab-suite` to its `Match` line. Otherwise put the block at the top of `~/.ssh/config` (step 5). |
+| `air_config_*` | Printed by the self-test on the Air, before any login: `ssh -G` shows another value for a line of the lab-suite block that it checks, another key or another forward (step 5). If the line under the code names a probe, a `Match` block changes that probe's login: add `!originalhost lab-suite` to its `Match` line. For `air_config_identityfile`, `air_config_localforward`, `air_config_remoteforward` and `air_config_dynamicforward` without a probe named, another block adds a key or a forward wherever the lab-suite block sits: remove it from that block, or keep that block off lab-suite (`Host * !lab-suite`). For the other codes, put the block at the top of `~/.ssh/config`. |

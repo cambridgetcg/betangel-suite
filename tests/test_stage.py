@@ -1261,6 +1261,17 @@ class SelfTestScriptTests(unittest.TestCase):
             with self.subTest(case=label):
                 self.assertEqual((code, _codes(err)), (2, [expected]), out + err)
                 self.assertNotIn("probe 1", out)
+        # The hint. A key or a forward adds up across blocks, so moving the lab-suite block to the top cannot clear
+        # it: say where it comes from. A single-value setting is cleared by moving the block to the top.
+        errors = {label: err for (label, _env, _expected), (_code, _out, err) in zip(cases, results)}
+        for label in ("a second key", "no local forward", "a remote forward", "a dynamic forward"):
+            with self.subTest(hint=label):
+                self.assertIn("add up from every Host and Match block", errors[label])
+                self.assertIn("Host * !lab-suite", errors[label])
+                self.assertNotIn("at the TOP", errors[label])
+        for label in ("wrong host", "an inherited ControlMaster", "password allowed"):
+            with self.subTest(hint=label):
+                self.assertIn("at the TOP of ~/.ssh/config", errors[label])
         self.assertEqual((results[-1][0], _codes(results[-1][2])), (2, ["usage"]))
         os.remove(os.path.join(self.home, ".ssh", "id_ed25519_lab_suite"))
         [(code, out, err)] = _relay_many(self.home, [(["/bin/sh", SELFTEST], self.state("nokey", "secure"))])
