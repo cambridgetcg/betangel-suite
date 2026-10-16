@@ -20,9 +20,10 @@ Frames (section 6.5, the Phase 0b subset) are built at most frame_hz times a sec
 something changed. Every number in a frame is an integer: prices in hundredths and sizes in pence through
 rx.ticks, traded volume in pence on the repo's PRO basis (divided by 2, paper.py:1016).
 
-The run marker (section 6.8, I-17) is checked on every tick. When it appears, the engine freezes: the
-clock pauses with reason run_marker, no message is applied, every command is refused with
-run_marker_present, and after the grace period the engine ends with reason run_marker. Nothing is written.
+The run marker (section 6.8, I-17) is checked on every tick and again before each command runs. When it
+appears, the engine freezes: the clock pauses with reason run_marker, no message is applied, every command is
+refused with run_marker_present, and after the grace period the engine ends with reason run_marker. Nothing
+is written.
 
 A command that waits longer than its timeout to start is taken back and answered engine_busy: it has not run
 and never will (_Reply). One the actor has started always gets its real result.
@@ -231,6 +232,8 @@ class Engine:
                 continue
             if name == "_stop":
                 return args if args in END_REASONS else "stopped"
+            if self._frozen_at is None and name != "_watched" and runmarker.active(self._marker_path):
+                self._freeze(self._clock_ns())      # appeared since this tick's check: _handle refuses the command
             if reply is not None and not reply.take():
                 continue                        # its caller timed out and took it back: it never runs
             result = _refused("internal_error")

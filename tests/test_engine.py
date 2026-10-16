@@ -74,12 +74,12 @@ def floats_in(value):
 
 class EngineCase(unittest.TestCase):
 
-    def make(self, cfg=None, synthetic_module=SmallSynthetic, marker=None, grace_s=30):
+    def make(self, cfg=None, synthetic_module=SmallSynthetic, marker=None, grace_s=30, tick_s=engine.TICK_S):
         self.home = make_home(self)
         self.clock = FakeClock()
         self.marker = marker or runmarker.marker_path(None, self.home)
         actor = engine.Engine(cfg or dict(config.DEFAULTS), marker_path=self.marker, synthetic=synthetic_module,
-                              clock_ns=self.clock, marker_grace_s=grace_s)
+                              clock_ns=self.clock, tick_s=tick_s, marker_grace_s=grace_s)
         actor.start()
         self.addCleanup(self._stop, actor)
         return actor
@@ -404,6 +404,17 @@ class RunMarkerTests(EngineCase):
         self.clock.advance_ms(600)
         self.assertTrue(actor.stopped.wait(5))
         self.assertEqual(actor.ended(), "run_marker")
+
+    def test_a_command_dequeued_after_the_marker_appeared_is_refused(self):
+        actor = self.make(tick_s=3600)              # no timed wake: only the command itself can meet the marker
+        self.assertEqual(actor.command("open_market", {"seed": 1}), {"ok": True, "market_id": "1.999000001"})
+        first = self.frame(actor)                   # published after that loop's own marker check
+        os.makedirs(os.path.dirname(self.marker))
+        open(self.marker, "w").close()
+        self.assertEqual(actor.command("open_market", {"seed": 2}), {"ok": False, "code": "run_marker_present"})
+        frozen = self.frame(actor, first.seq, step_ms=100)
+        self.assertEqual(frozen.frame["clock"]["pause_reason"], "run_marker")
+        self.assertEqual(frozen.frame["market"]["id"], "1.999000001")
 
     def test_unreadable_marker_directory_counts_as_present(self):
         actor = self.make(grace_s=0.2)

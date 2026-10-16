@@ -423,6 +423,43 @@ results["listing_before"] = listing
             os.path.relpath(support.control_path(home), home)}
         self.assertEqual(set(after), expected)
 
+    def test_marker_written_as_serve_takes_the_lock_refuses_the_start(self):
+        # Nuance writes the marker, then waits for engine.lock to be free (6.8). A marker that appears after
+        # serve's first check, just as serve takes the lock, must still refuse the start: serve checks again
+        # once it holds the lock, starts nothing, and releases the lock.
+        home = support.short_home(self)
+        marker = runmarker.marker_path(None, home)
+        os.makedirs(os.path.dirname(marker), mode=0o700)
+        child = support.run_child(self, home, """
+import time
+from betangel_suite import engine
+from betangel_suite.api import control
+real_acquire_lock, real_start, started = control.acquire_lock, engine.Engine.start, []
+def acquire_lock(home_dir=None):            # the test writes the marker now, then the real lock is taken
+    sys.stdout.write("locking\\n")
+    sys.stdout.flush()
+    deadline = time.monotonic() + 10
+    while not os.path.lexists(%r) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return real_acquire_lock(home_dir)
+def start(self):
+    started.append(True)
+    real_start(self)
+control.acquire_lock, engine.Engine.start = acquire_lock, start
+def main():
+    try:
+        return server.run(cfg, command="serve", port=0, marker_grace_s=1)
+    finally:
+        sys.stdout.write("started=%%s lock_held=%%s\\n" %% (json.dumps(started), json.dumps(control.engine_running())))
+        sys.stdout.flush()
+""" % marker)
+        child.wait_line(r"locking\n")
+        open(marker, "w").close()
+        self.assertEqual(child.wait_exit(20), 2)
+        self.assertEqual(child.stderr(), "refused:run_marker_present\n")
+        self.assertEqual(child.stdout(), "locking\nstarted=[] lock_held=false\n")
+        self.assertFalse(os.path.lexists(support.control_path(home)))
+
     def test_marker_at_start_refuses_serve_and_open(self):
         home = support.short_home(self)
         marker = runmarker.marker_path(None, home)
