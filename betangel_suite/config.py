@@ -3,7 +3,9 @@
 The file is ~/.local/state/betangel-suite/config.json. It is optional; every key it holds must be one of
 DEFAULTS and must pass its check, or loading refuses with a code (never echoing the key or the value).
 The file must be a regular file owned by this user, not a symlink, not writable by group or others, at
-most 64 KB of strict JSON (duplicate keys and NaN or Infinity refused).
+most 64 KB of strict JSON (duplicate keys and NaN or Infinity refused). It is opened with O_NONBLOCK and
+checked with fstat before anything is read, so a FIFO in its place is refused at once instead of waiting
+for a writer (Nuance's PR #2 review, item 22).
 
 Phase 0: no command reads a data root, and the repo's own config.validate_config is not called yet; the
 paper config and cap profiles arrive with Phase 1b. Nothing here can weaken the guard: no key names the
@@ -42,6 +44,9 @@ MAX_DATA_ROOTS = 8
 # key stays null until Yu rules on Q-Y7, so no config edit alone can put research-month rows in the catalogue. Each
 # id is added only by a reviewed PR, after Yu's ruling with Nuance and Astra.
 ACCEPTED_RULINGS = frozenset()
+# O_NONBLOCK: opening a FIFO never waits for a writer (a regular file's open and read are unchanged); fstat then
+# refuses it before any read. O_NOCTTY: a terminal device in the file's place never becomes this process's terminal.
+_READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
 
 
 def load(home_dir=None):
@@ -49,7 +54,7 @@ def load(home_dir=None):
     config = copy.deepcopy(DEFAULTS)
     path = roots.config_path(home_dir)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = os.open(path, _READ_FLAGS)
     except FileNotFoundError:
         return config
     except OSError:

@@ -6,7 +6,7 @@ import unittest
 
 from betangel_suite import config, roots, rx
 from betangel_suite.errors import SuiteError
-from tests import make_home
+from tests import make_home, run_python
 
 
 class DefaultsTests(unittest.TestCase):
@@ -84,6 +84,17 @@ class LoadTests(unittest.TestCase):
         for data, code in cases:
             self.write(data)
             self.refused(code)
+
+    def test_a_fifo_or_directory_at_config_json_is_refused_at_once(self):
+        # Nuance's PR #2 review, item 22: a blocking open of a FIFO waits for a writer for ever. Each load runs in a
+        # child with a timeout, so a regression fails here instead of hanging the whole run.
+        for label, make in (("fifo", os.mkfifo), ("directory", os.mkdir)):
+            home = make_home(self)
+            make(roots.config_path(home))
+            code = ("from betangel_suite import config\nfrom betangel_suite.errors import SuiteError\n"
+                    "try:\n    config.load(%r)\nexcept SuiteError as exc:\n    print(exc.code)\n") % home
+            result = run_python(code, home, timeout=20)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "config_insecure\n", ""), label)
 
     def test_file_safety(self):
         self.write({"port": 8765}, mode=0o620)

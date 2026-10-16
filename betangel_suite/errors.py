@@ -203,22 +203,28 @@ def _salt(home_dir):
 
 
 def _read_salt(path):
-    """The salt bytes, None when the file does not exist; SuiteError(salt_invalid) for anything odd."""
+    """The salt bytes, None when the file does not exist; SuiteError(salt_invalid) for anything odd.
+
+    The open is O_NONBLOCK and fstat judges the file before anything is read, so a FIFO (or a directory) in the
+    salt's place is refused at once: a blocking open of a FIFO would wait for a writer for ever (Nuance's PR #2
+    review, item 22).
+    """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
     except FileNotFoundError:
         return None
     except OSError:
         fd = None
     if fd is None:
         raise SuiteError("salt_invalid")
+    data = None
     try:
         info = os.fstat(fd)
-        data = os.read(fd, SALT_BYTES + 1)
+        if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077:
+            data = os.read(fd, SALT_BYTES + 1)
     finally:
         os.close(fd)
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077
-            or len(data) != SALT_BYTES):
+    if data is None or len(data) != SALT_BYTES:
         raise SuiteError("salt_invalid")
     return data
 
