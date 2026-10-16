@@ -268,6 +268,32 @@ class ReferenceMakerTests(unittest.TestCase):
             with self.assertRaises(TypeError):
                 make(now_ns)
 
+    def test_a_falsy_rng_is_still_the_rng(self):
+        # Nuance's PR #2 review, item 9: upstream takes `rng or secrets.token_hex`, so an rng whose truth value is
+        # False (here a tape that has run out, by its __len__) gave random refs. The tape must be used, and only once
+        # per ref: rx draws nothing from it beforehand.
+        from betangel_suite import rx
+        now_ns = 1_431_000_000 * 1_000_000_000
+
+        class Tape:
+            def __init__(self, tokens):
+                self.tokens, self.draws = list(tokens), []
+
+            def __len__(self):
+                return 0                                  # falsy, but callable
+
+            def __call__(self, nbytes):
+                self.draws.append(nbytes)
+                return self.tokens.pop(0)
+
+        for name in ("make_customer_ref", "make_customer_order_ref"):
+            tape = Tape(["00000000000000a1", "00000000000000b2"])
+            self.assertFalse(tape)
+            make = getattr(rx.validate, name)
+            self.assertTrue(make(now_ns, tape).endswith("-00000000000000a1"), name)
+            self.assertTrue(make(now_ns, tape).endswith("-00000000000000b2"), name)
+            self.assertEqual(tape.draws, [8, 8], name)
+
 
 class ClosureTests(unittest.TestCase):
 
