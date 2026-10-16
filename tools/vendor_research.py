@@ -6,7 +6,10 @@ Run by hand by lab-Claude, never automatically. Steps:
 
   1. git -C ~/betangel-research cat-file -e <sha>^{commit}: a read-only object lookup in the deploy
      clone. If the commit is not there yet, stop (commit_not_present): wait for the Air's fast-forward.
-     Nothing here ever fetches.
+     Nothing here ever fetches. Then git -C ~/betangel-research merge-base --is-ancestor <sha>
+     refs/heads/main, read only too: only a commit on the research main branch can be pinned
+     (commit_not_on_main; Nuance's Q-N2 answer in her PR #2 review), since cat-file -e also finds an
+     unmerged or a dangling commit.
   2. git clone --no-checkout --no-hardlinks into
      ~/.local/share/betangel-suite/deps/betangel-research-<sha12>.partial: a local clone, no network.
   3. git checkout --detach <sha>, then git remote remove origin, so no later command can fetch from
@@ -49,6 +52,11 @@ def main(argv):
 
     if _git(home, "-C", research, "cat-file", "-e", sha + "^{commit}") != 0:
         raise SuiteError("commit_not_present")
+    on_main = _git(home, "-C", research, "merge-base", "--is-ancestor", sha, guard.VENDOR_MAIN_REF)
+    if on_main == 1:                                  # git's answer "not an ancestor"; anything else is a failure
+        raise SuiteError("commit_not_on_main")
+    if on_main != 0:
+        raise SuiteError("git_failed")
     if os.path.lexists(partial):
         raise SuiteError("partial_exists")
     if os.path.lexists(dest):

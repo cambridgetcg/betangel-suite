@@ -84,7 +84,7 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           --is-inside-work-tree (paths.is_inside_git_worktree, used by config.validate_config) and
           /usr/bin/open http://127.0.0.1:<permitted port>/#c=<code>; after seal(), none. A bare "git"
           must come through subprocess with a search path of /usr/bin and /bin only.
-  vendor  before seal(), exactly the four git argvs tools/vendor_research.py runs, each with exactly the
+  vendor  before seal(), exactly the five git argvs tools/vendor_research.py runs, each with exactly the
           environment VENDOR_GIT_ENV plus HOME; after, none.
   test    the test runner never seals. It may start /opt/homebrew/bin/python3.13 or 3.11 (or this
           interpreter) with -I -S -B, /bin/sh on this checkout's bin/suite, and /usr/bin/git only as
@@ -126,6 +126,9 @@ SEARCH_DIRS = ("/usr/bin", "/bin")                   # where a bare program name
 TEST_INTERPRETERS = ("/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3.11")
 VENDOR_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                      "-c", "core.hooksPath=/dev/null")
+# The branch of the deploy clone a pinned commit must be on (vendor's merge-base --is-ancestor; Nuance's Q-N2 answer
+# in her PR #2 review): cat-file -e alone accepted an unmerged or a dangling commit.
+VENDOR_MAIN_REF = "refs/heads/main"
 # The whole environment of every vendor git child, with HOME (the guard's own) added: vendor_argv_ok refuses None
 # (this process's environment, which could hold GIT_DIR) and any other key or value (GIT_CONFIG_COUNT and its
 # pairs can set core.fsmonitor, which runs a command; DEVELOPER_DIR picks another git behind /usr/bin/git).
@@ -673,7 +676,8 @@ def engine_argv_ok(argv, write_roots, ports):
 
 
 def vendor_argv_ok(argv, env, research, deps_root, home):
-    """The four git argvs of tools/vendor_research.py: cat-file -e, clone, checkout --detach, remote remove.
+    """The five git argvs of tools/vendor_research.py: cat-file -e and merge-base --is-ancestor <sha>
+    refs/heads/main in the deploy clone (both read only), then clone, checkout --detach and remote remove.
 
     The child's environment must be exactly VENDOR_GIT_ENV plus HOME=home (Nuance's PR #2 review, item 10): None
     would hand git this process's environment, where GIT_DIR or GIT_WORK_TREE redirect it, and any other key can
@@ -691,6 +695,8 @@ def vendor_argv_ok(argv, env, research, deps_root, home):
 
     if len(rest) == 5 and rest[:4] == ["-C", research, "cat-file", "-e"]:
         return rest[4].endswith("^{commit}") and bool(_SHA_RE.fullmatch(rest[4][:-len("^{commit}")]))
+    if len(rest) == 6 and rest[:4] == ["-C", research, "merge-base", "--is-ancestor"] and rest[5] == VENDOR_MAIN_REF:
+        return bool(_SHA_RE.fullmatch(rest[4]))
     if len(rest) == 6 and rest[:5] == ["clone", "--no-checkout", "--no-hardlinks", "--quiet", research]:
         return partial(rest[5])
     if len(rest) == 6 and rest[0] == "-C" and rest[2:5] == ["checkout", "--quiet", "--detach"]:

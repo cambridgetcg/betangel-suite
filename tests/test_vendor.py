@@ -40,10 +40,8 @@ class VendorToolTests(unittest.TestCase):
             with open(path, "wb") as handle:
                 handle.write(data)
             self.contents[relpath] = data
-        self.git("init", "-q")
-        self.git("add", "-A")
-        self.git("-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", "commit", "-q", "-m", "synthetic")
-        self.sha = self.git("rev-parse", "HEAD").strip()
+        self.git("-c", "init.defaultBranch=main", "init", "-q")
+        self.sha = self.commit("synthetic")
         self.pin_file = os.path.join(roots.state_dir(self.home), "pin-under-test.json")
         self.dest = os.path.join(roots.deps_root(self.home), "betangel-research-" + self.sha[:12])
 
@@ -52,6 +50,17 @@ class VendorToolTests(unittest.TestCase):
                guard.FORBID_NETWORK_ENV: "1"}
         return subprocess.run([guard.GIT, "-C", self.research, *args], env=env, capture_output=True, text=True,
                               check=True, timeout=60).stdout
+
+    def commit(self, message):
+        """Commit every file on the branch HEAD names; return the new commit's sha."""
+        self.git("add", "-A")
+        self.git("-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", "commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD").strip()
+
+    def point_head(self, branch):
+        """Point HEAD at refs/heads/<branch> by hand (the test runner's git has no checkout or update-ref)."""
+        with open(os.path.join(self.research, ".git", "HEAD"), "w", encoding="ascii") as handle:
+            handle.write("ref: refs/heads/%s\n" % branch)
 
     def vendor(self, *args):
         result = run_suite(["vendor", *args], self.home)
@@ -100,6 +109,28 @@ class VendorToolTests(unittest.TestCase):
                          (2, "", "refused:commit_not_present\n"))
         self.assertFalse(os.path.lexists(roots.share_dir(self.home)))
         self.assertFalse(os.path.lexists(self.pin_file))
+
+    def test_only_a_commit_on_main_is_vendored(self):
+        # Nuance's Q-N2 answer in her PR #2 review: cat-file -e also finds an unmerged or a dangling commit, so vendor
+        # asks merge-base --is-ancestor <sha> refs/heads/main as well. Nothing is created and the clone is unchanged.
+        self.point_head("side")                                   # unborn: the next commit is on side only
+        with open(os.path.join(self.research, "README.md"), "a", encoding="utf-8") as handle:
+            handle.write("synthetic side change\n")
+        side = self.commit("synthetic side")
+        self.point_head("main")
+        before = snapshot(self.research)
+        self.assertEqual(self.vendor(side, "--bump", "--pin-file", self.pin_file), (2, "", "refused:commit_not_on_main\n"))
+        self.assertEqual(snapshot(self.research), before)
+        os.remove(os.path.join(self.research, ".git", "refs", "heads", "side"))    # now a dangling commit
+        before = snapshot(self.research)
+        self.assertEqual(self.vendor(side, "--bump", "--pin-file", self.pin_file), (2, "", "refused:commit_not_on_main\n"))
+        self.assertEqual(snapshot(self.research), before)
+        self.assertFalse(os.path.lexists(roots.share_dir(self.home)))
+        self.assertFalse(os.path.lexists(self.pin_file))
+        later = self.commit("synthetic later")                   # on main: the first commit is now an ancestor
+        self.assertNotEqual(later, self.sha)
+        self.assertEqual(self.vendor(self.sha, "--bump", "--pin-file", self.pin_file),
+                         (0, "vendor_ok commit=%s files=26 mode=bump\n" % self.sha[:12], ""))
 
     def test_bad_arguments(self):
         for args in ((), ("abc",), (self.sha.upper(),), (self.sha, "--pin-file", "relative.json"),

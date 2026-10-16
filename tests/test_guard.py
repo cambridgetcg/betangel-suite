@@ -776,12 +776,18 @@ results["outside"] = sorted(os.listdir(outside))
             return guard.vendor_argv_ok(argv, child_env, research, deps, "/h")
 
         for rest in (["-C", research, "cat-file", "-e", sha + "^{commit}"],
+                     ["-C", research, "merge-base", "--is-ancestor", sha, "refs/heads/main"],
                      ["clone", "--no-checkout", "--no-hardlinks", "--quiet", research, partial],
                      ["-C", partial, "checkout", "--quiet", "--detach", sha],
                      ["-C", partial, "remote", "remove", "origin"]):
             self.assertTrue(ok(prefix + rest), rest)
         for rest in (["-C", research, "fetch"],
                      ["-C", research, "cat-file", "-e", sha],
+                     ["-C", research, "merge-base", "--is-ancestor", sha, "main"],
+                     ["-C", research, "merge-base", "--is-ancestor", sha, "refs/remotes/origin/main"],
+                     ["-C", research, "merge-base", "--is-ancestor", "HEAD", "refs/heads/main"],
+                     ["-C", research, "merge-base", sha, "refs/heads/main"],
+                     ["-C", partial, "merge-base", "--is-ancestor", sha, "refs/heads/main"],
                      ["-C", research, "status", "--porcelain"],
                      ["clone", "--no-checkout", "--no-hardlinks", "--quiet", "/elsewhere", partial],
                      ["clone", "--no-checkout", "--no-hardlinks", "--quiet", research, deps + "/other"],
