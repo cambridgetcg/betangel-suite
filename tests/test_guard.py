@@ -945,8 +945,7 @@ attempt("temp_store_set_again", lambda: sqlite3.connect(os.path.join(state, "c.s
 """)
         self.assertEqual((results["guarded_classes"], results["temp_store_set_again"]), (1, "ok"))
         self.assertEqual([value for name, value in results.items() if name.startswith("temp_files_")], [0, 0, 0])
-        self.assertEqual({name: results[name] for name in ("temp_store_file", "temp_store_dbapi2", "temp_store_memory")},
-                         {"temp_store_file": 2, "temp_store_dbapi2": 2, "temp_store_memory": 2})
+        self.assertEqual([results["temp_store_" + name] for name in ("file", "dbapi2", "memory")], [2, 2, 2])
         for name in ("empty_name", "empty_bytes", "temp_store_not_set"):
             self.assertEqual(results[name], "sqlite_connect_refused", name)
 

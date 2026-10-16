@@ -36,9 +36,6 @@ What the hook refuses, in every mode and phase:
        path text alone. A relative path in a write open is refused too: the open event does not say which dir_fd it
        is relative to (the other events do, and a dir_fd is resolved with F_GETPATH). The roots check
        resolves the path as given, as the OS does: "link/.." and a final "/" follow the link.
-       chmod, chown, utime and truncate on a descriptor (fchmod and the like) are judged by the file's path
-       from F_GETPATH, and refused when it has none: a read-only open is never checked, so a descriptor
-       does not show that its file lies in the roots. open() of a descriptor is not judged again.
        That check trusts each root's real path, so arm() first refuses any write root, and TMPDIR, that
        the file system puts in, around or onto ~/betangel-data (roots.check_placement, stat calls only):
        root_overlaps_data_home, or suite_root_misplaced for an engine suite root that is not a real
@@ -46,6 +43,9 @@ What the hook refuses, in every mode and phase:
        symlink, hard link or rename that puts a name where a root or TMPDIR really is, or moves one away
        (root_replace_refused): os.symlink(<a data root>, suite.noindex) would otherwise pass as a write in
        the roots and steer the next process. Links elsewhere in the roots stay allowed.
+       chmod, chown, utime and truncate on a descriptor (fchmod and the like) are judged by the file's path
+       from F_GETPATH, and refused when it has none: a read-only open is never checked, so a descriptor
+       does not show that its file lies in the roots. open() of a descriptor is not judged again.
        CPython raises no audit event for os.mkfifo and os.mknod, so arm() replaces them (in os and posix)
        with wrappers that raise one ("os.mkfifo", "os.mknod") before calling the original.
        The sqlite3.connect event covers only the main database file. ATTACH DATABASE and VACUUM INTO create
