@@ -120,6 +120,24 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(arm_outcome(self, home, child_env(home, SQLITE_TMPDIR=outside)), "tmpdir_mismatch")
         self.assertEqual(arm_outcome(self, home, child_env(home, HOME="relative/home")), "home_invalid")
 
+    def test_refuses_a_tmpdir_the_os_resolves_outside_the_roots(self):
+        # Python's tempfile uses the normalised text, but SQLite reads SQLITE_TMPDIR from C, as given: the OS
+        # resolves "alias/.." through the link, and follows a link standing in for the directory itself.
+        home = make_home(self)
+        state = roots.state_dir(home)
+        outside = os.path.join(home, "elsewhere", "deep")
+        os.makedirs(outside, mode=0o700)
+        os.symlink(outside, os.path.join(state, "alias"))
+        dotdot = os.path.join(state, "alias", "..", "tmp")     # normalised: state/tmp; resolved: elsewhere/tmp
+        linked = os.path.join(state, "linked")
+        os.symlink(outside, linked)
+        for tmp in (dotdot, linked):
+            self.assertEqual(arm_outcome(self, home, child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp)),
+                             "tmpdir_mismatch", tmp)
+        # A final "/" or a doubled one changes nothing the OS resolves, so they are still accepted.
+        for tmp in (roots.tmp_dir("test", home) + "/", os.path.join(state + "/", "tmp")):
+            self.assertEqual(arm_outcome(self, home, child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp)), "armed", tmp)
+
     def test_arm_checks_the_interpreter_version_itself(self):
         # guard.arm is the only version check when tests or a future entry point start without _launch.py.
         # The child runs on this interpreter; only sys.version_info is replaced before arming.
