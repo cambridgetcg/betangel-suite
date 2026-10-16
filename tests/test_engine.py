@@ -6,7 +6,9 @@ tier fast; every frame is compared with a reference book.MarketBookCache fed the
 """
 
 import os
+import threading
 import unittest
+from unittest import mock
 
 from betangel_suite import config, engine, rx, runmarker, synthetic
 from betangel_suite.errors import SuiteError
@@ -182,6 +184,63 @@ class CommandTests(EngineCase):
         self.assertEqual(actor.ended(), "stopped")
         self.assertEqual(actor.command("play", {}), {"ok": False, "code": "engine_stopping"})
         self.assertEqual(actor.wait(0, 0.1), (None, "stopped"))
+
+
+class BusyTests(EngineCase):
+    """engine_busy is the truth: a command answered engine_busy has not run and never will, and one the actor
+    has started returns its real result however long it takes (a nonce caches that answer; 9.2 item 7)."""
+
+    def test_a_command_taken_back_after_its_timeout_never_runs(self):
+        entered, release, generated = threading.Event(), threading.Event(), []
+
+        class Slow(SmallSynthetic):
+            @staticmethod
+            def generate(spec):
+                generated.append(spec.seed)
+                if spec.seed == 1:                  # holds the actor, so the next command waits in the queue
+                    entered.set()
+                    release.wait(5)
+                return synthetic.generate(spec)
+
+        actor = self.make(synthetic_module=Slow)
+        self.addCleanup(release.set)
+        first = []
+        holder = threading.Thread(target=lambda: first.append(actor.command("open_market", {"seed": 1})))
+        holder.start()
+        self.assertTrue(entered.wait(5))
+        self.assertEqual(actor.command("open_market", {"seed": 2}, timeout=0.05), {"ok": False, "code": "engine_busy"})
+        release.set()
+        holder.join(5)
+        self.assertEqual(first, [{"ok": True, "market_id": "1.999000001"}])
+        self.assertEqual(actor.command("pause", {}), {"ok": True})         # queued behind the one taken back
+        self.assertEqual(generated, [1])
+        self.assertEqual(self.frame(actor).frame["market"]["id"], "1.999000001")
+
+    def test_a_command_the_actor_took_as_its_caller_timed_out_returns_its_result(self):
+        actor_took, caller_tried = threading.Event(), threading.Event()
+        real_take = engine._Reply.take
+
+        def take(reply):        # orders the race: the actor takes the command, then its caller's timeout ends
+            if threading.current_thread().name == "suite-actor":
+                taken = real_take(reply)
+                actor_took.set()
+                return taken
+            actor_took.wait(5)
+            taken = real_take(reply)
+            caller_tried.set()
+            return taken
+
+        class Slow(SmallSynthetic):
+            @staticmethod
+            def generate(spec):
+                caller_tried.wait(5)                # still running when its caller tries to take it back
+                return synthetic.generate(spec)
+
+        actor = self.make(synthetic_module=Slow)
+        with mock.patch.object(engine._Reply, "take", take):
+            result = actor.command("open_market", {"seed": 4}, timeout=0.05)
+        self.assertTrue(caller_tried.is_set())
+        self.assertEqual(result, {"ok": True, "market_id": "1.999000004"})
 
 
 class ClockAndFrameTests(EngineCase):

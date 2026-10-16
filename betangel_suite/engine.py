@@ -23,6 +23,9 @@ rx.ticks, traded volume in pence on the repo's PRO basis (divided by 2, paper.py
 The run marker (section 6.8, I-17) is checked on every tick. When it appears, the engine freezes: the
 clock pauses with reason run_marker, no message is applied, every command is refused with
 run_marker_present, and after the grace period the engine ends with reason run_marker. Nothing is written.
+
+A command that waits longer than its timeout to start is taken back and answered engine_busy: it has not run
+and never will (_Reply). One the actor has started always gets its real result.
 Standard library only, plus rx.
 """
 
@@ -54,11 +57,20 @@ Published = collections.namedtuple("Published", "seq frame line")
 
 
 class _Reply:
-    __slots__ = ("event", "value")
+    """A queued command's reply. The actor and a caller whose wait timed out each try take(); only the first
+    succeeds. The actor runs only a command it took, and a caller answers engine_busy only for one it took
+    back, so a command answered engine_busy has not run and never will."""
+
+    __slots__ = ("event", "value", "_taken")
 
     def __init__(self):
         self.event = threading.Event()
         self.value = None
+        self._taken = threading.Lock()
+
+    def take(self):
+        """True for the first caller only (an atomic test-and-set)."""
+        return self._taken.acquire(blocking=False)
 
     def set(self, value):
         self.value = value
@@ -185,8 +197,9 @@ class Engine:
             return _refused("engine_stopping")
         reply = _Reply()
         self._queue.put((name, args, reply))
-        if not reply.event.wait(timeout):
+        if not reply.event.wait(timeout) and reply.take():     # taken back before the actor took it
             return _refused("engine_stopping" if self._ended is not None else "engine_busy")
+        reply.event.wait()              # the actor took it, and answers every command it takes
         return reply.value
 
     # --- the actor ----------------------------------------------------------------------------------
@@ -218,6 +231,9 @@ class Engine:
                 continue
             if name == "_stop":
                 return args if args in END_REASONS else "stopped"
+            if reply is not None and not reply.take():
+                continue                        # its caller timed out and took it back: it never runs
+            result = _refused("internal_error")
             try:
                 result = self._handle(name, args)
             except SuiteError as exc:
@@ -225,8 +241,9 @@ class Engine:
             except Exception as exc:        # a failing command must not take the actor down; code only
                 sys.stderr.write("engine:" + errors.describe(exc) + "\n")
                 result = _refused("internal_error")
-            if reply is not None:
-                reply.set(result)
+            finally:
+                if reply is not None:
+                    reply.set(result)           # its caller waits for this once the actor has taken it
 
     def _wait_s(self, now):
         """Sleep until the next tick, or sooner when a waiting frame becomes due (frames then come at frame_hz)."""

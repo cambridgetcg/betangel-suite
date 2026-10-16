@@ -390,7 +390,7 @@ class WatchingTests(unittest.TestCase):
 class NonceAndRateTests(unittest.TestCase):
 
     def test_nonce_cache_returns_the_first_result(self):
-        cache = routes.NonceCache(size=3)
+        cache = routes.NonceCache()
         new, entry = cache.claim("nonce-001")
         self.assertTrue(new)
         cache.finish("nonce-001", entry, {"ok": True})
@@ -400,9 +400,55 @@ class NonceAndRateTests(unittest.TestCase):
         new, entry = cache.claim("nonce-002")
         cache.forget("nonce-002", entry)
         self.assertTrue(cache.claim("nonce-002")[0])
-        for index in range(5):
-            cache.claim("other-%03d" % index)
-        self.assertTrue(cache.claim("nonce-001")[0])          # evicted, oldest first
+        for index in range(2000):
+            new, entry = cache.claim("other-%04d" % index)
+            cache.finish("other-%04d" % index, entry, {"ok": True})
+        new, again = cache.claim("nonce-001")                 # kept for the process's life: never evicted
+        self.assertFalse(new)
+        self.assertTrue(again[0].is_set())
+        self.assertEqual(again[1], {"ok": True})
+
+    def test_a_replay_of_an_in_flight_nonce_waits_for_its_result(self):
+        cache = routes.NonceCache()
+        new, entry = cache.claim("nonce-001")
+        self.assertTrue(new)
+        claimed, seen = threading.Event(), []
+
+        def replay():
+            new_again, waiting = cache.claim("nonce-001")
+            claimed.set()
+            waiting[0].wait(5)
+            seen.append((new_again, waiting[1]))
+
+        thread = threading.Thread(target=replay)
+        thread.start()
+        self.assertTrue(claimed.wait(5))
+        cache.finish("nonce-001", entry, {"ok": True})
+        thread.join(5)
+        self.assertEqual(seen, [(False, {"ok": True})])
+        new, finished = cache.claim("nonce-001")              # later replays get the small finished entry
+        self.assertFalse(new)
+        self.assertIsNot(finished, entry)
+        self.assertTrue(finished[0].is_set())
+        self.assertEqual(finished[1], {"ok": True})
+
+    def test_a_replayed_nonce_does_nothing_new_after_many_other_commands(self):
+        calls = []
+
+        class Engine:
+            def command(self, name, args):
+                calls.append(name)
+                return {"ok": True, "market_id": "1.999%06d" % len(calls)} if name == "open_market" else {"ok": True}
+
+        app = routes.App(Engine(), auth.Auth(register=lambda value: None), {})
+        token = app.auth.exchange(app.auth.issue_code())
+        first = {"nonce": "first-nonce", "command": "open_market", "args": {"seed": 1}}
+        self.assertEqual(app.command(token, first), (200, {"ok": True, "market_id": "1.999000001"}))
+        for index in range(1100):                           # more than the 1024 the old bounded cache kept
+            body = {"nonce": "other-%04d" % index, "command": "pause", "args": {}}
+            self.assertEqual(app.command(token, body), (200, {"ok": True}))
+        self.assertEqual(app.command(token, first), (200, {"ok": True, "market_id": "1.999000001"}))
+        self.assertEqual(len(calls), 1101)
 
     def test_rate_limiter_is_a_sliding_window(self):
         now = [0.0]
