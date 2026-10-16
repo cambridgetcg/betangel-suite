@@ -413,10 +413,17 @@ class Engine:
             except SuiteError as exc:
                 market.error = exc.code
                 break
-            for change in message.get("mc") or ():
-                if change.get("id") == market.market_id and isinstance(change.get("marketDefinition"), dict):
-                    market.definition = change["marketDefinition"]        # replaced whole, as book.py does
-                    market.market_time_ms = market_time_ms(market.definition)
+            try:
+                for change in message.get("mc") or ():
+                    if change.get("id") == market.market_id and isinstance(change.get("marketDefinition"), dict):
+                        market.definition = change["marketDefinition"]        # replaced whole, as book.py does
+                        market.market_time_ms = market_time_ms(market.definition)
+            except OverflowError:
+                # A marketTime whose offset takes it out of datetime's range ("0001-01-01T00:00:00.000+23:59"):
+                # replay_market_time catches only ValueError (book.py:68-79). Stop the replay here, as for a
+                # message the cache refuses, rather than end the engine (Nuance's PR #4 review, item 9).
+                market.error = "value_error"
+                break
         market.next += 1
         market.v = max(market.v, pt)
         self._dirty = True
