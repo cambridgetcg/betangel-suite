@@ -107,8 +107,12 @@ host key for `192.168.50.88`. It does if the Air has logged in to the lab before
 "Host key verification failed", compare the lab's key first. On the lab, run
 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. Then accept only that fingerprint.
 
-To get the two Air files, AirDrop `R/air-ssh-config.snippet` and `R/air-viewer-selftest.sh` from the lab,
-or take them from the reviewed tag on GitHub.
+Take the two Air files, `tools/stage/air-ssh-config.snippet` and `tools/stage/air-viewer-selftest.sh`, only
+from GitHub on the Air, at the full commit SHA of the reviewed merge (the merged PR's page shows it), not
+at a branch or tag name, which the lab's own `gh` login could move. Never AirDrop them from the lab: any
+process running as `user` there can change the release copy, a changed snippet could run commands on the
+Air through `ProxyCommand`, `LocalCommand` or `Match exec`, and the self-test from the same copy would not
+catch it (DESIGN.md 8.6; whether these files belong in this repo is open, Q-Y19).
 
 ## Step 6 (Air): the self-test
 
@@ -215,3 +219,4 @@ Then, on the Air:
 | `viewer_line_present`, `viewer_key_already_installed` | A viewer line is already there. Run `--undo` first if you want to replace it. |
 | `sshd_keyword_conflict`, `sshd_include_*`, `dropin_differs` | The lab's sshd configuration is not what the script expects. Nothing was changed. Ask lab-Claude. |
 | `home_mismatch`, `run_as_root` | Run it as `user` on the lab, without sudo in front. |
+| `viewer_port_mismatch` | Printed by `ssh lab-suite`, which serves and attaches only on port 8765 (the key's `permitopen`). The lab's suite `config.json` sets another `port`, or an engine started with `--port` is running. Nothing was started or taken over. Run `suite stop` on the lab, or set the port back to 8765. |

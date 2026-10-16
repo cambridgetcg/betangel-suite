@@ -409,7 +409,7 @@ Phase 0 creates only `run/engine.lock` and `run/control.sock` in `run/`: no `eng
 |---|---|---|
 | `data_roots` | `[]` until Nuance names the PRO root (Q-N4), then `["~/betangel-data/historic-pro"]` | Each must pass `archive.check_data_root`. With no root, the engine runs synthetic mode only. The BASIC root is used only by explicit counts-only commands (section 5.1). |
 | `state_root` | `~/betangel-data/suite.noindex` | R-4 |
-| `port` | 8765 | loopback only |
+| `port` | 8765 | loopback only. `ssh-session`'s forced command requires 8765, the viewer key's port (`viewer_port_mismatch`; section 8.6 item 2) |
 | `frame_hz` | 10 | 5-20 |
 | `cap_profile` | `v1-live-mirror` | or `practice` (section 7.2; R-7) |
 | `commission_source` | `user_package_unverified` | R-3 |
@@ -665,6 +665,7 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
   - venue "Synthetic Park" and runners "Synthetic 1..n".
   
   The scanner fails on any `1.1[0-9]{8}`-shaped market id, or any runner-name table, outside that namespace. In synthetic mode the engine refuses non-synthetic ids and every configured real data root.
+- **Scanner names.** The scanner compares its protected names (data-root components, forbidden directories, betangel-research copies, `betangel-data` in a link target or text) case-insensitively, with `casefold()`, because the lab's APFS volume folds case. Findings for runner data (`runner_table`, `runner_record`, `stream_record`), like the file-level data codes, withhold the file name.
 - **Writing:** no real-market screenshots, prices, names or ids in PRs, issues, Collab or the mailbox.
 
 ---
@@ -799,14 +800,14 @@ Nuance has answered: during a real run, "a suite elsewhere is harmless but slows
   - A run-active marker is agreed with Nuance, outside `~/betangel-data` and not under the unagreed `~/betangel-data/lab-state`. The proposal is `~/.local/state/lab-runs/ACTIVE`, written by Nuance's run wrapper.
   - It is checked first by `_launch.py`, before anything is created under `~/betangel-data`.
   - It covers both real backtest runs and the PRO ingest and index.
-- **At start.** The engine and every real-data command (`catalogue`, `selfcheck`, `diagnose`) refuse to start while the marker exists. An unreadable marker, or an unreadable marker directory, counts as present.
-- **Mid-session.** The actor checks the marker every tick and before every journal append or ledger write. If the marker appears:
+- **At start.** The engine and every real-data command (`catalogue`, `selfcheck`, `diagnose`) refuse to start while the marker exists. An unreadable marker, or an unreadable marker directory, counts as present. `serve`, `open` and `ssh-session` check it again after taking `engine.lock`, so a marker written while they start refuses the start.
+- **Mid-session.** The actor checks the marker every tick, again after it dequeues each command (before running it), and before every journal append or ledger write. If the marker appears:
   - the engine pauses the clock and freezes `PaperExchange`: no advance, no activation, no journal or ledger writes;
   - the UI shows why;
   - the engine exits after a grace period of 30 s without writing.
   
   At the next start, after the run, the session is marked `interrupted_run`. It is not counted as abandoned by Yu.
-- **Nuance's side.** Nuance's wrapper writes the marker, then waits until `~/.local/state/betangel-suite/run/engine.lock` is free (at most about 30 s) before touching sources or data. This is a request to Nuance (Q-N3).
+- **Nuance's side.** Nuance's wrapper writes the marker, then waits until `~/.local/state/betangel-suite/run/engine.lock` is free (at most about 30 s was proposed; as built it can take about 35 s, Q-N3) before touching sources or data. This is a request to Nuance (Q-N3).
 - **No automatic work.** The catalogue is rebuilt only on an explicit command, never on a head change, so nothing fires during Nuance's ingest.
 - **Until a marker is agreed.** Lab-Claude runs no real-data commands while a run is announced, and Yu is told before starting. **The agreed marker is a Phase 0 exit criterion, and Phase 1b journal writes on real data do not ship without it.**
 - **Phase 0 (adaptation E in AGENTS.md).** `stop`, `test` and `vendor` do not check the marker at start; every other command refuses while it exists, and `test --heavy` refuses too. The fast tier therefore runs during a marker. It starts synthetic engines (`serve`, `open`, `ssh-session`) in temporary HOMEs, whose marker checks read the temporary HOME's marker path, not the real one. That sits uneasily with rule 7 of section 3.9 ("no suite engine runs"), so it is an open question for Nuance (Q-N14).
@@ -977,6 +978,8 @@ Parity runs only on small synthetic fixtures; `run_paper_replay` materialises ev
   - refuses new paper orders until the operator types `resume`.
   
   `killswitch.engage` is never called on the lab. It would create the repo's global KILL file under the real state root.
+  
+  *As built in Phase 0:* `bin/suite stop` reaches the engine over the control socket (`stop`, section 9.1), and Phase 0 creates no `run/STOP` file (section 3.7).
 - **Void and rewind** applies STOP's order handling, then closes the session (section 6.4).
 - **At the off.** `advance` lapses unmatched size at the first in-play snapshot (`lapsed_inplay`, paper.py:474-480): Bet Angel's "At In-play: Cancel".
 - **At CLOSED:**
@@ -1192,6 +1195,7 @@ There is no auto-keypress and no timed action, because those are automation.
      - `air-ssh-config.snippet` (Air): exactly the Host block below.
      - `air-viewer-selftest.sh` (Air): the self-test below.
      - `suite-alias.zsh` (lab): the `suite` alias for Yu's `~/.zshrc`.
+     - The Air takes its two files only from GitHub, at the reviewed merge commit's SHA (not a branch or tag name, which the lab's own `gh` login could move), never by AirDrop from the lab's copy. Any lab process running as `user` can change the release copy, and a changed snippet could run commands on the Air through `ProxyCommand`, `LocalCommand` or `Match exec`; the self-test from the same copy would not catch it.
      - Yu generates the key on the Air, with a passphrase. Only the public key moves.
      - **Yu runs the lab script**, not Nuance or lab-Claude. It needs sudo for the drop-in.
      - Yu updates the CLAUDE.md line that says "authorized_keys holds only the MacBook Air key".
@@ -1239,6 +1243,7 @@ There is no auto-keypress and no timed action, because those are automation.
      - `ProxyCommand none`, `ProxyJump none` and `PermitLocalCommand no` stop a later `Host *` block from adding a proxy or a local command. ssh keeps the first value it reads, so the block goes at the top of `~/.ssh/config`. The self-test refuses to start unless `ssh -G lab-suite` shows all seven of these lines in force.
    - **Use.** Yu types `ssh lab-suite` on the Air. Do **not** use `-N`: a forced command runs only when a session channel is opened.
      - `bin/suite` checks `SSH_CONNECTION` and `SSH_ORIGINAL_COMMAND` before `env -i` (section 3.6).
+     - `ssh-session` without `--port`, which is how the forced command runs it, serves or attaches only on 8765, the port of `permitopen` and the `LocalForward`. Another config `port` refuses with `viewer_port_mismatch` before any engine starts, and so does a running engine on another port (from `serve --port N` or `open --port N`), before any takeover.
      - It prints a single-use URL (`http://127.0.0.1:8765/#c=<code>`; code valid for 120 s) to that session's stdout only.
      - Yu pastes the URL into a Safari Private window (Cmd-click would open a normal window).
      - Pressing Enter in the ssh window prints a fresh code, for example after a page reload.
@@ -1274,7 +1279,7 @@ There is no auto-keypress and no timed action, because those are automation.
    - copying licensed data to the Air;
    - running the MVP engine on the Air next to the Betfair credentials.
 
-**The trust boundary.** The tunnel makes lab-served JavaScript run in Yu's Air browser. That JS is written by lab-Claude and is replaceable by any lab process running as `user`; `chmod a-w` does not stop the owner. This is the only lab-to-Air code path.
+**The trust boundary.** The tunnel makes lab-served JavaScript run in Yu's Air browser. That JS is written by lab-Claude and is replaceable by any lab process running as `user`; `chmod a-w` does not stop the owner. This is the only lab-to-Air code path: the two Air files of item 2 reach the Air from GitHub at the reviewed merge commit, never from the lab (Q-Y19 asks whether they belong in this repo at all).
 
 A buggy or tampered page could show a fake Betfair login and send what Yu types to the lab. The CSP cannot prevent that, because the lab sets it. Hence:
 
@@ -1329,7 +1334,7 @@ A buggy or tampered page could show a fake Betfair login and send what Yu types 
 
 - **Command enum:** `open_market`, `play`, `pause`, `set_speed`, `seek`, `jump`, `step`, `subscribe`, `claim_control`, `place`, `cancel`, `cancel_side`, `cancel_all`, `stop`, `resume`, `void_and_rewind`, `report_problem`, `set_prefs`, `export_csv`. Exploration mode adds `replace`. A test asserts that no route or command name contains `live`, `account`, `funds`, `login`, `kill`, `upload` or `share`.
 - **Static files** are mapped from the manifest by exact name, never joined from the request path, and there is no directory listing.
-- **Control socket.** `run/control.sock` (0600, in the 0700 run dir) accepts only `attach`, `new_code`, `pause` and `stop`, plus `ssh-session`'s `attach_viewer` (whose reply adds `viewer`, the viewer generation), `viewer_code`, `viewer_heartbeat` and `viewer_away` (each `{viewer: <positive int>}`).
+- **Control socket.** `run/control.sock` (0600, in the 0700 run dir) accepts only `attach`, `new_code`, `pause` and `stop`, plus `ssh-session`'s `attach_viewer` (`{port: <the port it expects, 0 for any>}`; an engine on another port answers `viewer_port_mismatch` before the takeover; the reply adds `viewer`, the viewer generation), `viewer_code`, `viewer_heartbeat` and `viewer_away` (each `{viewer: <positive int>}`).
   - A viewer that a later takeover has replaced gets `{ok: false, code: superseded}`.
   - Each request is one line of strict JSON with exact keys, from the same uid only (checked with the kernel's `LOCAL_PEERCRED`, which `getpeereid` is built on).
   - Clients connect only to a path permitted with `guard.permit_unix_connect` before `seal()` (I-3); an attached `ssh-session` keeps that permit after it seals.
@@ -1346,12 +1351,12 @@ A buggy or tampered page could show a fake Betfair login and send what Yu types 
    - The token is required as `Authorization: Bearer` on every `/api/` request except `bootstrap`, the stream included, and compared with `hmac.compare_digest`. A missing or wrong token gets 401.
    - There are no cookies, because cookies on `127.0.0.1` are shared across ports, and no query-string tokens.
    - A takeover invalidates the previous token.
-2. **Host.** The host name must be exactly `127.0.0.1` or `localhost`, with a numeric port; otherwise 421. This defeats DNS rebinding, and still allows another local port on the Air if 8765 is taken there.
+2. **Host.** The host name must be exactly `127.0.0.1` or `localhost`, with a numeric port; otherwise 421. This defeats DNS rebinding. The staged Host block fixes the Air's side at 8765 (`LocalForward 127.0.0.1:8765` with `ExitOnForwardFailure yes`), so if 8765 is taken on the Air, `ssh lab-suite` fails instead of using another port.
 3. **Origin.** It is required on POST and must equal `"http://" + Host`; otherwise 403. If present on the stream GET, it must also match.
 4. **POSTs.** POST only, with `Content-Type: application/json`; anything else gets 415. Simple cross-site form, text or `no-cors` POSTs therefore fail, and a JSON POST needs a preflight that is never answered.
 5. **No CORS.** No `Access-Control-*` header on any response, and `OPTIONS` gets 405.
 6. **Bodies.** Parsed with `receipts.strict_json_loads` (receipts.py:247: duplicate keys and NaN are refused), against exact-key schemas. The limit is 64 KB, with 413 above it, plus per-route rate limits.
-7. **Idempotency.** Every command carries a client nonce. A replayed nonce returns the first result and does nothing new. `place` and `cancel` append with `expect_head` (section 7.3).
+7. **Idempotency.** Every command carries a client nonce. A replayed nonce returns the first result and does nothing new. Nonces are kept for the serve process's life, however many commands follow. A command answered `engine_busy` has not run and never will. `place` and `cancel` append with `expect_head` (section 7.3).
 8. **One controller tab.** A second tab is read-only until it sends `claim_control`.
    - `claim_control` is the one command a read-only tab may send; everything else, STOP included, answers 409 `not_controller`.
    - The page learns its role from the `session` query (polled every 2 s) and from 409 replies. A read-only tab shows a READ-ONLY chip and a Take control button.
@@ -1378,7 +1383,7 @@ These headers apply to error responses too (section 9.1).
 |---|---|---|
 | A hostile web page in Yu's browser (CSRF, DNS rebinding, cross-origin reads, clickjacking) | Bearer token in a header, single-use bootstrap code, the Host and Origin checks, JSON-only POST, no CORS, CSP and frame-ancestors, no cookies | None known. |
 | Devices on the home LAN | Loopback-only bind; the viewer key is least-privilege (forced command, one `permitopen`, `from=192.168.50.*`); the sshd drop-in closes `-R` and Unix-socket forwarding | Depends on Yu installing the drop-in with the key; the Air-side self-test confirms it. |
-| **Lab-served JS running in Yu's Air browser** (the only lab-to-Air code path) | No credential fields (any login prompt is an attack); Private window or a profile without a Betfair login; no Air TCP loopback listeners; reviewed release copies only | A tampered page can still show anything on screen; Yu's rule is never to type credentials into it. |
+| **Lab-served JS running in Yu's Air browser** (the only lab-to-Air code path) | No credential fields (any login prompt is an attack); Private window or a profile without a Betfair login; no Air TCP loopback listeners; reviewed release copies only; the Air's staged files only from GitHub at the reviewed merge commit's SHA, never from the lab (section 8.6) | A tampered page can still show anything on screen; Yu's rule is never to type credentials into it. |
 | **Same-uid processes, including agents, holding or minting the token** (lab-Claude locally; Nuance through its full-shell key) | Single-use codes; token in memory only and registered with `secret`; `open` and `--print-url` refused over SSH; the agent-conduct rule (agents never run `open`, `ssh-session` or `--print-url`, and never POST commands on a real-data engine); the passphrase-protected viewer key | Not preventable against a determined same-uid process, as in the repo's own threat model (presence.py:1-11). I-8 and I-16 are code-path properties, not proof of a human. The viewer key's forced command, the release copy, the shell startup files and the viewer line in `authorized_keys` (its `from=`, `restrict`, `permitopen` and `command=` options) are same-uid replaceable too. Only the root-owned drop-in's limits (no `-R`, no Unix-socket forwarding, no listeners) are beyond such a process, and the Air self-test confirms the key only at install time (section 8.6). |
 | Browser extensions reading licensed data | A Private window, or a profile without extensions | Yu's choice. |
 | Supply chain | No third-party Python or JS. A pinned, hash-checked upstream with an import-origin assertion. `-S` drops site-packages. | Homebrew python@3.13 itself. |
@@ -1424,6 +1429,7 @@ Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`
 - **Python.** stdlib `unittest`, run by `bin/suite test [--py311] [--heavy] [-v] [-k PATTERN] [-j N]` (section 3.6). It discovers tests as this would:
   `cd ~/betangel-suite && env -i ... BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 /opt/homebrew/bin/python3.13 -I -S -B -m unittest discover -s tests -t .`
   It then runs each test module whole in one of N worker interpreters (default 3, at most 4; `-j 1` runs them in the runner itself). `tests/__init__.py` appends the deps clone through `betangel_suite.pin`. It runs on python3.13, and `bin/suite test --py311` runs it again on python3.11.
+- **Unguarded children.** The runner's guard refuses every TCP connect and starts only isolated interpreters, this checkout's `bin/suite` and local git. So HTTP test clients run in, and `node` is started by, relay child interpreters (`-I -S -B`) that never import `betangel_suite` and so are unguarded (`tests/test_http_support.py`, `run_relayed` in `tests/__init__.py`).
 - **Two tiers.**
   - **Fast** (*measured* about 47-48 s with 3 worker interpreters on the lab M1 under `nice -n 10`, on 3.13 and 3.11; about 61 s with `-j 2`; about 127 s serially): run on every change. It meets the 60 s target only in parallel. Every boundary and security test (I-1..I-8, I-16..I-19, HTTP group 6) stays in it. The default of 3 workers raises peak load on the shared M1, so use `-j 1` or `-j 2` when the lab is busy.
   - **Heavy** (opt-in, `bin/suite test --heavy`; *measured* about 90-95 s in all): in Phase 0, the real uisnap build and WebKit runs, the synthetic size test and the 60 s grace expiry through `bin/suite ssh-session`; later, parity seeds, the 200 random seek points and performance. It refuses while the run marker exists (`run_marker_present`, `run_marker_unreadable`), and it is never run while a Nuance run is announced. The fast tier still runs during a marker (section 6.8; Q-N14).
@@ -1643,6 +1649,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 | Q-Y16 | **PRO ingest timing.** The PRO year goes to a separate root and leaves P0's BASIC descriptor untouched. May Nuance ingest it before c2b3b3 lands, if Nuance agrees? | Now (with Q-N4) |
 | Q-Y17 | **STOP from a read-only tab** (from the Phase 0c build). As built, a read-only tab cannot STOP: its button is disabled, Q is ignored, and the server answers 409 `not_controller` (section 9.2 item 8). Section 8.2 item 8 says STOP is always reachable by key. `bin/suite stop`, and claiming control first, still work. Should a read-only tab be able to STOP? Allowing it changes an `api/` authorisation rule, so Astra gives a view first (Q-A1). It matters more in Phase 1b, where STOP withdraws pending paper orders. | Before Phase 1b |
 | Q-Y18 | **Who makes release copies** (from the Phase 0c build). `bin/suite release <tag>` refuses to run from a release copy, on a dirty tree, or for a tag that local main does not contain, but it cannot tell you from an agent, and rule 6 does not list it. AGENTS.md says making the first release is your decision. Phase 0c's draft of AGENTS.md also said agents never create one; that was left out, because it would be a new rule. Should rule 6 list `release`, or may lab-Claude make a release after review, as it merges PRs? | Before the first release |
+| Q-Y19 | **Air-side files in this repo** (Codex review of PR #5). AGENTS.md rule 1 and section 3.9 rule 1 say this repo has no network code and that Air-side code lives in a separate repo never cloned on the lab. Yet section 8.6 and section 12 have lab-Claude stage two Air-side files, `tools/stage/air-ssh-config.snippet` and `tools/stage/air-viewer-selftest.sh` (a LAN SSH client). Options:<br>**(A)** move both to a separate private repo owned by Nuance: rule 1 holds word for word, but the port and Host block are kept in two repos, and that repo does not exist yet (Q-N13).<br>**(B)** keep the Host block only as text in section 8.6 and replace the script with a checklist: no Air code here, but a hand-read checklist loses the script's evidence rule (refused only when the key logged in and the lab refused) and its `ssh -G` preflight.<br>**(C)** a narrow written exception for `tools/stage/air-*`: Yu-run, no credentials, no Betfair API, LAN SSH to the lab with the viewer key only, never run on the lab except under the test fakes. It keeps the tests and one source for the constants, but sets a precedent inside a "never" rule.<br>**(D)** you record that the R-2 approval already covered the section 8.6 Air files, and rule 1's network clause is reworded to exclude them: a clarification rather than a widening, but it rewords a binding rule.<br>Lab-Claude recommends C or D, with the Air files taken only from GitHub at the reviewed merge commit's SHA (section 8.6). You decide; Astra reviews the wording. Rule 1 stays as it is until then. | Before the viewer install (R-2) |
 
 ### 15.2 For Nuance
 
@@ -1652,7 +1659,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 |---|---|---|
 | Q-N1 | Do you accept the engine importing only the 25-module closure in section 4.1, with no risk or capability? Will you treat the contract-tested names (section 4.5) as an interface and flag breaking changes in PR descriptions? Is test-only use of `risk` as an oracle acceptable under INTERNAL_ONLY? | Phase 0 |
 | Q-N2 | Is the pin by a network-free local clone (`clone --no-checkout --no-hardlinks` from the lab clone, `checkout --detach`, remote removed, read-only) OK? Or do you prefer `git archive`? Who bumps pins? | Phase 0 |
-| Q-N3 | **State root and the run marker.** Is `~/betangel-data/suite.noindex` acceptable? Following your A5 answer, the suite will not run at all during your runs. Will your run and ingest wrappers write a marker such as `~/.local/state/lab-runs/ACTIVE`, and wait for `~/.local/state/betangel-suite/run/engine.lock` to be free before touching sources or data? | Phase 0 |
+| Q-N3 | **State root and the run marker.** Is `~/betangel-data/suite.noindex` acceptable? Following your A5 answer, the suite will not run at all during your runs. Will your run and ingest wrappers write a marker such as `~/.local/state/lab-runs/ACTIVE`, and wait for `~/.local/state/betangel-suite/run/engine.lock` to be free before touching sources or data? As built, an engine can hold the lock for more than 30 s after the marker appears: the 30 s grace, then up to 0.25 s for the main loop's poll, 1 s for open streams to send their end line and 2 s each for the HTTP and control-socket threads (`server.py` `run` and `_shutdown`), about 35 s, plus any command the actor was already running. Is a wait that long acceptable to your wrapper, in place of the "at most about 30 s" first proposed (section 6.8)? | Phase 0 |
 | Q-N4 | **PRO ingest.** When will you ingest and index it (a date), and what is the final data root (`historic-pro`?)? Is it one archive sha, with index v1 built as for BASIC? A header listing shows 12,208 market files at depth 6, all PRO, including 8 in 2016-May (in no contract split). Is there anything in the index the picker should surface? | Now |
 | Q-N5 | **Paper semantics.** Is direct `PaperExchange` use with a suite `OrderJournal(path, mode="paper", clock=SimClock)` fine, given Yu's R-1? Intent source `paper_replay` with `customer_strategy_ref` `suite-click` (and `suite-test` in synthetic tests), with click provenance in `note` events, until U-9? Is withdrawing a pending order as SUBMITTING → REFUSED (`operator_withdrawn_before_activation`) acceptable? | Phase 0 |
 | Q-N6 | **Quiet-market staleness.** Paper V10 and `_activation_refusal` measure age from the market's last change. Real data shows it is rare near the off. Do you want U-8 at all? (Low priority; the relaxation mode is cut.) | Later |
