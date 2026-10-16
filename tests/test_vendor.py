@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import unittest
+import zlib
 
 from betangel_suite import guard, pin, roots
 from tests import ROOT, child_env, make_home, rmtree, run_relayed, run_suite
@@ -136,6 +137,57 @@ class VendorToolTests(unittest.TestCase):
         self.assertNotEqual(later, self.sha)
         self.assertEqual(self.vendor(self.sha, "--bump", "--pin-file", self.pin_file),
                          (0, "vendor_ok commit=%s files=26 mode=bump\n" % self.sha[:12], ""))
+
+    def test_a_replace_ref_or_a_graft_puts_no_commit_on_main(self):
+        # Round-4 review: `git replace --graft <main> <side>` or an info/grafts line made a dangling commit look like an
+        # ancestor of main to merge-base --is-ancestor, and vendor cloned, checked out and pinned it. Each case here is
+        # written into the synthetic clone by hand (the test runner's git has no replace), and must be refused with
+        # the clone unchanged and nothing made.
+        self.point_head("side")
+        with open(os.path.join(self.research, "README.md"), "a", encoding="utf-8") as handle:
+            handle.write("synthetic side change\n")
+        side = self.commit("synthetic side")
+        self.point_head("main")
+        os.remove(os.path.join(self.research, ".git", "refs", "heads", "side"))    # now a dangling commit
+        stamp = "Synthetic <synthetic@example.invalid> 1700000000 +0000"
+        tree = self.git("rev-parse", self.sha + "^{tree}").strip()
+        body = ("tree %s\nparent %s\nauthor %s\ncommitter %s\n\nsynthetic\n" % (tree, side, stamp, stamp)).encode()
+        raw = b"commit %d\0" % len(body) + body
+        twin = hashlib.sha1(raw).hexdigest()                    # main's tip again, with the side commit as parent
+        objects = os.path.join(self.research, ".git", "objects", twin[:2])
+        os.makedirs(objects, exist_ok=True)
+        with open(os.path.join(objects, twin[2:]), "wb") as handle:
+            handle.write(zlib.compress(raw))
+        cases = {"replace ref": (os.path.join("refs", "replace", self.sha), twin + "\n"),
+                 "info/grafts": (os.path.join("info", "grafts"), "%s %s\n" % (self.sha, side))}
+        for name, (relpath, text) in cases.items():
+            with self.subTest(case=name):
+                path = os.path.join(self.research, ".git", relpath)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="ascii") as handle:
+                    handle.write(text)
+                before = snapshot(self.research)
+                self.assertEqual(self.vendor(side, "--bump", "--pin-file", self.pin_file),
+                                 (2, "", "refused:commit_not_on_main\n"))
+                self.assertEqual(snapshot(self.research), before)
+                self.assertFalse(os.path.lexists(roots.share_dir(self.home)))
+                self.assertFalse(os.path.lexists(self.pin_file))
+                os.remove(path)
+
+    def test_the_users_git_attributes_do_not_change_the_pinned_bytes(self):
+        # Round-4 review: GIT_CONFIG_GLOBAL=/dev/null does not cover ~/.config/git/attributes (core.attributesFile's
+        # default), so "* text eol=crlf" there made checkout write, and --bump pin, bytes unlike the committed blobs.
+        config = os.path.join(self.home, ".config", "git")
+        os.makedirs(config)
+        with open(os.path.join(config, "attributes"), "w", encoding="ascii") as handle:
+            handle.write("* text eol=crlf\n")
+        returncode, out, err = self.vendor(self.sha, "--bump", "--pin-file", self.pin_file)
+        self.assertEqual((returncode, err), (0, ""), out)
+        self.assertEqual(pin.load(self.pin_file)["files"], {relpath: hashlib.sha256(self.contents[relpath]).hexdigest()
+                                                            for relpath in pin.PINNED_FILES})
+        for relpath in pin.PINNED_FILES + ("README.md",):
+            with open(os.path.join(self.dest, relpath), "rb") as handle:
+                self.assertEqual(handle.read(), self.contents[relpath], relpath)
 
     def test_share_dir_linked_into_the_clone_is_refused_before_anything(self):
         # Nuance's PR #2 review, item 2: with ~/.local/share linked into the deploy clone, vendor wrote about 80

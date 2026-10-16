@@ -20,9 +20,10 @@ Run by hand by lab-Claude, never automatically. Steps:
      before step 4): a real directory outside the deploy clone, holding only directories, symlinks and
      regular files with one link (deps_link_present), so no chmod can reach a clone file through a link.
 
-Every git call has protocol.allow=never (only the local file transport is allowed), no hooks and no user
-or system git config, and runs with the network switch on, in exactly the environment guard.VENDOR_GIT_ENV
-plus HOME. The guard, armed in vendor mode, allows exactly these git argvs with that environment (and none
+Every git call has protocol.allow=never (only the local file transport is allowed), no hooks, no user
+or system git config and no per-user attributes file, ignores replace refs and grafts (so merge-base judges
+the commits the clone really holds), and runs with the network switch on, in exactly the environment
+guard.VENDOR_GIT_ENV plus HOME. The guard, armed in vendor mode, allows exactly these git argvs with that environment (and none
 after them) and writes only under ~/.local/share/betangel-suite, this checkout's pin/ and the state root.
 Nothing is ever written into ~/betangel-research: before any git call or mkdir, and again just before the
 clone, vendor refuses (research_clone_on_path) a deps root, pin directory or checkout that lies in the clone

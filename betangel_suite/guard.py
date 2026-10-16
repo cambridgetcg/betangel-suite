@@ -130,16 +130,22 @@ GIT = "/usr/bin/git"
 OPEN = "/usr/bin/open"
 SEARCH_DIRS = ("/usr/bin", "/bin")                   # where a bare program name may be found
 TEST_INTERPRETERS = ("/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3.11")
+# core.attributesFile=/dev/null: GIT_CONFIG_GLOBAL does not cover the per-user attributes file
+# (~/.config/git/attributes, core.attributesFile's default), whose eol, text, ident or working-tree-encoding rules
+# would make checkout write, and --bump pin, bytes that differ from the committed blobs (round-4 review).
 VENDOR_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                     "-c", "core.hooksPath=/dev/null")
+                     "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null")
 # The branch of the deploy clone a pinned commit must be on (vendor's merge-base --is-ancestor; Nuance's Q-N2 answer
 # in her PR #2 review): cat-file -e alone accepted an unmerged or a dangling commit.
 VENDOR_MAIN_REF = "refs/heads/main"
 # The whole environment of every vendor git child, with HOME (the guard's own) added: vendor_argv_ok refuses None
 # (this process's environment, which could hold GIT_DIR) and any other key or value (GIT_CONFIG_COUNT and its
 # pairs can set core.fsmonitor, which runs a command; DEVELOPER_DIR picks another git behind /usr/bin/git).
+# GIT_NO_REPLACE_OBJECTS and GIT_GRAFT_FILE=/dev/null: a replace ref or an info/grafts line in the deploy clone would
+# make a dangling commit look like an ancestor of main to merge-base --is-ancestor (round-4 review).
 VENDOR_GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1",
-                  "GIT_CONFIG_GLOBAL": "/dev/null", FORBID_NETWORK_ENV: "1"}
+                  "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": "/dev/null",
+                  FORBID_NETWORK_ENV: "1"}
 # The test runner's git (runner_git_ok): local subcommands only, the synthetic identity, no user config.
 TEST_GIT_SUBCOMMANDS = frozenset({"init", "add", "commit", "update-index", "check-ignore", "rev-parse"})
 TEST_GIT_CONFIG_KEYS = frozenset({"init.defaultBranch", "user.name", "user.email"})

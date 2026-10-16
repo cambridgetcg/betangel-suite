@@ -883,11 +883,18 @@ results["partial_made"] = os.path.lexists(partial)
                    {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "/bin/sh"},
                    {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='x'"}, {"GIT_EXEC_PATH": "/x"},
                    {"DEVELOPER_DIR": "/x"}, {"PATH": "/x:/usr/bin:/bin"}, {"GIT_CONFIG_GLOBAL": "/h/.gitconfig"},
-                   {"HOME": "/elsewhere"}, {"HOME": None}, {"GIT_CONFIG_NOSYSTEM": None}, {"LANG": None})
+                   {"HOME": "/elsewhere"}, {"HOME": None}, {"GIT_CONFIG_NOSYSTEM": None}, {"LANG": None},
+                   {"GIT_NO_REPLACE_OBJECTS": None}, {"GIT_GRAFT_FILE": None},
+                   {"GIT_GRAFT_FILE": research + "/.git/info/grafts"})
         for change in changes:
             env = {key: value for key, value in dict(good, **change).items() if value is not None}
             self.assertFalse(guard.vendor_argv_ok(argv, env, research, deps, "/h"), change)
         self.assertFalse(guard.vendor_argv_ok(argv, None, research, deps, "/h"))
+        # Round-4 review: replace refs, grafts and the per-user attributes file are off in every vendor git child.
+        self.assertEqual((good["GIT_NO_REPLACE_OBJECTS"], good["GIT_GRAFT_FILE"]), ("1", "/dev/null"))
+        self.assertEqual(guard.VENDOR_GIT_PREFIX[-2:], ("-c", "core.attributesFile=/dev/null"))
+        without = argv[:len(guard.VENDOR_GIT_PREFIX) - 2] + argv[len(guard.VENDOR_GIT_PREFIX):]
+        self.assertFalse(guard.vendor_argv_ok(without, good, research, deps, "/h"))
 
     TMP = "/h/.local/state/betangel-suite/tmp"
     REPO = TMP + "/home-x/repo"
