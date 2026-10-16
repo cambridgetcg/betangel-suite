@@ -263,7 +263,7 @@ class NoOffSwitchTests(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom):
                 imported |= {"%s%s.%s" % ("." * node.level, node.module or "", alias.name) for alias in node.names}
         self.assertEqual(imported, {"fcntl", "os", "re", "sys", "threading", "posix", "sqlite3", "sqlite3.dbapi2",
-                                    "..roots", ".errors.SuiteError"})
+                                    "subprocess", "_posixsubprocess", "..roots", ".errors.SuiteError"})
 
     def test_config_has_no_key_about_the_guard(self):
         for key in config.DEFAULTS:
@@ -528,6 +528,109 @@ attempt("inherited_stub_path", lambda: run(None))
         self.assertEqual((results["system_path"], results["default_path"]), ("ok", "ok"))
         for name in ("stub_path", "stub_first", "posix_spawn_relative", "inherited_stub_path"):
             self.assertEqual(results[name], "subprocess_refused", name)
+
+    # Routes to a child process that raise no audit event of their own (Nuance's PR #2 review, item 3). Each would
+    # leave a name in outside/ if its child ran: fork_exec with the arguments multiprocessing.util.spawnv_passfds
+    # passes on 3.11 and 3.13 runs /usr/bin/touch, and the spawned Process and pool worker run os.mkdir.
+    CHILDREN = """
+import subprocess, threading
+import _posixsubprocess
+outside = os.path.join(os.environ["HOME"], "outside")
+def fork_exec():
+    read, write = os.pipe()
+    try:
+        pid = _posixsubprocess.fork_exec(
+            [b"/usr/bin/touch", os.fsencode(os.path.join(outside, "fork-exec"))], [b"/usr/bin/touch"], True, (),
+            None, None, -1, -1, -1, -1, -1, -1, read, write, False, False, -1, None, None, None, -1, None,
+            subprocess._USE_VFORK)
+    finally:
+        os.close(read)
+        os.close(write)
+    os.waitpid(pid, 0)
+def process_start(name):
+    import multiprocessing
+    process = multiprocessing.Process(target=os.mkdir, args=(os.path.join(outside, name),))
+    process.start()
+    process.join(20)
+def pool_submit(name):
+    from concurrent.futures import ProcessPoolExecutor
+    with ProcessPoolExecutor(1) as pool:
+        pool.submit(os.mkdir, os.path.join(outside, name)).result(20)
+def thread_runs():
+    box = []
+    worker = threading.Thread(target=box.append, args=(1,))
+    worker.start()
+    worker.join(20)
+    if box != [1]:
+        raise RuntimeError("thread")
+def thread_pool_runs():
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(2) as pool:
+        if pool.submit(sum, [1, 2]).result(20) != 3:
+            raise RuntimeError("thread pool")
+"""
+    CHILDREN_SETUP = ("os.makedirs(roots.state_dir(), exist_ok=True)\n"
+                      "os.makedirs(os.path.join(os.environ['HOME'], 'outside'), exist_ok=True)\n")
+
+    def test_children_without_an_audit_event_are_refused(self):
+        # A sealed engine refused subprocess.run, but multiprocessing (spawn, the macOS default),
+        # ProcessPoolExecutor and _posixsubprocess.fork_exec all started unguarded children that wrote outside the
+        # roots. Startup git, which goes through subprocess, and threads must keep working.
+        home = make_home(self)
+        results = checks(self, home, setup=self.CHILDREN_SETUP, body=self.CHILDREN + """
+state = roots.state_dir()
+attempt("git_before_seal", lambda: subprocess.run(["git", "-C", state, "rev-parse", "--is-inside-work-tree"],
+                                                  capture_output=True, timeout=30))
+attempt("fork_exec_before_seal", fork_exec)
+attempt("process_start_before_seal", lambda: process_start("process-1"))
+attempt("pool_submit_before_seal", lambda: pool_submit("pool-1"))
+attempt("thread_before_seal", thread_runs)
+guard.seal()
+attempt("fork_exec", fork_exec)
+attempt("process_start", lambda: process_start("process-2"))
+attempt("pool_submit", lambda: pool_submit("pool-2"))
+attempt("thread", thread_runs)
+attempt("thread_pool", thread_pool_runs)
+results["subprocess_keeps_its_own"] = subprocess._fork_exec is not _posixsubprocess.fork_exec
+results["outside"] = sorted(os.listdir(outside))
+""")
+        for name in ("git_before_seal", "thread_before_seal", "thread", "thread_pool"):
+            self.assertEqual(results[name], "ok", name)
+        for name in ("fork_exec_before_seal", "fork_exec"):
+            self.assertEqual(results[name], "subprocess_refused", name)
+        for name in ("process_start_before_seal", "pool_submit_before_seal", "process_start", "pool_submit"):
+            self.assertEqual(results[name], "import_refused", name)
+        self.assertTrue(results["subprocess_keeps_its_own"])
+        self.assertEqual(results["outside"], [])
+
+    def test_children_without_an_audit_event_are_refused_in_every_mode(self):
+        home = make_home(self)
+        for mode in ("test", "vendor"):
+            results = checks(self, home, setup=self.CHILDREN_SETUP, mode=mode, body=self.CHILDREN + """
+attempt("fork_exec", fork_exec)
+attempt("process_start", lambda: process_start("process"))
+attempt("pool_submit", lambda: pool_submit("pool"))
+attempt("thread_pool", thread_pool_runs)
+results["outside"] = sorted(os.listdir(outside))
+""")
+            self.assertEqual(results, {"fork_exec": "subprocess_refused", "process_start": "import_refused",
+                                       "pool_submit": "import_refused", "thread_pool": "ok", "outside": []}, mode)
+
+    def test_arm_fails_closed_when_a_child_route_is_already_open(self):
+        # The import event fires only for a module not loaded yet, and subprocess binds fork_exec when it is
+        # imported, so arm() refuses rather than trust either.
+        home = make_home(self)
+        for setup, expected in (
+                ("import multiprocessing\n", "module_loaded_early"),
+                ("import concurrent.futures.process\n", "module_loaded_early"),
+                ("import subprocess\nsubprocess._fork_exec = lambda *args: 0\n", "call_replaced_early"),
+                ("import _posixsubprocess\noriginal = _posixsubprocess.fork_exec\n"
+                 "_posixsubprocess.fork_exec = lambda *args: original(*args)\n", "call_replaced_early"),
+                ("import subprocess, concurrent.futures\n", "ok")):
+            code = ATTEMPT + setup + "attempt('arm', lambda: guard.arm('engine'))\nprint(json.dumps(results))\n"
+            result = run_python(code, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["arm"], expected, setup)
 
     def test_engine_argv_shapes(self):
         state = "/h/.local/state/betangel-suite"

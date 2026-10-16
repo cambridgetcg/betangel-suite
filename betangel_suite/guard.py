@@ -25,7 +25,13 @@ What the hook refuses, in every mode and phase:
        follows a dangling one and creates the socket at its target); a relative path, or one with a NUL in
        it (the kernel ends the socket name at the first NUL), is never permitted;
   I-5  ctypes.dlopen and SQLite extension loading always; os.system, os.exec*, os.spawn*, os.fork and
-       os.forkpty always; subprocess.Popen and os.posix_spawn except as below;
+       os.forkpty always; subprocess.Popen and os.posix_spawn except as below. Also always: a direct call of
+       _posixsubprocess.fork_exec, which starts a child from C with no audit event of its own (arm() replaces it
+       with a wrapper that raises one, "_posixsubprocess.fork_exec", and leaves subprocess its own reference to
+       the original, behind the subprocess.Popen event), and importing multiprocessing or any submodule of it,
+       or concurrent.futures.process (import_refused): they start children through fork_exec. arm() refuses
+       (module_loaded_early) if one of those modules is already loaded, and (call_replaced_early) unless
+       subprocess._fork_exec and _posixsubprocess.fork_exec are both the C original. Threads are unaffected;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
        link (both paths: a hard link would alias an outside inode inside the roots), symlink, truncate,
        chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. The write roots are the state
@@ -80,9 +86,9 @@ Every child must keep BETANGEL_BETFAIR_FORBID_NETWORK=1 and carry no stray BETFA
 This is defence in depth, not a sandbox: same-user code can still write through C extensions (SQLite's
 journal beside a database, and its temp files if a PRAGMA sets temp_store back), a child process (in test
 mode, an isolated interpreter the runner starts is unguarded unless it imports betangel_suite), a file
-descriptor or hard link made before a check, a reference to os.mkfifo taken before arm(), or
-sqlite3.Connection.setlimit called on a connection directly. Refusals raise GuardRefusal, whose str() is
-the code only, never the path or address.
+descriptor or hard link made before a check, a reference to os.mkfifo or _posixsubprocess.fork_exec taken
+before arm(), subprocess's private _fork_exec called directly, or sqlite3.Connection.setlimit called on a
+connection directly. Refusals raise GuardRefusal, whose str() is the code only, never the path or address.
 Standard library only.
 """
 
@@ -123,8 +129,15 @@ _NETWORK = {
     "socket.getaddrinfo": "name_lookup_refused", "socket.gethostbyname": "name_lookup_refused",
     "socket.gethostbyaddr": "name_lookup_refused", "socket.getnameinfo": "name_lookup_refused",
 }
+# "_posixsubprocess.fork_exec" is raised by the wrapper arm() installs (_wrap_fork_exec) and, like os.fork, is
+# refused in every mode and phase: _check_spawn refuses it before it looks at any argument.
 _SPAWN = frozenset({"subprocess.Popen", "os.posix_spawn", "os.system", "os.exec", "os.spawn", "os.fork",
-                    "os.forkpty"})
+                    "os.forkpty", "_posixsubprocess.fork_exec"})
+# Modules whose import the hook refuses (import_refused), with every submodule, and which arm() refuses to find
+# already loaded (module_loaded_early). multiprocessing (spawn, the macOS default, and forkserver) and
+# concurrent.futures.process start children through _posixsubprocess.fork_exec, which raises no audit event of
+# its own (Nuance's PR #2 review, item 3).
+_REFUSED_IMPORTS = ("multiprocessing", "concurrent.futures.process")
 _LIBRARY_LOADS = frozenset({"ctypes.dlopen", "sqlite3.enable_load_extension", "sqlite3.load_extension"})
 # event -> ((index of a path argument, index of its dir_fd argument or None, follows a final symlink,
 #            puts a name in place or moves one away: never a root's or TMPDIR's), ...)
@@ -144,13 +157,14 @@ _MUTATIONS = {
     "os.mknod": ((0, 3, False, False),),    # likewise
 }
 _WATCHED = frozenset(set(_NETWORK) | _SPAWN | set(_MUTATIONS) | _LIBRARY_LOADS
-                     | {"socket.bind", "os.putenv", "os.unsetenv", "open", "sqlite3.connect"})
+                     | {"socket.bind", "os.putenv", "os.unsetenv", "open", "sqlite3.connect", "import"})
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 _DEVICES = frozenset({"/dev/null"})
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
 _PARTIAL_RE = re.compile(r"betangel-research-[0-9a-f]{12}\.partial")
 _URL_RE = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})/#c=[A-Za-z0-9_-]{22}")
 _ORIGINAL_NODE_CALLS = {name: getattr(os, name) for name in ("mkfifo", "mknod") if hasattr(os, name)}
+_BUILTIN_FUNCTION = type(len)
 
 _LOCK = threading.Lock()
 _STATE = None
@@ -217,8 +231,10 @@ def arm(mode):
         if not state.tmp_root or tmp != os.environ.get("SQLITE_TMPDIR") or not _tmp_root_ok(state, tmp):
             raise SuiteError("tmpdir_mismatch")
         _check_placement(state)
+        _refuse_loaded_modules()
         _wrap_node_calls()
         _wrap_sqlite_connect(state)
+        _wrap_fork_exec()
         sys.addaudithook(_make_hook(state))
         _STATE = state
 
@@ -320,6 +336,18 @@ def _check_placement(state):
         roots.check_placement(path, state.home)
 
 
+def _import_refused(name):
+    """True for a module in _REFUSED_IMPORTS or a submodule of one."""
+    return isinstance(name, str) and any(name == top or name.startswith(top + ".") for top in _REFUSED_IMPORTS)
+
+
+def _refuse_loaded_modules():
+    """module_loaded_early if a refused module is already loaded: the import event fires only for a module that is
+    not in sys.modules yet, so the hook could not stop it, and fail closed is the only safe answer."""
+    if any(_import_refused(name) for name in list(sys.modules)):
+        raise SuiteError("module_loaded_early")
+
+
 # --- calls that raise no audit event of their own --------------------------------------------------
 
 def _mkfifo(path, mode=0o666, *, dir_fd=None):
@@ -399,6 +427,34 @@ def _wrap_sqlite_connect(state):
             module.connect = connect
 
 
+def _wrap_fork_exec():
+    """Make a direct call of _posixsubprocess.fork_exec raise "_posixsubprocess.fork_exec", which the hook refuses
+    in every mode and phase (Nuance's PR #2 review, item 3).
+
+    fork_exec starts a child from C with no audit event. multiprocessing calls it (spawn, the macOS default, and
+    forkserver, through multiprocessing.util.spawnv_passfds), and so can any code that imports _posixsubprocess;
+    a child started that way is unguarded and could write anywhere. subprocess calls it too, but subprocess.Popen
+    raises its own event first, which _check_spawn judges, and subprocess keeps its own reference, bound when it
+    is imported (subprocess._fork_exec). So subprocess is imported here first, and arm() refuses
+    (call_replaced_early) unless that reference and _posixsubprocess.fork_exec are both the C original; only the
+    module attribute is then replaced. Imported after this, subprocess would bind the wrapper and every Popen,
+    the startup git included, would be refused. The wrapper's event carries no arguments: there is no argv the
+    hook could judge, and nothing the suite or the pinned closure runs calls fork_exec directly.
+    """
+    import _posixsubprocess
+    import subprocess
+    original = _posixsubprocess.fork_exec
+    if not (type(original) is _BUILTIN_FUNCTION and getattr(original, "__self__", None) is _posixsubprocess
+            and getattr(subprocess, "_fork_exec", None) is original):
+        raise SuiteError("call_replaced_early")
+
+    def fork_exec(*args, **kwargs):
+        sys.audit("_posixsubprocess.fork_exec")
+        return original(*args, **kwargs)
+
+    _posixsubprocess.fork_exec = fork_exec
+
+
 # --- the hook ------------------------------------------------------------------------------------
 
 def _make_hook(state):
@@ -437,6 +493,9 @@ def _check(state, event, args):
             _check_write(state, path, None, True)       # None: the open event does not carry dir_fd
     elif event == "sqlite3.connect":
         _check_sqlite(state, args[0])
+    elif event == "import":
+        if _import_refused(args[0]):
+            raise GuardRefusal("import_refused")
     else:
         for path_index, fd_index, follow, slot in _MUTATIONS[event]:
             _check_write(state, args[path_index], -1 if fd_index is None else args[fd_index], follow, slot)

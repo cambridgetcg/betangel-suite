@@ -38,7 +38,8 @@ CODES = frozenset({
     "guard_not_armed", "guard_mode_conflict", "guard_mode_invalid", "guard_sealed", "guard_internal_error",
     "network_refused", "name_lookup_refused", "bind_refused", "bind_permit_invalid", "subprocess_refused",
     "dlopen_refused", "write_outside_roots", "state_root_not_agreed", "environment_change_refused",
-    "root_replace_refused", "sqlite_connect_refused", "sqlite_limit_refused",
+    "root_replace_refused", "sqlite_connect_refused", "sqlite_limit_refused", "import_refused",
+    "module_loaded_early", "call_replaced_early",
     # commands
     "no_command", "unknown_command", "not_implemented", "bad_arguments", "state_root_changed",
     # the run marker (I-17)
