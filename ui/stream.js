@@ -287,6 +287,9 @@ export function liveMsToOff(state, nowMs, maxWallMs = 2000) {
 
 // --- requests ---------------------------------------------------------------------------------------
 
+// Never set `mode`: fetch()'s default 'cors' mode is what sends the page's real Origin on a same-origin POST,
+// which the server requires (DESIGN.md 9.2). With 'same-origin' or 'no-cors' and this no-referrer policy (also
+// the page's own), the Fetch standard sends Origin: null instead, and the server refuses it (bad_origin).
 const BASE_INIT = Object.freeze({ cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer' });
 
 function hex(bytes) {
