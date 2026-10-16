@@ -18,7 +18,10 @@ and losing the watcher pauses with reason not_watched. The replay stops at the l
 
 Frames (section 6.5, the Phase 0b subset) are built at most frame_hz times a second and only when
 something changed. Every number in a frame is an integer: prices in hundredths and sizes in pence through
-rx.ticks, traded volume in pence on the repo's PRO basis (divided by 2, paper.py:1016).
+rx.ticks, traded volume in pence on the repo's PRO basis (divided by 2, paper.py:1016). A runner whose tv is
+unknown has tv_p null, never 0: the cache resets tv to None on every image (book.py:111, :239-240), and BASIC
+data has no tv at all (upstream docs/data-audit.md:38). Each frame takes tv from the snapshot afresh, so no tv
+is carried across an image (data-audit.md:40).
 
 The run marker (section 6.8, I-17) is checked on every tick and again before each command runs. When it
 appears, the engine freezes: the clock pauses with reason run_marker, no message is applied, every command is
@@ -558,7 +561,7 @@ def build_frame(seq, clock, market, snapshot_and_error):
             total = pence(entry.get("total_matched"))
             runners.append((rank[:2], {
                 "id": selection_id, "name": name, "status": _text(entry.get("status"), "UNKNOWN"),
-                "ltp_h": price_h(entry.get("ltp")), "tv_p": 0 if total is None else total // TV_DIVISOR,
+                "ltp_h": price_h(entry.get("ltp")), "tv_p": None if total is None else total // TV_DIVISOR,
                 "back": ladder(entry.get("back")), "lay": ladder(entry.get("lay")),
             }))
         runners = [runner for _rank, runner in sorted(runners, key=lambda item: item[0])]

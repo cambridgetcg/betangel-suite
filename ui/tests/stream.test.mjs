@@ -108,6 +108,12 @@ test('well-formed frame, heartbeat and end messages validate', () => {
   assert.equal(validateMessage({ t: 'later', seq: 4 }), 'unknown_type');
 });
 
+test('an unknown traded volume is null, and validates', () => {
+  const msg = clone(frame(1));
+  msg.runners[0].tv_p = null;
+  assert.equal(validateMessage(msg), null);
+});
+
 test('money and prices must be integers; every known field is present and typed', () => {
   const bad = [];
   const push = (mutate) => {

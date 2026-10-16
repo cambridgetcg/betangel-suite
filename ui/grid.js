@@ -35,7 +35,7 @@ export function rowCells(runner) {
     name: runner.name,
     status: runner.status === 'ACTIVE' ? '' : runner.status,
     ltp: runner.ltp_h === null ? '' : formatPrice(runner.ltp_h),
-    tv: formatPounds(runner.tv_p),
+    tv: runner.tv_p === null ? '' : formatPounds(runner.tv_p),   // null: tv unknown (after an image, or BASIC)
     back: back,
     lay: lay,
     removed: runner.status === 'REMOVED',

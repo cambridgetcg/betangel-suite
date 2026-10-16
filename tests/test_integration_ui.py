@@ -591,7 +591,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertTrue(NAME_RE.fullmatch(runner["name"]))
             self.assertIn(runner["status"], RUNNER_STATUSES)
             self.assertTrue(runner["ltp_h"] is None or (is_int(runner["ltp_h"]) and runner["ltp_h"] in ladder))
-            self.assertTrue(is_int(runner["tv_p"]) and runner["tv_p"] >= 0)
+            self.assertTrue(runner["tv_p"] is None or (is_int(runner["tv_p"]) and runner["tv_p"] >= 0))
             for side in ("back", "lay"):
                 levels = runner[side]
                 self.assertIs(type(levels), list)

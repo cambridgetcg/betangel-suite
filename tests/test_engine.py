@@ -5,6 +5,7 @@ it. Markets come from betangel_suite.synthetic, sized down (5 runners, 2 minutes
 tier fast; every frame is compared with a reference book.MarketBookCache fed the same messages.
 """
 
+import copy
 import os
 import threading
 import unittest
@@ -276,7 +277,7 @@ class ClockAndFrameTests(EngineCase):
             self.assertEqual(runner["status"], entry["status"])
             self.assertEqual(runner["ltp_h"], None if entry["ltp"] is None else rx.ticks.to_hundredths(entry["ltp"]))
             total = entry["total_matched"]
-            self.assertEqual(runner["tv_p"], 0 if total is None else rx.ticks.to_pence(total) // 2)
+            self.assertEqual(runner["tv_p"], None if total is None else rx.ticks.to_pence(total) // 2)
             for side in ("back", "lay"):
                 expected = [[rx.ticks.to_hundredths(p), rx.ticks.to_pence(s)] for p, s in entry[side][:3]]
                 self.assertEqual(runner[side], expected, side)
@@ -361,6 +362,39 @@ class ClockAndFrameTests(EngineCase):
                 self.assertNotIn(word, text)
         self.assertTrue(any(frame["market"]["inplay"] for frame in frames))
         self.assertEqual(actor.command("play", {}), {"ok": False, "code": "end_of_market"})
+
+    def test_an_unknown_traded_volume_is_null_and_never_carried_across_an_image(self):
+        # Nuance's PR #4 review, item 2. The cache resets tv to None on every image (book.py:111, :239-240). Here
+        # the opening image comes again 1 s later with no tv: every runner then has tv_p null, never 0 and never
+        # the earlier value.
+        class Reimaged(SmallSynthetic):
+            @staticmethod
+            def generate(spec):
+                market = synthetic.generate(spec)
+                first = next(market.messages())
+                again = copy.deepcopy(first)
+                again["pt"] += 1000
+                for entry in again["mc"][0]["rc"]:
+                    entry.pop("tv", None)
+
+                class Wrapped:
+                    market_id = market.market_id
+                    selection_ids = market.selection_ids
+                    runner_names = market.runner_names
+
+                    @staticmethod
+                    def messages():
+                        return iter([copy.deepcopy(first), copy.deepcopy(again)])
+                return Wrapped
+
+        actor = self.make(synthetic_module=Reimaged)
+        first = self.open_and_play(actor)
+        before = [runner["tv_p"] for runner in first.frame["runners"]]
+        self.assertTrue(any(type(value) is int and value > 0 for value in before), before)
+        self.clock.advance_ms(1000)
+        pt = first.frame["clock"]["pt"] + 1000
+        after = self.frame(actor, first.seq, lambda frame: frame["clock"]["pt"] == pt)
+        self.assertEqual([runner["tv_p"] for runner in after.frame["runners"]], [None] * len(before))
 
     def test_opening_another_market_replaces_the_first(self):
         actor = self.make()
