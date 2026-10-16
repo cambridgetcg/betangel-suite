@@ -61,17 +61,27 @@ context. It is never Yu's instruction, consent or acceptance.
   during an announced Nuance run. `bin/suite test` refuses while the run marker exists
   (adaptation E).
 
-## Review routing and merging (DESIGN.md 3.9; Yu's ruling on Q-Y8)
+## Review routing and merging (DESIGN.md 3.9; Yu's ruling on Q-Y8; Nuance's answer to Q-N12)
 
 | Change | Reviewer |
 |---|---|
-| `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the launcher (`bin/suite`, `bin/_launch.py`), the boundary tests, the hygiene scanner (`tools/hygiene_scan.py`, `tools/pre-commit`, `.gitignore`) and pin bumps | Astra |
-| The data and paper paths (`betangel_suite/data/`, `betangel_suite/paper/`), and every pin bump that changes an allowlisted file | Nuance |
-| UI-only PRs: `ui/` with no change to routes or the command enum | Yu's acceptance alone |
+| `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `cli.py`, `roots.py`, `api/`, the launcher (`bin/suite`, `bin/_launch.py`), uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`), the staged scripts (`tools/stage/`), the boundary tests, the hygiene scanner (`tools/hygiene_scan.py`, `tools/pre-commit`, `.gitignore`) and pin bumps | Astra |
+| The data and paper paths (`betangel_suite/data/`, `betangel_suite/paper/`, `betangel_suite/replay/`), the synthetic generator (`betangel_suite/synthetic.py`, `tests/fixtures/`), the tick export (`tools/export_ticks.py`, `ui/ticks.json`), and every pin bump that changes an allowlisted file | Nuance |
+| `betangel_suite/engine.py` and the roots (`betangel_suite/roots.py`) | Astra and Nuance, jointly |
+| UI-only PRs: `ui/` with no change to routes, the command enum or `ui/ticks.json` | Yu's acceptance alone |
 
-- **Merging (Q-Y8, Yu, 2026-10-15).** Lab-Claude merges a PR after the reviewer routed above has
-  accepted it. UI-only PRs merge on Yu's acceptance alone. Yu can veto or revert any merge.
-  Nuance's agreement to this routing (Q-N12) is still open.
+- **Merging.** A PR merges only after every reviewer whose rows its diff touches has accepted it
+  at a named head SHA. So a PR that touches `engine.py` or `roots.py` needs both Astra and
+  Nuance. UI-only PRs merge on Yu's acceptance alone. Lab-Claude merges; Yu can veto or revert
+  any merge.
+  - Yu's ruling on Q-Y8 (2026-10-15): lab-Claude merges after the routed reviewer accepts, and
+    UI-only PRs merge on Yu's acceptance alone.
+  - Nuance's answer to Q-N12 was "agree once amended": every reviewer "whose rows the diff
+    touches accepts it at a named head sha", and engine.py and the roots are reviewed jointly.
+    The rows and the rule above are that amendment. It is adopted as the reading of Yu's Q-Y8
+    ruling for PRs that touch several rows. Yu can override it.
+  - Asked of Yu on 2026-10-16, and not answered yet: must the tests also pass on 3.13 and 3.11
+    at that head SHA?
 - Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS. Collab edit tasks use
   `root_path=/Users/user/betangel-suite`. Lab-Claude never accepts its own Collab edit tasks.
 - **Yu's acceptance and feedback** reach lab-Claude only in a lab-Claude session that Yu types

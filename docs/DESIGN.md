@@ -140,7 +140,7 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
 | R-5 | **Yes.** A suite-side, display-only SP parser; no `schemas.py` change. Nuance to confirm (Q-N9). |
 | R-6 | **Confirmed.** No rule-generated paper orders in the MVP. Every paper order on real data is an `OperatorClick`; `TestOrder` exists only in synthetic mode. |
 | R-7 | **Practise live v1** by default (`v1-live-mirror` caps, live-parity mode). The `practice` profile is still built and selectable. |
-| Q-Y8 | Lab-Claude merges a PR after the reviewer routed in section 3.9 has accepted it; UI-only PRs merge on Yu's acceptance alone. Yu can veto or revert any merge. Q-N12 (Nuance's agreement to the routing) is still open. |
+| Q-Y8 | Lab-Claude merges a PR after the reviewer routed in section 3.9 has accepted it; UI-only PRs merge on Yu's acceptance alone. Yu can veto or revert any merge. Nuance answered Q-N12 "agree once amended" (2026-10-16): section 3.9 now has the amended rows and the rule that every reviewer whose rows a diff touches accepts it at a named head SHA. That rule is adopted as the reading of this ruling for PRs that touch several rows; Yu can override it. Asked of Yu on 2026-10-16, not answered yet: must the tests also pass on 3.13 and 3.11 at that SHA? |
 
 **Bet Angel on Yu's Betfair account:** never used (Yu, 2026-10-15), so the design needs no handling for orders or limits shared with Bet Angel. If Bet Angel is ever installed against the account, that needs a fresh review first.
 
@@ -416,10 +416,14 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 
 ### 3.9 Development workflow and the suite's AGENTS.md
 
-- **Branches and PRs.** Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS, so work continues while reviews queue. Review routing is agreed up front (Q-N12, Q-Y8):
-  - Astra reviews `guard.py`, `rx.py`, `errors.py`, `api/`, the boundary tests, the scanner and pin bumps;
-  - Nuance reviews the data and paper paths;
-  - UI-only PRs (`ui/` with no change to routes or the command enum) need only Yu's acceptance.
+- **Branches and PRs.** Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS, so work continues while reviews queue. Review routing is agreed up front (Q-N12, Q-Y8); the table in AGENTS.md is the binding copy:
+  - Astra reviews `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `cli.py`, `roots.py`, `api/`, the launcher, uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`), the staged scripts (`tools/stage/`), the boundary tests, the scanner and pin bumps;
+  - Nuance reviews the data and paper paths (`data/`, `paper/`, `replay/`), the synthetic generator (`synthetic.py`, `tests/fixtures/`), the tick export (`tools/export_ticks.py`, `ui/ticks.json`), and every pin bump that changes an allowlisted file;
+  - Astra and Nuance review `engine.py` and the roots (`roots.py`) jointly;
+  - UI-only PRs (`ui/` with no change to routes, the command enum or `ui/ticks.json`) need only Yu's acceptance.
+- **Merging.** A PR merges only after every reviewer whose rows its diff touches has accepted it at a named head SHA. Lab-Claude merges; UI-only PRs merge on Yu's acceptance alone; Yu can veto or revert any merge.
+  - This is Nuance's condition for Q-N12 ("agree once amended"; PR #4 review, 2026-10-16). It is adopted as the reading of Yu's Q-Y8 ruling (section 2.2.1) for PRs that touch several rows. Yu can override it.
+  - Asked of Yu on 2026-10-16, and not answered yet: must the tests also pass on 3.13 and 3.11 at that head SHA?
 - **Collab.** Edit tasks use `root_path=/Users/user/betangel-suite`.
 - **Upstream changes.** Any betangel-research change goes to Nuance as a proposal (section 14).
 - **Yu's feedback channel.** Yu's acceptance and feedback reach lab-Claude only in two ways:
@@ -1360,7 +1364,7 @@ These headers apply to error responses too (section 9.1).
 | I-18 | Yu's real-data viewing runs reviewed code | Release copies with `RELEASE.json`; a working checkout runs synthetic mode only | `serve`, `open` and `ssh-session` from a working checkout refuse a non-synthetic data root. A modified file in a release copy is refused. |
 | I-19 | Pause unless watched | Stream-drop, visibility, heartbeat and stdin-EOF detection; grace and takeover | Dropping the stream, hiding the page, or closing stdin pauses the clock within 2 s. A takeover within the grace period keeps the session. Expiry marks it `abandoned`. |
 
-Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the boundary tests, the hygiene scanner and pin bumps is routed to Astra (section 3.9).
+Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `cli.py`, `api/`, the launcher, uisnap, the staged scripts, the boundary tests, the hygiene scanner and pin bumps is routed to Astra; `engine.py` and `roots.py` go to Astra and Nuance jointly (section 3.9).
 
 ---
 
@@ -1566,7 +1570,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 | Q-Y5 | **Practice defaults.** Start at T-10 min; 2x until auto-slow at T-3; pause at the off? One-click on by default, or confirm every order at first? | 1b |
 | Q-Y6 | **Practice loss limit** of £20 a day: useful or annoying? | 1b |
 | Q-Y7 | **Research-corpus months** (2023-2025): keep them hidden (the default, which protects later research)? Or open them, which needs a ruling id with Nuance and Astra and is logged? | Later |
-| Q-Y8 | **Repo workflow.** Lab-Claude pushes branches and opens PRs that Nuance or Astra review (routing in section 3.9). Who merges: you, or lab-Claude after review? May UI-only PRs go on your acceptance alone? | Phase 0 packet |
+| Q-Y8 | **Repo workflow.** Lab-Claude pushes branches and opens PRs that Nuance or Astra review (routing in section 3.9). Who merges: you, or lab-Claude after review? May UI-only PRs go on your acceptance alone? <br>**Answered** by Yu on 2026-10-15 (section 2.2.1). **Asked on 2026-10-16, not answered yet:** must the tests also pass on 3.13 and 3.11 at the head SHA the reviewers accepted? | Phase 0 packet |
 | Q-Y9 | **Agents and data.** Confirm that agents never see real rows, the viewed-markets ledger or real-data screenshots, and that any exception needs your OK each time, scoped to one problem report. | 1a |
 | Q-Y10 | **Screen Recording: recommended No.** It would be granted to the host terminal (iTerm2) and cover every process under it, and `screencapture` takes the whole display. Any real race on the lab screen would then go into model context, which counts as an upload. `tools/uisnap` gives lab-Claude synthetic screenshots without it. If you still want it, capture would go only through a suite subcommand: that subcommand starts a synthetic-only engine, captures only its own window (`screencapture -l <id>`), and refuses while a real-data engine runs. You would revoke the permission when it is not in use. | Not needed |
 | Q-Y11 | **Browser.** A Safari Private window for the suite on both machines (recommended), or a dedicated profile with no Betfair login, no extensions and no iCloud sync? After data downloads, sign out of historicdata.betfair.com in the lab's Safari. | 1a |
@@ -1593,7 +1597,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 | Q-N9 | **SP display (R-5).** Do you confirm a suite-side, display-only parser needs no repo ruling? Do you plan U-2, including whether SP non-finites should invalidate the whole book? | 1a |
 | Q-N10 | **Rule 4.** Will you take U-1? Until then, is the "indicative, exact-case" figure acceptable? | 1b |
 | Q-N11 | **Viewed-markets ledger.** Which fields and format do you want, so markets opened in the suite reconcile with your trial ledger? Agents never read the ledger; reconciliation is by code over salted hashes, printing match counts only. Does human practice on the engineering year matter to P0 or P1? | 1a |
-| Q-N12 | **Review routing.** Do you agree the routing in section 3.9 (Astra for guard, rx, errors, release, run marker, api, boundaries, scanner and pins; you for data and paper; Yu alone for UI-only PRs)? Should lab-originated review requests arrive as a lab-journal coordination task plus a mailbox note? | Phase 0 |
+| Q-N12 | **Review routing.** Do you agree the routing in section 3.9 (Astra for guard, rx, errors, release, run marker, api, boundaries, scanner and pins; you for data and paper; Yu alone for UI-only PRs)? Should lab-originated review requests arrive as a lab-journal coordination task plus a mailbox note? <br>**Answered by Nuance: "agree once amended"** (PR #4 review, 2026-10-16). Amended in section 3.9 and AGENTS.md as asked: Astra's row adds uisnap, `tools/stage/`, `cli.py` and `roots.py`; Nuance's row adds `synthetic.py`, `tests/fixtures/`, `tools/export_ticks.py`, `ui/ticks.json` and `replay/`; `engine.py` and the roots are reviewed jointly; and a PR merges only after every reviewer whose rows its diff touches has accepted it at a named head SHA. The review does not answer the second part (how review requests arrive). | Answered |
 | Q-N13 | **The Air later.** Does the Air have the Command Line Tools and Swift? Which Python is there? Will you host the Air-side package (L1/L2) in a separate repo, or in betangel-research, never cloned on the lab? | Later (L1) |
 
 ---
