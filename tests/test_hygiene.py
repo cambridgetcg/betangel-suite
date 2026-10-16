@@ -119,6 +119,29 @@ def _hexdump_c(data: bytes) -> str:
     return "".join(lines)
 
 
+def _od(data: bytes) -> str:
+    """`od`'s default layout: an octal offset, then eight 16-bit words in octal, low byte first; the end offset last."""
+    padded = data + b"\0" * (len(data) % 2)
+    lines = []
+    for off in range(0, len(padded), 16):
+        words = [padded[i] | padded[i + 1] << 8 for i in range(off, min(off + 16, len(padded)), 2)]
+        lines.append(f"{off:07o}" + "".join(f"  {w:06o}" for w in words) + "\n")
+    return "".join(lines) + f"{len(data):07o}\n"
+
+
+def _git_binary_patch(data: bytes) -> str:
+    """What `git diff --binary` prints for a new file holding data: the zlib stream in lines of a length letter
+    ('A'-'Z' for 1-26 bytes, 'a'-'z' for 27-52) and base85, then the empty reverse hunk."""
+    packed = zlib.compress(data)
+    lines = []
+    for i in range(0, len(packed), 52):
+        chunk = packed[i:i + 52]
+        letter = chr(ord("A") + len(chunk) - 1) if len(chunk) <= 26 else chr(ord("a") + len(chunk) - 27)
+        lines.append(letter + base64.b85encode(chunk, pad=True).decode())
+    return ("diff --git a/pkg/m.bin b/pkg/m.bin\nnew file mode 100644\nGIT binary patch\n"
+            f"literal {len(data)}\n" + "\n".join(lines) + "\n\nliteral 0\nHcmV?d00001\n\n")
+
+
 def _without_nul(make) -> bytes:
     """The first of make(0), make(1), ... that holds no NUL byte."""
     for salt in range(1000):
@@ -742,6 +765,37 @@ class EncodedDataTests(_RepoCase):
             "gzip": f'x = "{base64.b64encode(gzip.compress(record)).decode()}"\n',
         })
 
+    def test_encodings_that_tools_emit(self):
+        # Round-4 review: a GIT binary patch (git diff --binary, format-patch), a decimal byte list (list(data),
+        # Array.from(buf), od -An -tu1), od's own output and a PostgreSQL bytea literal all passed.
+        member = bz2.compress(_stream_text().encode())
+        rows = [member[i:i + 16] for i in range(0, len(member), 16)]
+        self.plant_shapes({
+            "GIT binary patch": _git_binary_patch(member),
+            "decimal list": "DATA = [\n" + "".join("    " + ", ".join(map(str, row)) + ",\n" for row in rows) + "]\n",
+            "decimal list on one line": f"DATA = {list(member)}\n",
+            "decimal list of text": f"DATA = {list(_stream_text(lines=2).encode())}\n",
+            "od -An -tu1": "".join("".join(f"{b:4d}" for b in row) + "\n" for row in rows),
+            "od -An -tx1": "".join("        " + "".join(f"  {b:02x}" for b in row) + "\n" for row in rows),
+            "od": _od(member),
+            "bytea literal": "INSERT INTO t VALUES ('\\x" + member.hex() + "');\n",
+        })
+
+    def test_encodings_nested_or_behind_a_line_marker(self):
+        # Round-4 review: base64 of base64 passed, and so did a dump whose every line starts with a comment or list
+        # marker when its first line holds no magic (each marked line was too short to count on its own).
+        member = bz2.compress(_stream_text().encode())
+        text = base64.b64encode(member).decode()
+        tail = base64.b64encode(member[60:]).decode()
+        self.plant_shapes({
+            "base64 of base64": base64.encodebytes(text.encode()).decode(),
+            "hex of base64": _wrap(text.encode().hex(), 64),
+            "hash comments": _wrap(tail, 76, "# {}\n"),
+            "slash comments, hex": _wrap(member[60:].hex(), 64, "// {}\n"),
+            "YAML list": "blob:\n" + _wrap(tail, 76, "  - {}\n"),
+            "quoted mail": _wrap(tail, 76, "> {}\n"),
+        })
+
     def test_near_misses_stay_clean(self):
         hashes = [hashlib.sha256(f"synthetic {i}".encode()).hexdigest() for i in range(12)]
         magic = (b"\x1f\x8b", b"PK\x03\x04", b"PK\x05\x06", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd")
@@ -761,6 +815,13 @@ class EncodedDataTests(_RepoCase):
             "pkg/ids.py": f"sha = '{hashes[0][:40]}'\nrun = '12345678-5ec0-40c0-93f4-4adfd5acd836'\n" * 5,
             "pkg/png.py": f'PNG = b"{_escaped(bytes([0x89]))}PNG\\r\\n{_escaped(bytes([0x1a]))}\\n"\n',
             "docs/reserved.md": base64.b64encode(reserved).decode() + "\n",
+            # A price ladder in hundredths, as ui/ticks.json holds it: sorted, so not data.
+            "ui/ladder.json": '{"ticks": [\n' + "".join("    " + ", ".join(str(t) for t in range(k, k + 16)) + ",\n"
+                                                      for k in range(101, 1000, 16)) + "]}\n",
+            "docs/list.md": "".join(f"- SyntheticRunnerNameNumber{chr(65 + i)}\n" for i in range(20))
+                            + "".join(f"# some_long_identifier_name_{i}\n" for i in range(20)),
+            "pkg/counts.py": "COUNTS = [\n" + "".join("    " + ", ".join(str((i * 5 + k) % 31) for k in range(16))
+                                                     + ",\n" for i in range(12)) + "]\n",
         }
         for rel, text in files.items():
             self.write(rel, text)

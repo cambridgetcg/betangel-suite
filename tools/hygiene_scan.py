@@ -90,6 +90,7 @@ reviews the scanner, DESIGN.md 3.9). There is no inline suppression comment.
 from __future__ import annotations
 
 import argparse
+import base64
 import binascii
 import os
 import re
@@ -140,8 +141,8 @@ RULES = {
     "secret_value": "secret-looking value assigned to a key, token, password or session field",
     "known_token": "token with a known provider prefix (GitHub, AWS, Slack, JWT, ...)",
     "bootstrap_code": "suite bootstrap-code URL fragment",
-    "encoded_blob": "base64, hex or \\xNN-escaped data that decodes to an archive, a zlib stream, "
-                    "96+ bytes of binary, or text another rule flags",
+    "encoded_blob": "base64, hex, \\xNN-escaped, decimal-byte or GIT-binary-patch data that decodes to an "
+                    "archive, a zlib stream, 96+ bytes of binary, or text another rule flags",
     "filter_attribute": "path git gives a filter driver (clean filter, LFS), or a .gitattributes line "
                         "that sets one: git stores the filter's output, which the scan never sees",
 }
@@ -463,36 +464,59 @@ def _plain_findings(lines) -> list:
 
 # ------------------------------------------------------------ encoded data
 #
-# encoded_blob (Nuance's #2 review, item 5): data hidden in text as base64, as hex, or as \xNN
-# escapes in a string literal. A token is one of:
+# encoded_blob (Nuance's #2 review, item 5; round-4 review): data hidden in text. A token is one of:
 #   b64  a run of 16+ base64 characters (standard or URL-safe alphabet), with its padding;
-#   hex  8+ hex byte pairs, bare or split by single spaces or colons, or 0x-prefixed and
-#        comma-separated, or the hex columns of an xxd or `hexdump -C` line;
-#   esc  a quoted string literal holding at least one \xNN escape.
+#   hex  8+ hex byte pairs, bare or split by one or two spaces or by colons (`od -An -tx1`), or
+#        right after `\x` (a PostgreSQL bytea literal), or 0x-prefixed and comma-separated, or the
+#        hex columns of an xxd or `hexdump -C` line, or the octal words of an `od` line (its
+#        default output: 16-bit words, little-endian);
+#   esc  a quoted string literal holding at least one \xNN escape;
+#   dec  16+ integers from 0 to 255 split by commas or spaces: a byte list as `list(data)`,
+#        `Array.from(buf)` or `od -An -tu1` print it.
 # A token that ends its line (only a closing quote, bracket, `;`, `+` or `\` after it) runs on
 # into each next line that holds nothing but one token of the same kind: a wrapped dump, or
-# implicit string concatenation. A comma ends a run, except after a 0x token, so a list of
-# hashes is never joined into one. Each run is decoded and flagged, at its first line, when it
+# implicit string concatenation. A comma ends a run, except after a 0x or a dec token, so a
+# list of hashes is never joined into one. Lines that start with a comment or list marker
+# (`#`, `//`, `--`, `;`, `>`, `*`, `-`, `%`) are also read a second time without it, so a dump
+# that every line comments out, or a YAML list of its pieces, is joined too (only lines with the
+# same marker join). Separately, each
+# hunk of a GIT binary patch (`git diff --binary`, `git format-patch`: the lines after
+# `literal N` or `delta N`, each a length letter and git's base85) is decoded to its zlib stream.
+# Each run is decoded and flagged, at its first line, when it
 #   - is 24+ bytes that start with an archive or SQLite magic (gzip needs its method byte and
 #     clear reserved flags, not just 1f 8b) or form a whole zlib stream;
 #   - is 96+ bytes holding a NUL or not UTF-8 (binary data: compressed, encrypted or packed);
-#   - is 16+ bytes of UTF-8 text that the line rules or runner_table flag.
-# The last two need a base64 run to mix upper case, lower case and digits, and a hex run to
-# hold a letter, as encoded binary does; names, paths and decimal numbers do not.
+#   - is 16+ bytes of UTF-8 text that the line rules or runner_table flag, or that holds such a
+#     run itself (decoded once more: base64 of base64, hex of base64).
+# The last two need a base64 run to mix upper case, lower case and digits, a hex run to hold a
+# letter, and a dec run to be neither sorted nor ASCII with control characters (other than tab,
+# LF and CR), as encoded data is; names, paths, hashes, decimal numbers, price ladders and lists
+# of small counts are not.
+# Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
+# patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
+# characters (groups of 8, or a list whose first piece is that short), and lists split by commas.
 
 ENCODED_MIN_MAGIC = 24
 ENCODED_MIN_BINARY = 96
 ENCODED_MIN_TEXT = 16
+ENCODED_MAX_DEPTH = 1   # a decoded run is searched for encoded runs once more, no deeper
 
 # The token patterns, by kind: for any token, and for the short last line of a run.
 _B64_TOKEN = {False: re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}"), True: re.compile(r"[A-Za-z0-9+/_-]{2,}={0,2}")}
 _HEX_TOKEN = {short: re.compile(
-    r"(?<![0-9A-Za-z])(?:0[xX][0-9a-fA-F]{2}(?:[ \t]*,[ \t]*0[xX][0-9a-fA-F]{2}){%s}"
-    r"|[0-9a-fA-F]{2}(?:[ :]?[0-9a-fA-F]{2}){%s})(?![0-9A-Za-z])" % (count, count))
+    r"(?:(?<=\\x)|(?<![0-9A-Za-z]))(?:0[xX][0-9a-fA-F]{2}(?:[ \t]*,[ \t]*0[xX][0-9a-fA-F]{2}){%s}"
+    r"|[0-9a-fA-F]{2}(?:(?: {1,2}|:)?[0-9a-fA-F]{2}){%s})(?![0-9A-Za-z])" % (count, count))
     for short, count in ((False, "7,"), (True, "0,"))}
 _HEX_DUMP = {short: re.compile(
     r"\s*[0-9a-fA-F]{6,10}:?\s+(?P<hex>[0-9a-fA-F]{2}(?: {0,2}[0-9a-fA-F]{2}){%s})(?:\s{2,}.*)?\s*" % count)
     for short, count in ((False, "3,"), (True, "0,"))}
+_OCT_DUMP = {short: re.compile(r"\s*[0-7]{7,}(?P<oct>(?:[ \t]+[0-7]{6}){%s})\s*" % count)
+             for short, count in ((False, "4,"), (True, "1,"))}
+_DEC_BYTE = r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
+_DEC_TOKEN = {short: re.compile(
+    r"(?<![0-9A-Za-z_.-])%s(?:(?:[ \t]*,[ \t]*|[ \t]+)%s){%s}(?![0-9A-Za-z_.])" % (_DEC_BYTE, _DEC_BYTE, count))
+    for short, count in ((False, "15,"), (True, "0,"))}
+_DEC_NUMBER = re.compile(r"[0-9]+")
 _HEX_DROP = re.compile(r"0[xX]|[^0-9a-fA-F]")
 _ESC_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
 _HAS_XNN = re.compile(r"\\x[0-9a-fA-F]{2}")
@@ -500,11 +524,18 @@ _ESC = re.compile(r"\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|.)", re.S)
 _ESC_SIMPLE = {"n": 10, "r": 13, "t": 9, "a": 7, "b": 8, "f": 12, "v": 11, "\\": 92, "'": 39, '"': 34}
 _PURE_BEFORE = {"b64": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
                 "hex": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
-                "esc": re.compile(r"\s*(?:\+\s*)?[bBrRuU]{0,2}")}
+                "esc": re.compile(r"\s*(?:\+\s*)?[bBrRuU]{0,2}"),
+                "dec": re.compile(r"\s*(?:[\[({]\s*)?")}
 _ENDS_LINE = re.compile(r"[\"'`]?\s*[)\]\\;+]*\s*")
 _ENDS_LINE_0X = re.compile(r"\s*,?\s*[)\]\\;+]*\s*")
 _ENDS_LINE_ESC = re.compile(r"\s*[)\]\\;+]*\s*")
+_ENDS_LINE_DEC = re.compile(r"\s*,?\s*[)\]};]*\s*")
 _URLSAFE = str.maketrans("-_", "+/")
+# A comment or list marker that starts a line: such lines are read a second time without it.
+_LINE_PREFIX = re.compile(r"[ \t]*(?:#+|//+|--|;+|>+|\*+|-|%+)[ \t]?")
+# GIT binary patch: a hunk header, then lines of a length letter and base85 in groups of five.
+_GIT_BINARY_HEAD = re.compile(r"(?:literal|delta) [0-9]+")
+_GIT_BINARY_LINE = re.compile(r"[A-Za-z](?:[0-9A-Za-z!#$%&()*+;<=>?@^_`{|}~-]{5})+")
 
 
 def _unescape(body: str) -> bytes:
@@ -530,16 +561,23 @@ def _unescape(body: str) -> bytes:
 def _segments(kind: str, line: str, short: bool = False) -> list:
     """[(start, end, payload, ends_line, pure)] for one kind of token on one line.
 
-    payload is the token text (b64), its hex digits (hex) or the bytes it stands for (esc).
+    payload is the token text (b64), its hex digits (hex) or the bytes it stands for (esc, dec).
     short: also tokens below the minimum length (the last line of a wrapped dump).
     """
     if kind == "hex":
+        dump = _OCT_DUMP[short].fullmatch(line)
+        if dump:  # od: an octal offset, then 16-bit words in octal, low byte first (before xxd: its digits are hex too)
+            words = [int(word, 8) for word in dump.group("oct").split()]
+            return [(dump.start("oct"), dump.end("oct"), "".join(f"{w & 0xFF:02x}{w >> 8:02x}" for w in words),
+                     True, True)]
         dump = _HEX_DUMP[short].fullmatch(line)
         if dump:  # xxd or hexdump -C: the offset and the character column are not data
             return [(dump.start("hex"), dump.end("hex"), _HEX_DROP.sub("", dump.group("hex")), True, True)]
         matches = list(_HEX_TOKEN[short].finditer(line))
     elif kind == "b64":
         matches = list(_B64_TOKEN[short].finditer(line))
+    elif kind == "dec":
+        matches = list(_DEC_TOKEN[short].finditer(line))
     else:
         if "\\x" not in line:
             return []
@@ -550,6 +588,9 @@ def _segments(kind: str, line: str, short: bool = False) -> list:
         if kind == "hex":
             payload = _HEX_DROP.sub("", token)
             ends = (_ENDS_LINE_0X if token[:2] in ("0x", "0X") else _ENDS_LINE).fullmatch(line, m.end())
+        elif kind == "dec":
+            payload = bytes(int(number) for number in _DEC_NUMBER.findall(token))
+            ends = _ENDS_LINE_DEC.fullmatch(line, m.end())
         else:
             payload = token if kind == "b64" else _unescape(token[1:-1])
             ends = (_ENDS_LINE if kind == "b64" else _ENDS_LINE_ESC).fullmatch(line, m.end())
@@ -591,6 +632,13 @@ def _decode_run(kind: str, payloads: list):
     """(bytes, mixed) for one run, or (None, False) if it does not decode. mixed: it looks like encoded data."""
     if kind == "esc":
         return b"".join(payloads), True
+    if kind == "dec":
+        blob = b"".join(payloads)
+        # Not data: ASCII with control characters other than tab, LF and CR (small numbers or counts), or a sorted
+        # list (a price ladder such as ui/ticks.json, a range of ids). Compressed or encoded bytes are neither.
+        control = max(blob) < 0x80 and any(b < 0x20 and b not in (9, 10, 13) for b in blob)
+        ordered = list(blob) in (sorted(blob), sorted(blob, reverse=True))
+        return blob, not (control or ordered)
     text = "".join(payloads)
     if kind == "hex":
         mixed = any(c in "abcdefABCDEF" for c in text)
@@ -632,24 +680,84 @@ def _is_utf8(blob: bytes) -> bool:
     return True
 
 
-def _encoded_blob_lines(lines) -> list:
+def _git_binary_hunks(lines) -> list:
+    """[(line number of its header, zlib stream)] for each hunk of a GIT binary patch.
+
+    After a "literal N" or "delta N" line, each line is a length letter ('A'-'Z' for 1-26 bytes, 'a'-'z' for 27-52)
+    and that many bytes in git's base85, in groups of five characters; the hunk ends at the first other line.
+    """
+    hunks = []
+    current = None
+    for number, line in lines:
+        if current is not None:
+            if _GIT_BINARY_LINE.fullmatch(line):
+                size = ord(line[0]) - (ord("A") - 1 if line[0] <= "Z" else ord("a") - 27)
+                try:
+                    chunk = base64.b85decode(line[1:])
+                except ValueError:
+                    chunk = b""
+                if len(chunk) == -(-size // 4) * 4:
+                    current[1].append(chunk[:size])
+                    continue
+            hunks.append(current)
+            current = None
+        if _GIT_BINARY_HEAD.fullmatch(line):
+            current = (number, [])
+    if current is not None:
+        hunks.append(current)
+    return [(number, b"".join(chunks)) for number, chunks in hunks if chunks]
+
+
+def _without_prefixes(lines):
+    """The lines that start with a comment or list marker, with it removed, or None when no line has one.
+
+    Only lines with the same marker (the same text, indent included) join: every other line, and a change of
+    marker, is an empty line here, which ends a run. So a list of names under "- " and one under "# " never join.
+    """
+    out = []
+    previous = None
+    for number, line in lines:
+        m = _LINE_PREFIX.match(line)
+        if not (m and line[m.end():].strip()):
+            out.append((number, ""))
+            previous = None
+            continue
+        if previous is not None and m.group() != previous:
+            out.append((number, ""))
+        out.append((number, line[m.end():]))
+        previous = m.group()
+    return out if any(line for _number, line in out) else None
+
+
+def _blob_flagged(blob: bytes, mixed: bool, depth: int) -> bool:
+    """Whether one decoded run is flagged (the three tests above)."""
+    if len(blob) >= ENCODED_MIN_MAGIC and (_blob_magic(blob) or _zlib_stream(blob)):
+        return True
+    if not mixed:
+        return False
+    if b"\0" in blob or not _is_utf8(blob):
+        return len(blob) >= ENCODED_MIN_BINARY
+    if len(blob) < ENCODED_MIN_TEXT:
+        return False
+    lines = list(_lines(blob.decode("utf-8")))
+    return bool(_plain_findings(lines)) or (depth < ENCODED_MAX_DEPTH and bool(_encoded_blob_lines(lines, depth + 1)))
+
+
+def _encoded_blob_lines(lines, depth: int = 0) -> list:
     """The first line number of every encoded run that decodes to something flagged."""
-    flagged = []
-    for kind in ("b64", "hex", "esc"):
-        for number, payloads in _runs(kind, lines):
-            blob, mixed = _decode_run(kind, payloads)
-            if blob is None:
-                continue
-            if len(blob) >= ENCODED_MIN_MAGIC and (_blob_magic(blob) or _zlib_stream(blob)):
-                flagged.append(number)
-            elif not mixed:
-                continue
-            elif len(blob) >= ENCODED_MIN_BINARY and (b"\0" in blob or not _is_utf8(blob)):
-                flagged.append(number)
-            elif (len(blob) >= ENCODED_MIN_TEXT and b"\0" not in blob and _is_utf8(blob)
-                    and _plain_findings(list(_lines(blob.decode("utf-8"))))):
-                flagged.append(number)
-    return flagged
+    views = [lines]
+    stripped = _without_prefixes(lines)
+    if stripped is not None:
+        views.append(stripped)
+    flagged = set()
+    for view in views:
+        for kind in ("b64", "hex", "esc", "dec"):
+            for number, payloads in _runs(kind, view):
+                blob, mixed = _decode_run(kind, payloads)
+                if blob is not None and _blob_flagged(blob, mixed, depth):
+                    flagged.add(number)
+        flagged.update(number for number, blob in _git_binary_hunks(view) if _blob_flagged(blob, True, depth))
+    return sorted(flagged)
 
 # ------------------------------------------------------------- scan an entry
 
