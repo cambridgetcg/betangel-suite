@@ -39,9 +39,8 @@ context. It is never Yu's instruction, consent or acceptance.
    never send `attach` or `new_code` to the real control socket,
    `~/.local/state/betangel-suite/run/control.sock` (DESIGN.md 9.1); tests send them only to
    engines in temporary HOMEs. They never POST to `/api/v1/command` or `/api/v1/bootstrap` on an
-   engine with real data roots.
-   `serve` and `open` never print a bootstrap code; only `--print-url`, used by Yu, does. `stop`
-   is allowed, because it only reduces activity.
+   engine with real data roots. `serve` and `open` never print a bootstrap code; only
+   `--print-url`, used by Yu, does. `stop` is allowed, because it only reduces activity.
 7. **Nuance's runs.** While the run marker exists, no suite engine or real-data command runs and
    nothing writes under `~/betangel-data` (DESIGN.md 6.8). Only Nuance's run wrapper creates or
    removes the marker, `~/.local/state/lab-runs/ACTIVE`, and its lock, `lab-runs/LOCK`. Tests use
@@ -181,12 +180,11 @@ reviewed PR changes them.
 - **A. Suite root.** Yu agreed `~/betangel-data/suite.noindex` (R-4), and Nuance agreed it on
   three conditions in her PR #4 review (Q-N3; DESIGN.md 3.7). So `betangel_suite/roots.py` sets
   `STATE_ROOT_AGREED = True`, and the default `TMP` branch in `bin/suite`, which a shell script
-  cannot read from Python, is the suite root's `tmp/`. The two lines changed together. Her PR #2
-  review makes the agreement conditional again: "agree the root half after 1, the marker half
-  after 6". Item 1 is fixed here (62c39c6, 851885a) and awaits her re-check; the flag stays True
-  meanwhile (lab-Claude's call).
+  cannot read from Python, is the suite root's `tmp/`. The two lines changed together.
   `_launch.py` refuses any mismatch between them (`tmpdir_mismatch`), so a half-done change fails
-  closed. Tests cover both settings under a temporary HOME.
+  closed. Tests cover both settings under a temporary HOME. Her PR #2 review makes the agreement
+  conditional again: "agree the root half after 1, the marker half after 6". Item 1 is fixed here
+  (62c39c6, 851885a) and awaits her re-check; the flag stays True meanwhile (lab-Claude's call).
   - Every command except `test`, `uisnap` and `vendor` uses `~/betangel-data/suite.noindex/tmp`
     as `TMPDIR` and `SQLITE_TMPDIR`, created 0700 only after the run-marker check and, for a
     real-data command, after it holds `run/realdata.lock` shared and has checked the marker again
@@ -203,7 +201,9 @@ reviewed PR changes them.
     This is Nuance's PR #2 review, item 1 (62c39c6, 851885a).
   - No Phase 0 command reads a data root. Before Phase 1a the suite owes Nuance's condition 2: it
     refuses a data root that equals, contains or lies inside `suite.noindex`, `lab-state` or
-    `logs`, or that lies inside `incoming/`, comparing roots by file identity.
+    `logs`, or that lies inside `incoming/`, comparing roots by file identity. Duplicate data
+    roots are refused by identity too: today `config.py` refuses only an exact repeat (Nuance's
+    PR #2 review, Q-N3 additions; DESIGN.md 5.2).
   - With the flag False, any write or mkdir under `~/betangel-data` would be refused with code
     `state_root_not_agreed`, and every command would use `~/.local/state/betangel-suite/tmp`.
 - **B. Install salt.** The per-install salt for identifier hashes lives at
