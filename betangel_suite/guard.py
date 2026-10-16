@@ -22,8 +22,8 @@ What the hook refuses, in every mode and phase:
        to an absolute, normalised Unix socket path in the run directory permitted before seal() with
        permit_unix_connect (the control socket, which stop and open use to reach a running engine;
        DESIGN.md 9.1), matched exactly while the run directory still resolves where it did at arm() and the
-       socket path is not itself a link (connect follows one). TCP connects and every other address stay
-       refused;
+       socket path is not itself a link (connect follows one); a path with a NUL in it (the kernel ends the
+       socket name at the first NUL) is never permitted. TCP connects and every other address stay refused;
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
        run directory still resolves where it did at arm() and the socket path is not itself a link (bind
@@ -251,11 +251,13 @@ def permit_unix_connect(path):
 
     This is how stop and open reach a running engine's control socket (DESIGN.md 9.1); the engine itself never
     asks for it. A relative path is never permitted, and nothing but socket.connect on an AF_UNIX socket uses it.
+    Nor is a path with a NUL in it: the kernel ends sun_path at the first NUL, so the connect would reach a
+    different name from the one permitted, and os.path.islink cannot look at such a path (it says False).
     """
     with _LOCK:
         state = _require_unsealed()
-        if (not isinstance(path, str) or not os.path.isabs(path) or os.path.normpath(path) != path
-                or os.path.dirname(path) != state.run_dir):
+        if (not isinstance(path, str) or "\0" in path or not os.path.isabs(path)
+                or os.path.normpath(path) != path or os.path.dirname(path) != state.run_dir):
             raise SuiteError("connect_permit_invalid")
         state.unix_connects.add(path)
 
@@ -413,10 +415,12 @@ def _unix_connect_ok(state, sock, address):
         return False
     # As for bind: the exact permitted text (normpath would fold "link/.." that the OS resolves through the
     # link), in a run directory that still resolves where it did at arm() (not replaced by a link), and not
-    # itself a link: connect follows a final link to whatever socket it names, outside the run directory.
+    # itself a link: connect follows a final link to whatever socket it names, outside the run directory. No
+    # NUL either, whatever was permitted: the kernel ends the name at the first one, and islink cannot see the
+    # name before it.
     text = os.fsdecode(address)
-    return (text in state.unix_connects and os.path.realpath(os.path.dirname(text)) == state.real_run_dir
-            and not os.path.islink(text))
+    return ("\0" not in text and text in state.unix_connects
+            and os.path.realpath(os.path.dirname(text)) == state.real_run_dir and not os.path.islink(text))
 
 
 def _check_spawn(state, event, args):

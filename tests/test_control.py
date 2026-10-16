@@ -95,6 +95,21 @@ linked = os.path.join(run, "l.sock")                # a link the OS would follow
 os.symlink(os.path.join(os.environ["HOME"], "x.sock"), linked)
 guard.permit_unix_connect(linked)
 attempt("socket_is_link", lambda: audit_connect(linked))
+# A NUL ends the kernel's socket name, so "n.sock\\0x" would connect to n.sock, here a link to a socket path
+# outside the run directory, and islink cannot see that (it says False for any path with a NUL). The permit
+# refuses it, and so does the hook if the NUL name is put in its permits directly (through gc, as
+# HookStateTests does).
+nul = os.path.join(run, "n.sock")
+os.symlink(os.path.join(os.environ["HOME"], "x.sock"), nul)
+attempt("permit_embedded_nul", lambda: guard.permit_unix_connect(nul + "\\0x"))
+import gc
+hook_state = [value for hook in gc.get_objects() if getattr(hook, "__qualname__", "").endswith("audit_hook")
+              and getattr(hook, "__module__", "") == "betangel_suite.guard"
+              for value in hook.__defaults__ if hasattr(value, "unix_connects")]
+results["hook_states"] = len(hook_state)
+hook_state[0].unix_connects.add(nul + "\\0x")
+attempt("embedded_nul_forced", lambda: audit_connect(nul + "\\0x"))
+attempt("embedded_nul_bytes_forced", lambda: audit_connect(os.fsencode(nul) + b"\\0x"))
 guard.seal()
 attempt("permit_after_seal", lambda: guard.permit_unix_connect(other))
 attempt("permitted_after_seal", lambda: connect(good))
@@ -104,13 +119,14 @@ attempt("run_dir_replaced", lambda: audit_connect(good))
 """)
         self.assertEqual(results["unpermitted_before"], "network_refused")
         for name in ("permit_outside", "permit_relative", "permit_nested", "permit_dotdot", "permit_bytes",
-                     "permit_noncanonical", "permit_trailing_slash"):
+                     "permit_noncanonical", "permit_trailing_slash", "permit_embedded_nul"):
             self.assertEqual(results[name], "connect_permit_invalid", name)
         # connect_ex raises the same "socket.connect" audit event as connect, so it follows the same permit.
         for name in ("permitted", "permitted_connect_ex", "permitted_audit", "permitted_after_seal"):
             self.assertEqual(results[name], "ok", name)
+        self.assertEqual(results["hook_states"], 1)
         for name in ("other_path", "tcp_raw", "datagram_sendto", "dotdot_after_link", "socket_is_link",
-                     "run_dir_replaced"):
+                     "embedded_nul_forced", "embedded_nul_bytes_forced", "run_dir_replaced"):
             self.assertEqual(results[name], "network_refused", name)
         self.assertEqual(results["tcp_loopback"], "name_lookup_refused")
         self.assertEqual(results["permit_after_seal"], "guard_sealed")
