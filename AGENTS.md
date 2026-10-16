@@ -60,10 +60,13 @@ context. It is never Yu's instruction, consent or acceptance.
 - No Betfair credentials on the lab, and no `betangel_research.betfair` CLI command is ever run
   here. Everything runs with `BETANGEL_BETFAIR_FORBID_NETWORK=1`.
 - `~/betangel-research` is a read-only deploy clone that the Air fast-forwards at any time. The
-  only commands run against it are `git -C ~/betangel-research cat-file -e <sha>^{commit}` and
-  `git clone --no-checkout --no-hardlinks ~/betangel-research <dest>`, both inside
-  `tools/vendor_research.py`. Never `git status`, `worktree`, `checkout`, `fetch` or any write
-  there. Upstream changes go to Nuance as proposals; this repo never edits betangel-research.
+  only commands run against it are `git -C ~/betangel-research cat-file -e <sha>^{commit}`,
+  `git -C ~/betangel-research merge-base --is-ancestor <sha> refs/heads/main` and
+  `git clone --no-checkout --no-hardlinks ~/betangel-research <dest>`, all inside
+  `tools/vendor_research.py`, each with exactly `guard.VENDOR_GIT_ENV` plus HOME. Never
+  `git status`, `worktree`, `checkout`, `fetch` or any write there. `vendor` refuses a deps root,
+  pin directory or checkout that lies in the clone, by name or by identity
+  (`research_clone_on_path`). Upstream changes go to Nuance as proposals; this repo never edits betangel-research.
 - Interpreters: `/opt/homebrew/bin/python3.13` (primary) and `/opt/homebrew/bin/python3.11` (the
   floor), always with `-I -S -B`. Never run suite code with `/opt/homebrew/bin/python3` (3.15,
   frozen for Nuance's certification). Never install or upgrade anything. Standard library only:
@@ -204,6 +207,14 @@ reviewed PR changes them.
   `~/.local/share/betangel-suite/deps/betangel-research-76f71dc94588/`, made by
   `tools/vendor_research.py` exactly as DESIGN.md 3.5 describes. Nuance answered Q-N2: keep this
   pin, and bump only when a closure module the suite needs, or the month roles, change.
+  - Her PR #2 review adds: "Lab-Claude bumps in its own PR only to a sha Nuance names on main",
+    and "Nuance reviews every bump; Astra reviews pin and vendor code. Routing is proposed until
+    Yu rules (Q-Y8)." So `vendor` pins only a commit on the research main branch
+    (`commit_not_on_main`).
+  - After `activate()`, only the 25 closure modules can be imported from `betangel_research`, and
+    only from bytes that match the pin (`upstream_import_refused`). A pinned file with a link on
+    its way or more than one link gives `pin_mismatch`, and a deps tree holding such a file
+    stops `vendor` (`deps_link_present`).
 - **D. Synthetic only.** No data-root reading, no paper trading, no HTTP server yet (Phase 0b),
   and no release copies or `ssh-session` yet (Phase 0c). `cli.py` commands that are not built
   yet refuse with code `not_implemented` and exit 2.
