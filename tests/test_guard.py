@@ -544,6 +544,57 @@ attempt("inherited_stub_path", lambda: run(None))
         self.assertFalse(ok(["/usr/bin/open", "http://127.0.0.1:8765/x" + code], (state,), {8765}))
         self.assertFalse(ok(["/usr/bin/open", "-a", "Safari", "http://127.0.0.1:8765/" + code], (state,), {8765}))
 
+    def test_engine_git_probe_containment_follows_links(self):
+        # Astra's re-review of #4: the git probe's directory must lie in a root as text and with its links resolved,
+        # as runner_git_ok checks, because git -C follows links. Pure predicate, on real links in a temporary HOME.
+        home = make_home(self)
+        root = os.path.join(home, "root")
+        os.makedirs(os.path.join(root, "real"))
+        os.makedirs(os.path.join(home, "outside", "sub"))
+        os.symlink(os.path.join(home, "outside"), os.path.join(root, "link"))
+        os.symlink(home, os.path.join(home, "via"))            # a linked ancestor of a root is fine
+
+        def ok(directory, write_roots=(root,), real_roots=None):
+            argv = ["git", "-C", directory, "rev-parse", "--is-inside-work-tree"]
+            return guard.engine_argv_ok(argv, write_roots, set(), real_roots)
+
+        self.assertTrue(ok(os.path.join(root, "real")))
+        self.assertTrue(ok(root))
+        self.assertFalse(ok(os.path.join(root, "link")))
+        self.assertFalse(ok(os.path.join(root, "link", "sub")))
+        self.assertFalse(ok(os.path.join(home, "via", "outside")))  # text outside the root
+        via_root = os.path.join(home, "via", "root")
+        self.assertTrue(ok(os.path.join(via_root, "real"), (via_root,)))
+        self.assertFalse(ok(os.path.join(via_root, "link"), (via_root,)))
+        # The hook passes the real roots fixed at arm(); they are what the resolved directory is compared with.
+        self.assertTrue(ok(os.path.join(root, "real"), (root,), (root,)))
+        self.assertFalse(ok(os.path.join(root, "real"), (root,), (os.path.join(home, "outside"),)))
+
+    def test_engine_git_probe_through_a_link_is_refused(self):
+        home = make_home(self)
+        setup = """
+state = roots.state_dir()
+os.makedirs(os.path.join(state, "real"), exist_ok=True)
+outside = os.path.join(os.environ["HOME"], "outside")
+os.makedirs(os.path.join(outside, "sub"))
+os.symlink(outside, os.path.join(state, "link"))
+os.symlink(state, os.path.join(os.environ["HOME"], "alias"))
+"""
+        results = checks(self, home, setup=setup, body="""
+import subprocess
+state = roots.state_dir()
+def probe(*parts):
+    subprocess.run(["git", "-C", os.path.join(*parts), "rev-parse", "--is-inside-work-tree"], capture_output=True,
+                   timeout=30)
+attempt("real", lambda: probe(state, "real"))
+attempt("link", lambda: probe(state, "link"))
+attempt("through_link", lambda: probe(state, "link", "sub"))
+attempt("alias_into_root", lambda: probe(os.environ["HOME"], "alias", "real"))
+""")
+        self.assertEqual(results["real"], "ok")
+        for name in ("link", "through_link", "alias_into_root"):
+            self.assertEqual(results[name], "subprocess_refused", name)
+
     def test_vendor_argv_shapes(self):
         research, deps = "/h/betangel-research", "/h/.local/share/betangel-suite/deps"
         sha = "0123456789abcdef0123456789abcdef01234567"

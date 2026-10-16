@@ -51,7 +51,8 @@ What the hook refuses, in every mode and phase:
 Subprocesses by mode (the launcher picks the mode from the command name; nothing else can):
 
   engine  before seal(), exactly two argv shapes: git -C <dir in the write roots> rev-parse
-          --is-inside-work-tree (paths.is_inside_git_worktree, used by config.validate_config) and
+          --is-inside-work-tree (paths.is_inside_git_worktree, used by config.validate_config), its dir in a
+          root as text and, links resolved, in that root's real path from arm(), and
           /usr/bin/open http://127.0.0.1:<permitted port>/#c=<code>; after seal(), none. A bare "git"
           must come through subprocess with a search path of /usr/bin and /bin only.
   vendor  before seal(), exactly the four git argvs tools/vendor_research.py runs; after, none.
@@ -458,7 +459,7 @@ def _check_spawn(state, event, args):
         if runner_argv_ok(argv, names, state.interpreters, LAUNCHER, state.tmp_root):
             return
     elif not state.sealed:
-        if state.mode == "engine" and engine_argv_ok(argv, state.roots, state.ports):
+        if state.mode == "engine" and engine_argv_ok(argv, state.roots, state.ports, state.real_roots):
             return
         if state.mode == "vendor" and vendor_argv_ok(argv, state.research, state.deps_root):
             return
@@ -473,12 +474,21 @@ def _child_env_ok(names):
     return not any(_stray(key) for key in names) and names.get(FORBID_NETWORK_ENV) == "1"
 
 
-def engine_argv_ok(argv, write_roots, ports):
-    """The two argvs an engine may start before seal() (DESIGN.md I-5)."""
+def engine_argv_ok(argv, write_roots, ports, real_roots=None):
+    """The two argvs an engine may start before seal() (DESIGN.md I-5).
+
+    The git probe's directory must lie in a write root as text and, with its links resolved, in that root's
+    real path, as runner_git_ok checks its -C directory: git -C follows links, so the text alone would let a
+    link inside a root point the probe elsewhere (Astra's re-review of #4). real_roots are the roots' real
+    paths; the hook passes the ones fixed at arm(), and None resolves them now.
+    """
     if len(argv) == 5 and argv[:2] == ["git", "-C"] and argv[3:] == ["rev-parse", "--is-inside-work-tree"]:
         directory = argv[2]
+        if real_roots is None:
+            real_roots = tuple(os.path.realpath(root) for root in write_roots)
         return (os.path.isabs(directory) and os.path.normpath(directory) == directory
-                and any(roots.within(directory, root) for root in write_roots))
+                and any(roots.within(directory, root) and roots.within(os.path.realpath(directory), real)
+                        for root, real in zip(write_roots, real_roots)))
     if len(argv) == 2 and argv[0] == OPEN:
         match = _URL_RE.fullmatch(argv[1])
         return bool(match) and int(match.group(1)) != 0 and int(match.group(1)) in ports
