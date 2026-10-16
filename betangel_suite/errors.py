@@ -42,8 +42,8 @@ CODES = frozenset({
     "module_loaded_early", "call_replaced_early", "listen_refused",
     # commands
     "no_command", "unknown_command", "not_implemented", "bad_arguments", "state_root_changed",
-    # the run marker (I-17)
-    "run_marker_present", "run_marker_unreadable",
+    # the run marker and the realdata lock (I-17)
+    "run_marker_present", "run_marker_unreadable", "run_lock_busy", "run_lock_invalid", "run_lock_not_held",
     # suite config
     "config_unreadable", "config_insecure", "config_too_large", "config_not_json", "config_not_object",
     "config_unknown_key", "config_invalid_value",

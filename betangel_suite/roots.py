@@ -2,7 +2,7 @@
 
 Roots, under the home directory taken from $HOME (bin/suite passes the caller's HOME through env -i):
 
-    ~/.local/state/betangel-suite/            0700  config, prefs, run/, tmp/, install-salt (Phase 0)
+    ~/.local/state/betangel-suite/            0700  config, prefs, run/ (realdata.lock), tmp/, install-salt (Phase 0)
     ~/.local/share/betangel-suite/deps/       read-only pinned upstream code (written only by the vendor tool)
     ~/betangel-data/suite.noindex/            0700  the suite root, ONLY while STATE_ROOT_AGREED is True
 
@@ -41,6 +41,7 @@ SUITE_ROOT_PARTS = ("betangel-data", "suite.noindex")
 STATE_DIR_PARTS = (".local", "state", "betangel-suite")
 SHARE_DIR_PARTS = (".local", "share", "betangel-suite")
 STATE_TMP_COMMANDS = ("test", "uisnap", "vendor")   # commands whose TMPDIR is always the state root's tmp/
+REALDATA_LOCK_NAME = "realdata.lock"                 # in run/; never unlinked (runmarker.hold_shared)
 _MAX_ANCESTORS = 256                                 # deeper than any real tree: past it, fail closed
 
 
@@ -78,6 +79,13 @@ def deps_root(home_dir=None):
 
 def run_dir(home_dir=None):
     return os.path.join(state_dir(home_dir), "run")
+
+
+def realdata_lock_path(home_dir=None):
+    """run/realdata.lock in the state root: every real-data command holds LOCK_SH on it for its whole life, and Nuance's
+    run wrapper takes LOCK_EX on it before a run touches sources or data (runmarker.py; DESIGN.md 6.8). It lies in the
+    state root, beside engine.lock, so taking it creates nothing under ~/betangel-data."""
+    return os.path.join(run_dir(home_dir), REALDATA_LOCK_NAME)
 
 
 def config_path(home_dir=None):

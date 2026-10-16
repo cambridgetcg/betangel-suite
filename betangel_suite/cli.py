@@ -1,10 +1,12 @@
 """bin/suite commands (DESIGN.md 3.4). Phase 0a implements test and vendor; every other command refuses.
 
 bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop, checked
-the run marker before main() is called. main() then creates TMPDIR (0700, through the
-writer helper) before any handler runs (DESIGN.md 3.6, 6.8), so SQLite never falls back to a system temp
-directory. vendor is the exception: it must work before the deps clone exists, never imports upstream
-(which the writer helper's path_guard needs) and makes no temporary files. Output is codes and counts only.
+the run marker before main() is called. main() then, for a command that may touch real data (REALDATA_COMMANDS),
+takes the realdata lock shared and checks the marker again under it (runmarker.hold_shared; DESIGN.md 6.8), and
+only then creates TMPDIR (0700, through the writer helper) before any handler runs (DESIGN.md 3.6), so SQLite
+never falls back to a system temp directory. vendor is the exception: it must work before the deps clone exists,
+never imports upstream (which the writer helper's path_guard needs) and makes no temporary files. Output is codes
+and counts only.
 """
 
 import importlib.util
@@ -21,6 +23,12 @@ COMMANDS = ("serve", "open", "ssh-session", "stop", "catalogue", "selfcheck", "d
 # refuse during a run like the other commands (Nuance's answers to Q-N14: "stop stays exempt", and "test and
 # vendor refuse under the marker").
 NO_RUN_MARKER_CHECK = ("stop",)
+# The commands that may read a real data root or write under ~/betangel-data. Each takes LOCK_SH on run/realdata.lock
+# before its TMPDIR is created, checks the marker again under the lock and holds it until it exits, so Nuance's
+# wrapper, which takes LOCK_EX, waits for it (Nuance's PR #2 review, item 6; PR #1 review, item 5). test, uisnap and
+# vendor touch neither and do not take it; stop must work during a run and takes nothing (runmarker.py says why).
+# main() refuses (run_lock_not_held) any other command whose TMPDIR would be made under ~/betangel-data.
+REALDATA_COMMANDS = ("serve", "open", "ssh-session", "catalogue", "selfcheck", "diagnose", "ledger-summary")
 REPO_ROOT = guard.REPO_ROOT
 
 
@@ -40,8 +48,15 @@ def main(argv):
     if handler is None:
         raise SuiteError("not_implemented")
     guard.require_mode(guard_mode(command))
+    from . import runmarker
+    if command in REALDATA_COMMANDS:
+        from . import config
+        runmarker.hold_shared(runmarker.marker_path(config.load()), runmarker.lock_path())
     if command != "vendor":
-        roots.ensure_dir(roots.tmp_dir(command))
+        tmp = roots.tmp_dir(command)
+        if roots.within(tmp.casefold(), roots.data_home().casefold()) and not runmarker.holding():
+            raise SuiteError("run_lock_not_held")       # nothing is made under ~/betangel-data without the lock
+        roots.ensure_dir(tmp)
     return handler(args)
 
 
