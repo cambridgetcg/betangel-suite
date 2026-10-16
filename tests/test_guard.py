@@ -183,11 +183,14 @@ attempt("switch_deleted", lambda: os.environ.__delitem__(guard.FORBID_NETWORK_EN
 attempt("putenv_switch", lambda: os.putenv(guard.FORBID_NETWORK_ENV, "0"))
 attempt("stray_set", lambda: os.environ.__setitem__("BETFAIR_SESSION", "x"))
 attempt("tmpdir_moved", lambda: os.environ.__setitem__("TMPDIR", "/tmp"))
+attempt("sqlite_tmpdir_moved", lambda: os.environ.__setitem__("SQLITE_TMPDIR", "/tmp"))
+attempt("sqlite_tmpdir_deleted", lambda: os.environ.__delitem__("SQLITE_TMPDIR"))
 attempt("switch_on_again", lambda: os.environ.__setitem__(guard.FORBID_NETWORK_ENV, "1"))
 attempt("ordinary_variable", lambda: os.environ.__setitem__("SUITE_TEST_ORDINARY", "1"))
 results["switch_value"] = os.environ.get(guard.FORBID_NETWORK_ENV)
 """)
-        for name in ("switch_off", "switch_deleted", "putenv_switch", "stray_set", "tmpdir_moved"):
+        for name in ("switch_off", "switch_deleted", "putenv_switch", "stray_set", "tmpdir_moved",
+                     "sqlite_tmpdir_moved", "sqlite_tmpdir_deleted"):
             self.assertEqual(results[name], "environment_change_refused", name)
         self.assertEqual(results["switch_on_again"], "ok")
         self.assertEqual(results["ordinary_variable"], "ok")
