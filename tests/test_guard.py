@@ -342,7 +342,7 @@ class BindTests(unittest.TestCase):
         # path fits, and the test says so instead of misreporting an OSError.
         home = make_home(self)
         results = checks(self, home, setup="os.makedirs(roots.run_dir(), mode=0o700)\n", body="""
-import socket
+import socket, sys
 def bind(family, address):
     with socket.socket(family, socket.SOCK_STREAM) as sock:
         sock.bind(address)
@@ -370,9 +370,22 @@ if results["absolute_fits"]:
     attempt("unix_permitted", lambda: bind(socket.AF_UNIX, control))
 attempt("permit_outside_run_dir", lambda: guard.permit_unix_socket(os.path.join(os.environ["HOME"], "y.sock")))
 attempt("permit_bad_port", lambda: guard.permit_loopback_port(70000))
+# Audit-only from here (nothing is bound, so the path length does not matter): normpath would fold "alias/.."
+# that the OS resolves through the link, and a run directory replaced by a link moves every socket in it.
+def audit_bind(address):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sys.audit("socket.bind", sock, address)
+os.symlink(os.environ["HOME"], os.path.join(run, "alias"))
+attempt("unix_dotdot_after_link", lambda: audit_bind(os.path.join(run, "alias", "..", "c.sock")))
+attempt("unix_permitted_audit", lambda: audit_bind(control))
+attempt("permit_noncanonical", lambda: guard.permit_unix_socket(os.path.join(run, "alias", "..", "d.sock")))
+attempt("permit_trailing_slash", lambda: guard.permit_unix_socket(control + "/"))
 guard.seal()
 attempt("permit_after_seal", lambda: guard.permit_loopback_port(9000))
 attempt("loopback_after_seal", lambda: bind(socket.AF_INET, ("127.0.0.1", 0)))
+os.rename(run, run + "-moved")
+os.symlink(os.path.join(os.environ["HOME"], "elsewhere"), run)
+attempt("unix_run_dir_replaced", lambda: audit_bind(control))
 """ % self.SUN_PATH_MAX)
         self.assertEqual(results["loopback_permitted"], "ok")
         self.assertEqual(results["loopback_after_seal"], "ok")
@@ -386,6 +399,11 @@ attempt("loopback_after_seal", lambda: bind(socket.AF_INET, ("127.0.0.1", 0)))
         self.assertEqual(results["permit_outside_run_dir"], "bind_permit_invalid")
         self.assertEqual(results["permit_bad_port"], "bind_permit_invalid")
         self.assertEqual(results["permit_after_seal"], "guard_sealed")
+        self.assertEqual(results["unix_permitted_audit"], "ok")
+        for name in ("unix_dotdot_after_link", "unix_run_dir_replaced"):
+            self.assertEqual(results[name], "bind_refused", name)
+        for name in ("permit_noncanonical", "permit_trailing_slash"):
+            self.assertEqual(results[name], "bind_permit_invalid", name)
 
 
 class SubprocessTests(unittest.TestCase):
@@ -670,6 +688,47 @@ attempt("utime_inside", lambda: os.utime(os.path.join(state, "ok.txt")))
         for name in ("linked", "sym"):
             self.assertFalse(os.path.lexists(os.path.join(home, name)), name)
 
+    def test_dot_dot_and_trailing_slash_after_a_link(self):
+        # normpath() folds "link/.." and drops a final "/", but the OS resolves both through the link (state/link
+        # points at outside/, so state/link/.. is HOME). The guarded process may make such a link itself.
+        home = make_home(self)
+        setup = self.SETUP + """
+for name, link in (("emptydir", "empty"), ("movedir", "movable")):
+    os.makedirs(os.path.join(outside, name))
+    os.symlink(os.path.join(outside, name), os.path.join(state, link))
+"""
+        results = checks(self, home, setup=setup, body="""
+import sqlite3
+def write(path):
+    with open(path, "w") as handle:
+        handle.write("x")
+def mkdir_with_dir_fd():
+    fd = os.open(state, os.O_RDONLY)
+    try:
+        os.mkdir(os.path.join("link", "..", "fd_escaped"), dir_fd=fd)
+    finally:
+        os.close(fd)
+up = os.path.join(state, "link", "..")
+attempt("open_dotdot", lambda: write(os.path.join(up, "escaped.txt")))
+attempt("mkdir_dotdot", lambda: os.mkdir(os.path.join(up, "escaped_dir")))
+attempt("mkdir_dir_fd_dotdot", mkdir_with_dir_fd)
+attempt("sqlite_dotdot", lambda: sqlite3.connect(os.path.join(up, "escaped.sqlite")).close())
+attempt("rmdir_trailing_slash", lambda: os.rmdir(os.path.join(state, "empty") + "/"))
+attempt("rename_trailing_slash", lambda: os.rename(os.path.join(state, "movable") + "/", os.path.join(state, "moved")))
+attempt("own_link", lambda: os.symlink(outside, os.path.join(state, "own")))
+attempt("open_dotdot_own_link", lambda: write(os.path.join(state, "own", "..", "escaped2.txt")))
+attempt("dotdot_inside", lambda: write(os.path.join(state, "tree", "..", "ok.txt")))
+attempt("mkdir_trailing_slash_inside", lambda: os.mkdir(os.path.join(state, "newdir") + "/"))
+attempt("remove_the_link_itself", lambda: os.remove(os.path.join(state, "empty")))
+""")
+        for name in ("open_dotdot", "mkdir_dotdot", "mkdir_dir_fd_dotdot", "sqlite_dotdot", "rmdir_trailing_slash",
+                     "rename_trailing_slash", "open_dotdot_own_link"):
+            self.assertEqual(results[name], "write_outside_roots", name)
+        for name in ("own_link", "dotdot_inside", "mkdir_trailing_slash_inside", "remove_the_link_itself"):
+            self.assertEqual(results[name], "ok", name)
+        self.assertEqual(sorted(os.listdir(home)), [".local", "outside"])
+        self.assertEqual(sorted(os.listdir(os.path.join(home, "outside"))), ["emptydir", "file", "movedir"])
+
     def test_calls_without_their_own_audit_event(self):
         # CPython raises no audit event for os.mkfifo or os.mknod; arm() wraps them so that they do.
         home = make_home(self)
@@ -702,6 +761,24 @@ results["wrapped"] = os.mkfifo is posix.mkfifo and os.mkfifo.__module__ == "beta
         self.assertEqual(sorted(os.listdir(os.path.join(home, "outside"))), ["file"])
         for name in ("fifo_out", "fifo_posix", "node_out"):
             self.assertFalse(os.path.lexists(os.path.join(home, name)), name)
+
+    def test_sqlite_uri_names_are_refused_whatever_the_uri_flag(self):
+        # The event does not say whether URIs are on: without SQLITE_USE_URI, uri=False opens "file::memory:"
+        # as a file of that name in the cwd (here outside the roots).
+        home = make_home(self)
+        results = checks(self, home, setup=self.SETUP, body="""
+import sqlite3
+os.chdir(outside)
+attempt("default", lambda: sqlite3.connect("file::memory:").close())
+attempt("uri_false", lambda: sqlite3.connect("file::memory:?mode=rwc", uri=False).close())
+attempt("uri_true", lambda: sqlite3.connect("file::memory:", uri=True).close())
+attempt("memory", lambda: sqlite3.connect(":memory:").close())
+attempt("empty", lambda: sqlite3.connect("").close())
+""")
+        for name in ("default", "uri_false", "uri_true"):
+            self.assertEqual(results[name], "write_outside_roots", name)
+        self.assertEqual((results["memory"], results["empty"]), ("ok", "ok"))
+        self.assertEqual(sorted(os.listdir(os.path.join(home, "outside"))), ["file"])
 
     def test_sqlite_cannot_attach_vacuum_into_or_load_extensions(self):
         home = make_home(self)

@@ -253,6 +253,16 @@ class FileRuleTests(_RepoCase):
     def test_csv_export(self):
         self.plant("out/practice.csv", "a,b\n1,2\n", code="data_file", force=True)
 
+    def test_long_s_suffix_variants(self):
+        # Forbidden names compare with str.casefold(): APFS here matches U+017F (long s) to "s", so
+        # out/practice.c\u017fv opens as out/practice.csv.
+        for rel, code in (("out/practice.c\u017fv", "data_file"), ("data/commands.j\u017fonl", "jsonl_file"),
+                          ("state/x.\u017fqlite3", "sqlite_file"), ("state/x.db-\u017fhm", "sqlite_file"),
+                          ("conf/id_r\u017fa", "key_file")):
+            with self.subTest(rel=rel):
+                self.setUp()
+                self.plant(rel, "a,b\n1,2\n", code=code, force=True)
+
     def test_oversize(self):
         self.plant("docs/notes.md", "synthetic line\n" * 40000, code="oversize")
 
@@ -444,6 +454,38 @@ class ContentRuleTests(_RepoCase):
                 rc, out = self.scan("--staged")
                 self.assertIn("<name withheld>", out)
 
+    def test_withheld_path_hides_runner_named_directories_and_id_files(self):
+        # Any component may carry data: the whole path is withheld, and identifier or data-path content
+        # withholds it too. plant() checks in both modes that neither the name nor the id prints.
+        name = RUNNER_NAMES[1]
+        cases = (("runner_record", f"notes/{name}/card.txt", f'row = {{"runnerName": "{name}"}}\n'),
+                 ("market_id", f"notes/{name}.txt", f"see {MARKET_2015}\n"),
+                 ("event_id", f"notes/{name}/ids.txt", f"event {EVENT}\n"),
+                 ("data_path_text", f"docs/{name}.md", f"path: {DATA_TEXT_PATH}\n"))
+        for code, rel, content in cases:
+            with self.subTest(code=code):
+                self.setUp()
+                self.plant(rel, content, name, MARKET_2015, EVENT, DATA_SHA, code=code)
+
+    def test_withheld_path_shows_only_a_listed_suffix(self):
+        # A name can end in a word rather than a file type (a runner name with a dot for the space). A
+        # withheld path shows a suffix only from the scanner's fixed list, compared exactly, so the word
+        # never prints, in the tree scan or the staged one.
+        name = RUNNER_NAMES[1]
+        word = name.split()[-1]
+        content = f'row = {{"runnerName": "{name}"}}\n'
+        cases = ((name.replace(" ", "."), ""), (f"card.{word.lower()}", ""), (f"{name}.MD", ""),
+                 (f"{name}.md", ".md"), (f"{name}.csv", ".csv"))
+        for base, suffix in cases:
+            with self.subTest(base=base):
+                self.setUp()
+                self.plant(f"notes/{base}", content, name, word, word.lower(), code="runner_record",
+                           force=True)
+                for mode in ("--staged", None):
+                    rc, out = self.scan(*([mode] if mode else []))
+                    # Index entries: README.md, notes/<base>, pkg/module.py.
+                    self.assertIn(f"FAIL runner_record <name withheld>{suffix}:1 (entry 2)", out)
+
     def test_private_key_header(self):
         self.plant("conf/notes.txt", PEM_KEY + "\nAAAA\n", PEM_KEY, code="private_key")
 
@@ -468,8 +510,10 @@ class ContentRuleTests(_RepoCase):
         self.add("pkg/p.py")
         rc, out = self.scan("--staged")
         self.assertEqual(rc, 1)
-        self.assertIn("FAIL market_id pkg/p.py:7 ", out)
+        # Index entries: README.md, pkg/module.py, pkg/p.py; the entry number identifies the withheld path.
+        self.assertIn("FAIL market_id <name withheld>.py:7 (entry 3)", out)
         self.assertNotIn(MARKET_2015, out)
+        self.assertNotIn("pkg/p.py", out)
 
 
 class ModeTests(_RepoCase):

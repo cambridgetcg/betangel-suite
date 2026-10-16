@@ -2,7 +2,11 @@
 
 It keeps licensed Betfair data, real identifiers and secrets out of git. On
 any finding it exits 1 and prints only a rule code, a redacted path, a line
-number and an entry number. It never prints the text that matched.
+number and an entry number. It never prints the text that matched. When the
+file may hold data (a data-file, runner, identifier or data-path finding)
+the whole path is withheld, and the entry number, the file's position in the
+scan, identifies it. A withheld path shows its suffix only when the suffix is
+on a fixed list (SHOWN_SUFFIXES), never a word that may come from the name.
 
 Run it with the fixed interpreter, standard library only:
 
@@ -29,10 +33,11 @@ Safety. The scanner refuses (exit 2) to run with a root inside betangel-data
 or a *.noindex directory. It never follows a symbolic link, never reads a
 path with a data-root component, and reads working-tree files with O_NOFOLLOW.
 Protected names match in any case: data-root components, forbidden
-directories, betangel-research copies, and betangel-data in a link target
-or text are compared with str.casefold(), because the lab's APFS volume
-folds case and matches U+017F (long s) to "s". The docs/synthetic/ and
-size allowlists stay exact, so a case variant fails closed.
+directories, forbidden file names and suffixes, betangel-research copies,
+and betangel-data in a link target or text are compared with
+str.casefold(), because the lab's APFS volume folds case and matches
+U+017F (long s) to "s". The docs/synthetic/ and size allowlists stay
+exact, and the media allowlist is not casefolded, so a variant fails closed.
 
 Allowlists live in this file only and change through a reviewed PR (Astra
 reviews the scanner, DESIGN.md 3.9). There is no inline suppression comment.
@@ -90,16 +95,18 @@ RULES = {
     "bootstrap_code": "suite bootstrap-code URL fragment",
 }
 
-# File-level codes whose file name may itself carry data, and content codes
-# that mark runner data (a runner name in a path is not redacted): the
-# basename is withheld. An id rule firing on the path itself (line 0)
-# withholds it too.
+# File-level codes whose path may itself carry data, and content codes that
+# mark runner data (a runner name in a path is not redacted): the whole path
+# is withheld, since any directory may be named after a runner or a market.
+# An identifier or data-path finding, in the content or on the path itself,
+# withholds it too. The entry number still identifies the file.
 _WITHHOLD_NAME = frozenset({
     "archive_member", "sqlite_file", "jsonl_file", "data_file", "key_file",
     "image_outside_synthetic", "binary_file", "oversize", "forbidden_dir",
     "data_path", "upstream_copy", "runner_table", "runner_record", "stream_record",
 })
 _PATH_ID_CODES = ("market_id", "event_id", "member_path")
+_WITHHOLD_CONTENT = frozenset(_PATH_ID_CODES) | {"data_path_text"}
 
 # ---------------------------------------------------------------- path rules
 
@@ -148,7 +155,7 @@ def _path_codes(rel: str) -> list:
     codes = []
     parts = rel.rstrip("/").split("/")
     dirs, name = parts[:-1], parts[-1]
-    low = name.lower()
+    low = name.casefold()  # APFS folds U+017F too: x.c\u017fv opens as x.csv
     ext = os.path.splitext(low)[1]
     synthetic = rel.startswith(SYNTHETIC_DIR)
     if any(_is_data_component(p) for p in parts):
@@ -671,16 +678,19 @@ def _default_root() -> str:
 
 _HEX_RUN = re.compile(r"[0-9a-fA-F]{16,}")
 _DIGIT_RUN = re.compile(r"[0-9]{5,}")
+# The only suffixes a withheld path still shows: the scanner's own suffix sets plus common code and
+# text suffixes. Any other suffix may be a word of the name (a runner's, say), so it is dropped.
+# Compared exactly: a case variant shows no suffix.
+SHOWN_SUFFIXES = (ARCHIVE_EXT | SQLITE_EXT | JSONL_EXT | DATA_EXT | KEY_EXT | IMAGE_EXT | AUDIO_EXT
+                  | {".sqlite", ".py", ".md", ".txt", ".json", ".sh", ".js", ".mjs", ".css", ".html",
+                     ".toml", ".yml", ".yaml", ".cfg", ".ini", ".swift"})
 
 
 def _shown_path(rel: str, withhold_name: bool) -> str:
+    if withhold_name:  # every component may carry data
+        ext = os.path.splitext(rel.rstrip("/").rpartition("/")[2])[1]
+        return "<name withheld>" + (ext if ext in SHOWN_SUFFIXES else "")
     shown = _DIGIT_RUN.sub("<n>", _HEX_RUN.sub("<hex>", rel.rstrip("/")))
-    if withhold_name:
-        head, _, base = shown.rpartition("/")
-        ext = os.path.splitext(base)[1]
-        if not re.fullmatch(r"\.[A-Za-z0-9-]{1,12}", ext):
-            ext = ""
-        shown = (head + "/" if head else "") + "<name withheld>" + ext
     return "".join(c if 32 <= ord(c) < 127 else "?" for c in shown)
 
 
@@ -696,8 +706,7 @@ def _report(results, mode: str) -> int:
         if not found:
             continue
         files_with += 1
-        withhold = any(c in _WITHHOLD_NAME or (line == 0 and c in _PATH_ID_CODES)
-                       for line, c in found)
+        withhold = any(c in _WITHHOLD_NAME or c in _WITHHOLD_CONTENT for _line, c in found)
         shown = _shown_path(rel, withhold)
         by_code = {}
         for line, code in sorted(set(found)):

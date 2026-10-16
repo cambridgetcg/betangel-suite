@@ -51,7 +51,9 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   market-id, event-id and member-path shapes outside the reserved namespace, runner-name tables
   and records, private-key and PEM headers, bearer tokens, secret-looking values, provider tokens
   and bootstrap-code URLs. It prints a rule code, a redacted path and a line number, never the
-  matched text. `--list-rules` lists the codes.
+  matched text. When the file may hold data, the whole path is withheld and an entry number
+  identifies it; only a suffix on the scanner's fixed list (its own file-type suffixes and common
+  code and text ones) is still shown. `--list-rules` lists the codes.
 - **`tools/pre-commit`** runs the scanner on the staged tree and blocks the commit. Install it
   with `ln -s ../../tools/pre-commit .git/hooks/pre-commit`; never bypass it.
 - **The engine** maps upstream exceptions to closed error codes at the `rx.py` boundary and
