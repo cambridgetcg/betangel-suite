@@ -2,14 +2,13 @@
 ssh-session, uisnap and release (Phase 0c); catalogue, selfcheck, diagnose and ledger-summary refuse with
 not_implemented.
 
-bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop and vendor,
-checked the run marker before main() is called (test is checked too: Nuance's answer to Q-N14). main()
-checks the command's arguments first, then creates TMPDIR (0700, through the writer helper) before any
-handler runs (DESIGN.md 3.6, 6.8), so SQLite never falls back to a system temp directory. vendor and stop
-are the exceptions: vendor must work before the deps clone exists and never imports upstream (which the
-writer helper's path_guard needs); stop only talks to the control socket. Neither makes temporary files.
-release is the third: it writes only the release copy (guard mode release) and never needs upstream.
-Output is codes and counts only.
+bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop, checked the run
+marker before main() is called (test and vendor are checked too: Nuance's answers to Q-N14). main() checks the
+command's arguments first, then creates TMPDIR (0700, through the writer helper) before any handler runs
+(DESIGN.md 3.6, 6.8), so SQLite never falls back to a system temp directory. vendor and stop are the exceptions:
+vendor must work before the deps clone exists and never imports upstream (which the writer helper's path_guard
+needs); stop only talks to the control socket. Neither makes temporary files. release is the third: it writes
+only the release copy (guard mode release) and never needs upstream. Output is codes and counts only.
 
     serve [--port N]   the engine in synthetic mode on 127.0.0.1 (config port; N = 0 picks a free port);
                        prints "serving port=<n>", never a bootstrap code or token
@@ -35,7 +34,8 @@ Output is codes and counts only.
                        the unittest suite (DESIGN.md 11): the fast tier, plus the heavy tier with --heavy; the test
                        modules run in N worker interpreters (default TEST_JOBS, -j 1 none), whole modules each.
                        Both tiers refuse while the run marker exists (run_marker_present or
-                       run_marker_unreadable; Nuance's answer to Q-N14), before any test is loaded
+                       run_marker_unreadable; Nuance's answer to Q-N14), before any test is loaded, and
+                       a run stops before its next test, or its next module, once the marker appears
 
 serve, open, ssh-session and stop import socket and http only inside their handlers (test loads the control
 socket's module for its engine-lock check), so no other command loads them.
@@ -51,9 +51,10 @@ from .errors import SuiteError
 
 COMMANDS = ("serve", "open", "ssh-session", "stop", "catalogue", "selfcheck", "diagnose", "ledger-summary",
             "release", "test", "uisnap", "vendor")
-# Adaptation E. stop only reduces activity (DESIGN 3.9 rule 6). vendor starts no engine and writes nothing
-# under ~/betangel-data. test refuses during a run like the other commands (Nuance's answer to Q-N14).
-NO_RUN_MARKER_CHECK = ("stop", "vendor")
+# Adaptation E. stop only reduces activity (DESIGN 3.9 rule 6), so only stop skips the check. test and vendor
+# refuse during a run like the other commands (Nuance's answers to Q-N14: "stop stays exempt", and "test and
+# vendor refuse under the marker").
+NO_RUN_MARKER_CHECK = ("stop",)
 NO_TMPDIR = ("stop", "vendor", "release")         # they create no temporary files and must not need upstream
 REPO_ROOT = guard.REPO_ROOT
 VIA_SSH_ENV = "SUITE_VIA_SSH"                     # set by bin/suite: "1" for ssh-session after its SSH checks, else "0"
@@ -195,19 +196,23 @@ def parse_test_args(args, version):
 def _test(args):
     import unittest
     global _test_tier
+    from . import config, runmarker
     verbosity, pattern, _test_tier, jobs = parse_test_args(args, sys.version_info)
     from . import rx    # noqa: F401  (verifies the pin and imports upstream under the armed guard)
     from .api import control
+    marker = runmarker.marker_path(config.load())
     before, running_before = state_listing(), control.engine_running()
     started = time.monotonic()
     tests = _test_loader(pattern).discover(start_dir=os.path.join(REPO_ROOT, "tests"), top_level_dir=REPO_ROOT)
     modules = _test_modules(tests)
     workers = min(jobs, len(modules or ()))
     if workers > 1:
-        passed = _run_workers(modules, workers, verbosity, pattern)
+        passed, stopped = _run_workers(modules, workers, verbosity, pattern, marker)
     else:
         workers = 1
-        passed = unittest.TextTestRunner(verbosity=verbosity).run(tests).wasSuccessful()
+        resultclass = marker_stop_result(unittest.TextTestResult, marker)
+        result = unittest.TextTestRunner(verbosity=verbosity, resultclass=resultclass).run(tests)
+        passed, stopped = result.wasSuccessful(), result.run_marker
     sys.stderr.write("runtime_s=%.1f python=%d.%d tier=%s jobs=%d\n"
                      % (time.monotonic() - started, *sys.version_info[:2], _test_tier, workers))
     if unexplained_changes(before, state_listing(), running_before, control.engine_running()):
@@ -216,7 +221,37 @@ def _test(args):
         # apart (unexplained_changes).
         sys.stderr.write("refused:state_root_changed\n")
         return 1
+    if stopped is not None:
+        sys.stderr.write("refused:run_marker_%s\n" % stopped)
+        return 2
     return 0 if passed else 1
+
+
+def marker_stop_result(base, path):
+    """A unittest result class (a subclass of base) that ends the run before its next test once the run marker at
+    path is present or cannot be checked (Nuance's PR #4 review, item 14; DESIGN.md 6.8).
+
+    bin/_launch.py checks the marker once, before the run. This checks it again after every test, so a run that
+    Nuance announces while the tests run starts no further test. A test that is running when the marker appears
+    still runs to its end, with anything it started. run_marker says why the run stopped (None: it did not), and a
+    stopped run is never successful, even when every test it ran passed. The parallel run's workers use it too.
+    """
+    from . import runmarker
+
+    class MarkerStopResult(base):
+        run_marker = None
+
+        def stopTest(self, test):
+            super().stopTest(test)
+            if self.run_marker is None:
+                self.run_marker = runmarker.state(path)
+                if self.run_marker is not None:
+                    self.stop()
+
+        def wasSuccessful(self):
+            return self.run_marker is None and super().wasSuccessful()
+
+    return MarkerStopResult
 
 
 def _test_loader(pattern):
@@ -245,13 +280,15 @@ def _test_modules(suite):
     return found
 
 
-# A worker of the parallel run: this checkout on sys.path, then cli.test_worker (argv: root, tier, verbosity, pattern).
+# A worker of the parallel run: this checkout on sys.path, then cli.test_worker (argv: root, tier, verbosity, pattern,
+# run marker path).
 _WORKER = ("import sys\nsys.path.append(sys.argv[1])\nfrom betangel_suite import cli\n"
-           "sys.exit(cli.test_worker(sys.argv[2], int(sys.argv[3]), sys.argv[4] or None))\n")
+           "sys.exit(cli.test_worker(sys.argv[2], int(sys.argv[3]), sys.argv[4] or None, sys.argv[5]))\n")
 
 
-def _run_workers(modules, count, verbosity, pattern):
-    """Run each test module whole in one of count worker interpreters; True when every module passed.
+def _run_workers(modules, count, verbosity, pattern, marker):
+    """Run each test module whole in one of count worker interpreters; (True when every module passed, why the run
+    stopped: None, or the run marker's state).
 
     Each worker is a child of this runner like any test child (this interpreter with -I -S -B, this environment,
     so the same TMPDIR and network switch; the guard's runner_argv_ok), arms its own test-mode guard by importing
@@ -259,26 +296,36 @@ def _run_workers(modules, count, verbosity, pattern):
     workers. The modules tests.SLOW_FIRST names go first, so no worker is left with a long tail. Each module's
     output is printed when it finishes; then one summary in unittest's own words. The state-root check and the
     runtime line stay with this process.
+
+    The run marker at marker is checked before each module is sent, and each worker checks it before each module
+    and after each test (marker_stop_result). Once it is present or cannot be checked, no further module or test
+    starts; the tests then running finish first. A stopped run is not successful.
     """
     import json
     import select
     import subprocess
+    from . import runmarker
     hints = tuple(getattr(sys.modules.get("tests"), "SLOW_FIRST", ()))
     pending = sorted(modules, key=lambda name: (hints.index(name) if name in hints else len(hints),
                                                 modules.index(name)))
     started = time.monotonic()
     totals = dict.fromkeys(("run", "failures", "errors", "skipped", "expected_failures", "unexpected_successes"), 0)
     passed = True
+    stopped = None
     busy = {}
     workers = []
     try:
         for _ in range(count):
             worker = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", _WORKER, REPO_ROOT, _test_tier,
-                                       str(verbosity), pattern or ""], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+                                       str(verbosity), pattern or "", marker],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE)
             workers.append(worker)
 
         def assign(worker):
-            if pending:
+            nonlocal stopped
+            if stopped is None and pending:
+                stopped = runmarker.state(marker)
+            if pending and stopped is None:
                 busy[worker] = pending.pop(0)
                 worker.stdin.write((busy[worker] + "\n").encode("ascii"))
                 worker.stdin.flush()
@@ -306,10 +353,12 @@ def _run_workers(modules, count, verbosity, pattern):
                 for key in totals:
                     totals[key] += report[key]
                 passed = passed and report["ok"]
+                stopped = stopped or report["run_marker"]
                 assign(worker)
-        for module in pending:                  # left over only when every worker failed
-            sys.stderr.write("worker_failed module=%s\n" % module)
-            passed = False
+        if stopped is None:
+            for module in pending:              # left over only when every worker failed
+                sys.stderr.write("worker_failed module=%s\n" % module)
+                passed = False
     finally:
         for worker in workers:
             if worker.stdin and not worker.stdin.closed:
@@ -326,19 +375,24 @@ def _run_workers(modules, count, verbosity, pattern):
     details = ["%s=%d" % (label, totals[key]) for key, label in (
         ("failures", "failures"), ("errors", "errors"), ("skipped", "skipped"),
         ("expected_failures", "expected failures"), ("unexpected_successes", "unexpected successes")) if totals[key]]
+    passed = passed and stopped is None
     sys.stderr.write(("OK" if passed else "FAILED") + (" (%s)" % ", ".join(details) if details else "") + "\n")
-    return passed
+    return passed, stopped
 
 
-def test_worker(tier, verbosity, pattern):
+def test_worker(tier, verbosity, pattern, marker):
     """One worker of the parallel run (_run_workers): run the test modules named on stdin, one at a time, and answer
     each with one JSON line of counts and its unittest output. fd 1 is pointed at stderr first, so nothing a test
-    or its children print can mix into the answers, which go to a copy of the original stdout."""
+    or its children print can mix into the answers, which go to a copy of the original stdout.
+
+    The run marker at marker is checked before each module, which is then not run, and after each test
+    (marker_stop_result); the answer's run_marker says whether the module stopped for it."""
     global _test_tier
     import io
     import json
     import unittest
-    if tier not in TEST_TIERS:
+    from . import runmarker
+    if tier not in TEST_TIERS or not isinstance(marker, str) or not os.path.isabs(marker):
         raise SuiteError("bad_arguments")
     _test_tier = tier
     answers = os.fdopen(os.dup(1), "w", encoding="utf-8")
@@ -351,18 +405,22 @@ def test_worker(tier, verbosity, pattern):
             return 0
         module = line.strip()
         stream = io.StringIO()
-        result = unittest.TextTestRunner(stream=stream, verbosity=verbosity)._makeResult()
-        result.startTestRun()
-        try:
-            loader.loadTestsFromName(module)(result)
-        finally:
-            result.stopTestRun()
-        result.printErrors()
+        resultclass = marker_stop_result(unittest.TextTestResult, marker)
+        result = unittest.TextTestRunner(stream=stream, verbosity=verbosity, resultclass=resultclass)._makeResult()
+        result.run_marker = runmarker.state(marker)
+        if result.run_marker is None:
+            result.startTestRun()
+            try:
+                loader.loadTestsFromName(module)(result)
+            finally:
+                result.stopTestRun()
+            result.printErrors()
         answers.write(json.dumps({
             "module": module, "output": stream.getvalue(), "run": result.testsRun,
             "failures": len(result.failures), "errors": len(result.errors), "skipped": len(result.skipped),
             "expected_failures": len(result.expectedFailures),
-            "unexpected_successes": len(result.unexpectedSuccesses), "ok": result.wasSuccessful()}) + "\n")
+            "unexpected_successes": len(result.unexpectedSuccesses), "ok": result.wasSuccessful(),
+            "run_marker": result.run_marker}) + "\n")
         answers.flush()
 
 

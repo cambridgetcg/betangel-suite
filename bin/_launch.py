@@ -11,7 +11,7 @@ matters and is part of the design (DESIGN.md 3.6, 6.8, 10):
      can import betangel_research, and install the code-only exception hooks;
   4. if the root lies under ~/.local/share/betangel-suite/app, verify it as a release copy against its
      RELEASE.json (betangel_suite.release, I-18) and refuse any mismatch; any other root is a working checkout;
-     then check TMPDIR against roots.tmp_dir(command), then (for every command except stop and vendor, so test
+     then check TMPDIR against roots.tmp_dir(command), then (for every command except stop, so test and vendor
      too) load the config and refuse while the run marker exists, before anything is created anywhere;
   5. dispatch to betangel_suite.cli, which creates TMPDIR (0700) before any handler runs.
 

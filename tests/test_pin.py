@@ -202,8 +202,10 @@ class ActivationTests(unittest.TestCase):
     def test_entry_with_dotdot_after_a_link_into_the_research_clone_is_refused(self):
         # The kernel follows a link before it applies "..": with safe/alias -> clone/sub, safe/alias/../sub
         # opens clone/sub. Folding "alias/.." first would judge safe/sub, a real directory outside the clone.
-        # Refused when absolute and when relative (the child's cwd is HOME). The controls keep the same
-        # shape but land outside the clone, through a real directory and through a link, and are allowed.
+        # Refused when absolute and when relative (the child's cwd is HOME). safe/alias/.. with nothing after
+        # it names the clone itself (Astra's #4 and #5 re-reviews), and folding it would judge safe. The
+        # controls keep the same shape but land outside the clone, through a real directory and through a
+        # link, and are allowed.
         home = make_home(self, deps=True)
         research = roots.research_clone(home)
         os.makedirs(os.path.join(research, "sub"))
@@ -214,6 +216,10 @@ class ActivationTests(unittest.TestCase):
         os.symlink(os.path.join(safe, "outside", "deep"), os.path.join(safe, "elsewhere"))
         cases = ((os.path.join(safe, "alias", "..", "sub"), ["research_clone_on_path", "upstream_absent"]),
                  (os.path.join("safe", "alias", "..", "sub"), ["research_clone_on_path", "upstream_absent"]),
+                 (os.path.join(safe, "alias", ".."), ["research_clone_on_path", "upstream_absent"]),
+                 (os.path.join("safe", "alias", ".."), ["research_clone_on_path", "upstream_absent"]),
+                 (os.path.join(".", "safe", "alias", ".."), ["research_clone_on_path", "upstream_absent"]),
+                 (os.path.join(safe, "real", ".."), ["imported", "upstream_loaded"]),
                  (os.path.join(safe, "real", "..", "sub"), ["imported", "upstream_loaded"]),
                  (os.path.join("safe", "elsewhere", "..", "deep"), ["imported", "upstream_loaded"]))
         for entry, expected in cases:

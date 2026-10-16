@@ -8,6 +8,7 @@ refusal is reached before anything newer is needed.
 import ast
 import importlib.util
 import io
+import json
 import os
 import re
 import subprocess
@@ -18,7 +19,9 @@ from unittest import mock
 
 from betangel_suite import cli, guard, pin, roots
 from betangel_suite.errors import SuiteError
-from tests import PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_relayed, run_suite, tree_listing
+import tests
+from tests import (PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_relayed, run_suite, stand_in_marker,
+                   tree_listing)
 
 LAUNCH_PY = os.path.join(ROOT, "bin", "_launch.py")
 SSH = "192.0.2.10 50000 192.0.2.20 22"         # TEST-NET addresses: the checks only test presence
@@ -268,16 +271,43 @@ class StateRootFlagTests(unittest.TestCase):
 
 class ParallelRunnerTests(unittest.TestCase):
     """bin/suite test's worker interpreters (cli._run_workers, cli.test_worker): whole modules in children of the
-    runner (the guard's runner_argv_ok), each module's output, then one summary in unittest's words."""
+    runner (the guard's runner_argv_ok), each module's output, then one summary in unittest's words. The workers
+    check the runner's real marker (tests.RUN_MARKER), or a stand-in for it (tests.stand_in_marker)."""
 
     def run_workers(self, modules, count, pattern=None):
+        """(passed, output); the run must not have stopped for the marker."""
+        passed, stopped, output = self.run_workers_with_marker(modules, count, pattern)
+        self.assertIsNone(stopped, output)
+        return passed, output
+
+    def run_workers_with_marker(self, modules, count, pattern=None):
         saved = sys.stderr
         sys.stderr = io.StringIO()
         try:
-            passed = cli._run_workers(modules, count, 1, pattern)
-            return passed, sys.stderr.getvalue()
+            passed, stopped = cli._run_workers(modules, count, 1, pattern, tests.RUN_MARKER)
+            return passed, stopped, sys.stderr.getvalue()
         finally:
             sys.stderr = saved
+
+    def test_no_module_goes_to_a_worker_while_the_marker_exists(self):
+        # Nuance's PR #4 review, item 14: a run announced while the tests run starts no further module.
+        for present, state in ((True, "present"), (False, "unreadable")):
+            with self.subTest(present=present):
+                stand_in_marker(self, present)
+                passed, stopped, output = self.run_workers_with_marker(["tests.test_layout", "tests.test_roots"], 2)
+                self.assertEqual((passed, stopped), (False, state))
+                self.assertRegex(output, r"\nRan 0 tests in [0-9.]+s \(2 modules, 2 workers\)\n\nFAILED\n\Z")
+                self.assertNotIn("worker_failed", output)
+
+    def test_a_worker_checks_the_marker_before_each_module(self):
+        # A module sent just before the marker appeared is answered without running a test.
+        stand_in_marker(self, True)
+        worker = subprocess.run([PYTHON, "-I", "-S", "-B", "-c", cli._WORKER, ROOT, "fast", "1", "", tests.RUN_MARKER],
+                                input=b"tests.test_layout\n", capture_output=True, timeout=120)
+        self.assertEqual(worker.returncode, 0, worker.stderr[-2000:])
+        answer = json.loads(worker.stdout.decode("utf-8"))
+        self.assertEqual((answer["module"], answer["run"], answer["ok"], answer["run_marker"]),
+                         ("tests.test_layout", 0, False, "present"))
 
     def test_modules_run_whole_in_workers_with_one_summary(self):
         modules = ["tests.test_layout", "tests.test_roots"]

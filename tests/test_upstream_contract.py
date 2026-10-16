@@ -11,7 +11,9 @@ calls get their signatures and the result shapes the suite reads. Everything is 
 suite code reaches it; this file never imports betangel_research.
 
 CoverageTests fails when suite code uses an rx.<module>.<name> that CONTRACT_NAMES does not list, so each new
-upstream name brings its contract with it. The later-phase names of DESIGN.md 4.5 are added as code uses them.
+upstream name brings its contract with it. It reads only that spelling; the I-10 rule (tests/test_ast_boundary.py)
+refuses every other, such as `from .rx import ticks` or `t = rx.ticks`. The later-phase names of DESIGN.md 4.5 are
+added as code uses them.
 """
 
 import ast
@@ -198,6 +200,41 @@ class OtherPhase0NameTests(unittest.TestCase):
                                                  ("unreliable_ok", K, False), ("stamp", K, None)])
         made = cache(key_type="historical", app_key_slot=None, source="recording")     # as engine and synthetic do
         self.assertEqual(made.markets(), [])
+
+    def test_market_book_cache_snapshot_shape(self):
+        # engine._snapshot and engine.build_frame read the snapshot's status, inplay, version, invalid_reason and
+        # runners, and from each runner entry status, ltp, total_matched, back and lay ([price, size] pairs, best
+        # first). total_matched is None after an image that has no tv: the cache never carries tv across an
+        # image (Nuance's PR #4 review, item 2), and the engine then sends tv_p as null. Reserved synthetic ids.
+        market_id, first, second = "1.999000001", 90000001, 90000002
+        definition = {"status": "OPEN", "inPlay": False, "betDelay": 0, "version": 7,
+                      "marketTime": "2015-06-01T14:00:00.000Z",
+                      "runners": [{"id": first, "status": "ACTIVE", "sortPriority": 1},
+                                  {"id": second, "status": "ACTIVE", "sortPriority": 2}]}
+        image = {"op": "mcm", "clk": "1", "pt": JUNE_1_2PM_NS // 1_000_000 - 60_000, "mc": [
+            {"id": market_id, "img": True, "marketDefinition": definition,
+             "rc": [{"id": first, "atb": [[2.0, 10.0], [1.99, 3.0]], "atl": [[2.02, 5.0]], "ltp": 2.0,
+                     "trd": [[2.0, 4.0]]}]}]}
+        cache = rx.book.MarketBookCache(key_type="historical", app_key_slot=None, source="recording")
+        cache.apply(image)
+        snapshot = cache.snapshot(market_id, unreliable_ok=True)
+        self.assertLessEqual({"status", "inplay", "version", "invalid_reason", "runners"}, set(snapshot))
+        self.assertEqual((snapshot["status"], snapshot["inplay"], snapshot["version"], snapshot["invalid_reason"]),
+                         ("OPEN", False, 7, None))
+        self.assertEqual(sorted(snapshot["runners"]), [str(first), str(second)])
+        entry = snapshot["runners"][str(first)]
+        self.assertLessEqual({"status", "ltp", "total_matched", "back", "lay"}, set(entry))
+        self.assertEqual((entry["status"], entry["ltp"], entry["total_matched"], entry["back"], entry["lay"]),
+                         ("ACTIVE", 2.0, None, [[2.0, 10.0], [1.99, 3.0]], [[2.02, 5.0]]))
+        quiet = snapshot["runners"][str(second)]
+        self.assertEqual((quiet["status"], quiet["ltp"], quiet["total_matched"], quiet["back"], quiet["lay"]),
+                         ("ACTIVE", None, None, [], []))
+        cache.apply({"op": "mcm", "clk": "2", "pt": image["pt"] + 100,
+                     "mc": [{"id": market_id, "rc": [{"id": first, "tv": 4.0}]}]})
+        self.assertEqual(cache.snapshot(market_id, unreliable_ok=True)["runners"][str(first)]["total_matched"], 4.0)
+        image = dict(image, clk="3", pt=image["pt"] + 200)
+        cache.apply(image)
+        self.assertIsNone(cache.snapshot(market_id, unreliable_ok=True)["runners"][str(first)]["total_matched"])
 
     def test_strict_json_loads(self):
         # api/server.py parses request bodies with it: duplicate keys and non-finite numbers are refused.
