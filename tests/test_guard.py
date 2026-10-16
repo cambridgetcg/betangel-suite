@@ -1618,6 +1618,32 @@ results["lock_is_file"] = os.path.isfile(lock) and not os.path.islink(lock)
                 self.assertEqual(results[name], "run_lock_protected", (mode, name))
             self.assertEqual((results["remove_spare"], results["lock_is_file"]), ("ok", True), mode)
 
+    def test_the_suite_never_creates_or_removes_the_marker_or_the_wrappers_lock(self):
+        # Nuance's PR #2 review, item 13: one unlink of lab-runs/ACTIVE lets require_absent pass mid-run. Only her
+        # wrapper creates or removes ACTIVE and its own lab-runs/LOCK. ~/.local/state/lab-runs lies outside every
+        # write root, so the hook refuses each of these in every mode, whether the files exist or not.
+        for mode in ("engine", "test", "vendor"):
+            home = make_home(self)
+            lab_runs = os.path.join(home, ".local", "state", "lab-runs")
+            os.mkdir(lab_runs, 0o700)
+            for name in ("ACTIVE", "LOCK"):
+                open(os.path.join(lab_runs, name), "w").close()
+            results = checks(self, home, mode=mode, body="""
+lab_runs = os.path.join(os.environ["HOME"], ".local", "state", "lab-runs")
+active, lock = os.path.join(lab_runs, "ACTIVE"), os.path.join(lab_runs, "LOCK")
+attempt("create_marker", lambda: os.close(os.open(active, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)))
+attempt("truncate_marker", lambda: open(active, "w").close())
+attempt("remove_marker", lambda: os.remove(active))
+attempt("rename_marker", lambda: os.rename(active, active + ".old"))
+attempt("remove_lock", lambda: os.remove(lock))
+attempt("replace_lock", lambda: os.replace(active, lock))
+attempt("make_beside", lambda: os.mkdir(os.path.join(lab_runs, "x")))
+attempt("remove_directory", lambda: os.rmdir(lab_runs))
+""")
+            self.assertEqual(set(results.values()), {"write_outside_roots"}, (mode, results))
+            self.assertEqual(len(results), 8)
+            self.assertEqual(sorted(os.listdir(lab_runs)), ["ACTIVE", "LOCK"])
+
     def test_bin_suite_refuses_before_creating_anything(self):
         # The evidence's own commands: bin/suite test made lab-state/betangel-suite/tmp; an engine command would
         # have used historic-pro/tmp as its TMPDIR.
