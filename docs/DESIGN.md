@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft 0.2, for review (review round 2 applied; see Appendix B). Yu's Phase 0 rulings recorded 2026-10-15 (section 2.2.1). |
+| Status | Draft 0.2, for review (review round 2 applied; see Appendix B). Yu's Phase 0 rulings recorded 2026-10-15, and Yu's Q-Y8 answer 2026-10-16 (section 2.2.1). |
 | Date | 2026-10-15 |
 | Author | lab-Claude (Claude Code session 03026dfa on the lab MacBook Pro) |
 | Reviewers | Nuance (Air Claude, owner of betangel-research), Astra (Codex reviewer) |
@@ -135,12 +135,18 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
 |---|---|
 | R-1 | **Yes.** The suite drives `paper.PaperExchange` directly with its own paper journal, outside `gateway.py`, for paper orders Yu clicks on historical replay. |
 | R-2 | **Yes.** Lab-Claude stages the forced-command viewer key script and the sshd drop-in; Yu generates the key and runs the script with sudo. |
-| R-3 | `user_package_unverified` until Yu checks the package in My Account. |
+| R-3 | **Stated default, accepted.** `user_package_unverified` until Yu checks the package in My Account. The packet recommended neither label; it stated this default, which Yu's "Lets go with what you recommended for all" accepted. |
 | R-4 | **Agreed by Yu.** `~/betangel-data/suite.noindex`. Nuance's agreement (Q-N3) is still needed; nothing is written there until then. |
 | R-5 | **Yes.** A suite-side, display-only SP parser; no `schemas.py` change. Nuance to confirm (Q-N9). |
 | R-6 | **Confirmed.** No rule-generated paper orders in the MVP. Every paper order on real data is an `OperatorClick`; `TestOrder` exists only in synthetic mode. |
-| R-7 | **Practise live v1** by default (`v1-live-mirror` caps, live-parity mode). The `practice` profile is still built and selectable. |
-| Q-Y8 | Lab-Claude merges a PR after the reviewer routed in section 3.9 has accepted it; UI-only PRs merge on Yu's acceptance alone. Yu can veto or revert any merge. Q-N12 (Nuance's agreement to the routing) is still open. |
+| R-7 | **Stated default, accepted: practise live v1** (`v1-live-mirror` caps, live-parity mode). The packet left the choice to Yu and stated this default, which Yu's "Lets go with what you recommended for all" accepted. The `practice` profile is still built and selectable. |
+
+**Q-Y8, who merges: not one of the 2026-10-15 answers.** An earlier version of this table listed a Q-Y8 ruling here, including "Yu can veto or revert any merge". Neither that row nor that sentence has a source in Yu's words, so both are withdrawn (Nuance, PR #1 review, item 10).
+
+- **The packet's line:** "Who merges pull requests (Q-Y8): you, or me after Nuance or Astra has reviewed? And may UI-only changes go in on your approval alone?" It gave no recommendation, so "Lets go with what you recommended for all" did not answer it.
+- **Yu's answer** (2026-10-16, in the lab session): "Its all good :) Merge when sensible".
+- **Lab-Claude's reading of "sensible"** (lab-Claude's, not Yu's words; Yu can override it): lab-Claude merges a PR only when every reviewer routed to it in section 3.9 has accepted the same head SHA, and the tests pass on 3.13 and 3.11 at that SHA. PR #5 also waits for Yu's written approval of proposal 002 (on phase0/viewing), after Nuance's and Astra's reviews of it. The merge order is #1, #2, #4, #5.
+- **The UI-only half.** Yu's answer does not take it up separately, so it is recorded as asked of Yu, not answered. Section 3.9's UI-only rule stays a proposal until then.
 
 **Bet Angel on Yu's Betfair account:** never used (Yu, 2026-10-15), so the design needs no handling for orders or limits shared with Bet Angel. If Bet Angel is ever installed against the account, that needs a fresh review first.
 
@@ -411,10 +417,10 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 
 ### 3.9 Development workflow and the suite's AGENTS.md
 
-- **Branches and PRs.** Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS, so work continues while reviews queue. Review routing is agreed up front (Q-N12, Q-Y8):
+- **Branches and PRs.** Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS, so work continues while reviews queue. Review routing is proposed up front (Q-N12); who merges is Q-Y8 (section 2.2.1):
   - Astra reviews `guard.py`, `rx.py`, `errors.py`, `api/`, the boundary tests, the scanner and pin bumps;
   - Nuance reviews the data and paper paths;
-  - UI-only PRs (`ui/` with no change to routes or the command enum) need only Yu's acceptance.
+  - UI-only PRs (`ui/` with no change to routes or the command enum) need only Yu's acceptance. This is a proposal: Yu's Q-Y8 answer does not take up the UI-only half separately (section 2.2.1).
 - **Collab.** Edit tasks use `root_path=/Users/user/betangel-suite`.
 - **Upstream changes.** Any betangel-research change goes to Nuance as a proposal (section 14).
 - **Yu's feedback channel.** Yu's acceptance and feedback reach lab-Claude only in two ways:
@@ -1550,7 +1556,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 | Q-Y5 | **Practice defaults.** Start at T-10 min; 2x until auto-slow at T-3; pause at the off? One-click on by default, or confirm every order at first? | 1b |
 | Q-Y6 | **Practice loss limit** of £20 a day: useful or annoying? | 1b |
 | Q-Y7 | **Research-corpus months** (2023-2025): keep them hidden (the default, which protects later research)? Or open them, which needs a ruling id with Nuance and Astra and is logged? | Later |
-| Q-Y8 | **Repo workflow.** Lab-Claude pushes branches and opens PRs that Nuance or Astra review (routing in section 3.9). Who merges: you, or lab-Claude after review? May UI-only PRs go on your acceptance alone? | Phase 0 packet |
+| Q-Y8 | **Repo workflow.** Lab-Claude pushes branches and opens PRs that Nuance or Astra review (routing in section 3.9). Who merges: you, or lab-Claude after review? May UI-only PRs go on your acceptance alone? <br>**Answered by Yu on 2026-10-16:** "Its all good :) Merge when sensible". Section 2.2.1 records it, with lab-Claude's reading of "sensible", labelled as lab-Claude's. It was not one of the 2026-10-15 answers; an earlier version listed it there, with "Yu can veto or revert any merge", which has no source in your words. **Asked of you, not answered:** the UI-only half, which your answer does not take up separately. | Answered 2026-10-16, except the UI-only half |
 | Q-Y9 | **Agents and data.** Confirm that agents never see real rows, the viewed-markets ledger or real-data screenshots, and that any exception needs your OK each time, scoped to one problem report. | 1a |
 | Q-Y10 | **Screen Recording: recommended No.** It would be granted to the host terminal (iTerm2) and cover every process under it, and `screencapture` takes the whole display. Any real race on the lab screen would then go into model context, which counts as an upload. `tools/uisnap` gives lab-Claude synthetic screenshots without it. If you still want it, capture would go only through a suite subcommand: that subcommand starts a synthetic-only engine, captures only its own window (`screencapture -l <id>`), and refuses while a real-data engine runs. You would revoke the permission when it is not in use. | Not needed |
 | Q-Y11 | **Browser.** A Safari Private window for the suite on both machines (recommended), or a dedicated profile with no Betfair login, no extensions and no iCloud sync? After data downloads, sign out of historicdata.betfair.com in the lab's Safari. | 1a |
@@ -1586,7 +1592,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| **Review capacity.** Nuance is not starting suite work until c2b3b3 and c2b3b4 are done; each of its tasks needs an Astra round. Lab-Claude carries other workstreams. | Elapsed time set by review latency, not coding. | Lab-done and review-accepted exits; stacked branches; one Phase 0 packet; routing agreed up front; UI-only PRs on Yu's acceptance. |
+| **Review capacity.** Nuance is not starting suite work until c2b3b3 and c2b3b4 are done; each of its tasks needs an Astra round. Lab-Claude carries other workstreams. | Elapsed time set by review latency, not coding. | Lab-done and review-accepted exits; stacked branches; one Phase 0 packet; routing proposed up front; UI-only PRs on Yu's acceptance (proposed; section 2.2.1). |
 | **PRO ingest timing.** It has no date yet and comes after c2b3b3. | Real-data milestones slip. | The synthetic UI is accepted without PRO; M-PRO is its own milestone; Q-N4 and Q-Y16 now. |
 | paper-v1 is deliberately pessimistic: half of displayed size, no credit for cancellations ahead, unknown queues never fill. Practice may teach that resting orders rarely fill. | Skills and expectations are miscalibrated. | Verbatim assumptions, the queue tracker, fill-quality debrief, the R-7 choice, U-7. |
 | About half of races have a non-runner, so there is no official P&L. | Frustration, and pressure for ad hoc fixes. | The exact-case indicative figure, the library filter, U-1. |
