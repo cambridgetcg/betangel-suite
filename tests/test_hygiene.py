@@ -175,10 +175,10 @@ class _RepoCase(unittest.TestCase):
     def add(self, *rels: str, force: bool = False) -> None:
         self.git("add", *(["-f"] if force else []), "--", *rels)
 
-    def scan(self, *args: str, root: str | None = None):
+    def scan(self, *args: str, root: str | None = None, env: dict | None = None, stdin: bytes = b""):
         proc = subprocess.run(
             [sys.executable, "-I", "-S", "-B", str(SCANNER), "--root", root or self.repo, *args],
-            env=self.env, capture_output=True, timeout=120)
+            env=env or self.env, input=stdin, capture_output=True, timeout=120)
         out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
         return proc.returncode, out
 
@@ -763,6 +763,94 @@ class EncodedDataTests(_RepoCase):
             self.write(rel, text)
         self.add(*files)
         self.assert_clean()
+
+
+class FilterAttributeTests(_RepoCase):
+    """A clean filter changes what git stores, so the staged scan never sees the file itself (Nuance's #2
+    review, item 19). Here the "digits" filter turns 0-9 into a-j, which no content rule can see through."""
+
+    def setUp(self):
+        super().setUp()
+        # Written into the file: the test runner's guard lets tests run only a few local git subcommands.
+        with open(os.path.join(self.repo, ".git", "config"), "a") as handle:
+            handle.write('[filter "digits"]\n\tclean = tr 0-9 a-j\n\tsmudge = cat\n')
+
+    def plant_hidden(self) -> None:
+        self.write("notes/a.txt", f"m = '{MARKET_2015}'\n")
+        self.add("notes/a.txt")
+
+    def global_config(self, text: str) -> dict:
+        """The environment for a scan with this global git config (git children of tests keep /dev/null)."""
+        config = os.path.join(self.home, "gitconfig")
+        with open(config, "w") as handle:
+            handle.write(text)
+        return {**self.env, "GIT_CONFIG_GLOBAL": config}
+
+    def staged_out(self, env: dict | None = None) -> str:
+        rc, out = self.scan("--staged", env=env)
+        self.assertEqual(rc, 1, out)
+        self.assert_withheld(out)
+        self.assertNotIn(MARKET_2015, out)
+        self.assertNotIn("market_id", self.codes(out), "the staged blob holds no id: only the attribute shows")
+        return out
+
+    def test_worktree_gitattributes(self):
+        self.write(".gitattributes", "*.txt filter=digits\n")  # never staged: `git add` still reads it
+        self.plant_hidden()
+        # Index entries: README.md, notes/a.txt, pkg/module.py.
+        self.assertIn("FAIL filter_attribute <path withheld>:0 (entry 2)", self.staged_out())
+        self.assert_flags("filter_attribute", (MARKET_2015,), modes=(None,))
+
+    def test_gitattributes_changed_after_staging(self):
+        self.write(".gitattributes", "*.txt filter=digits\n")
+        self.add(".gitattributes")
+        self.plant_hidden()
+        # The worktree copy now sets no filter, but the staged one (what the commit records) does: only
+        # check-attr --cached reads it. (A missing worktree copy would not do: git then reads the index.)
+        self.write(".gitattributes", "*.txt text\n")
+        out = self.staged_out()
+        # Index entries: .gitattributes, README.md, notes/a.txt, pkg/module.py.
+        self.assertIn("FAIL filter_attribute <path withheld>:0 (entry 3)", out)
+        self.assertIn("FAIL filter_attribute <path withheld>:1 (entry 1)", out)
+
+    def test_info_attributes_and_a_global_attributes_file(self):
+        info = os.path.join(self.repo, ".git", "info")
+        os.makedirs(info, exist_ok=True)
+        with open(os.path.join(info, "attributes"), "w") as handle:
+            handle.write("*.txt filter=digits\n")
+        self.plant_hidden()
+        self.assertIn("FAIL filter_attribute <path withheld>:0 (entry 2)", self.staged_out())
+        os.unlink(os.path.join(info, "attributes"))
+        attributes = os.path.join(self.home, "attributes")
+        with open(attributes, "w") as handle:
+            handle.write("*.txt filter=digits\n")
+        env = self.global_config(f"[core]\n\tattributesFile = {attributes}\n")
+        self.assertIn("FAIL filter_attribute <path withheld>:0 (entry 2)", self.staged_out(env))
+
+    def test_gitattributes_lines_that_set_a_filter(self):
+        for line in ("*.dat filter=digits", "[attr]packed filter=digits -diff", "docs/** text filter=x eol=lf"):
+            with self.subTest(line=line):
+                self.setUp()
+                self.plant(".gitattributes", f"# synthetic\n{line}\n", code="filter_attribute")
+                rc, out = self.scan("--staged")
+                self.assertIn("FAIL filter_attribute <path withheld>:2 (entry 1)", out)
+
+    def test_attributes_without_a_filter_stay_clean(self):
+        self.write(".gitattributes", "# filter=digits is not used\n* -filter\n*.txt !filter\n*.sh text eol=lf\n")
+        self.write("notes/a.txt", "synthetic notes\n")
+        self.add(".gitattributes", "notes/a.txt")
+        self.assert_clean()
+
+    def test_a_global_lfs_filter_does_not_block(self):
+        # `git lfs install` writes these driver lines into the global config; no attribute uses them here.
+        env = self.global_config('[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n'
+                                 "\tprocess = git-lfs filter-process\n\trequired = true\n")
+        self.write("notes/a.txt", "synthetic notes\n")
+        self.add("notes/a.txt")
+        for mode in ("--staged", None):
+            with self.subTest(mode=mode or "tree"):
+                rc, out = self.scan(*([mode] if mode else []), env=env)
+                self.assertEqual(rc, 0, out)
 
 
 class WithheldPathTests(_RepoCase):

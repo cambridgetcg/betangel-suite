@@ -122,6 +122,8 @@ RULES = {
     "bootstrap_code": "suite bootstrap-code URL fragment",
     "encoded_blob": "base64, hex or \\xNN-escaped data that decodes to an archive, a zlib stream, "
                     "96+ bytes of binary, or text another rule flags",
+    "filter_attribute": "path git gives a filter driver (clean filter, LFS), or a .gitattributes line "
+                        "that sets one: git stores the filter's output, which the scan never sees",
 }
 
 # Identifier codes that are also checked on the path text itself.
@@ -647,6 +649,11 @@ def _symlink_codes(target: str) -> list:
     return codes
 
 
+# A .gitattributes line that gives a pattern (or an [attr] macro) a filter driver. "-filter" and
+# "!filter" unset it and carry no "=".
+_SETS_FILTER = re.compile(r"(?:^|\s)filter=\S")
+
+
 def _content_codes(rel: str, data: bytes, oversize: bool) -> list:
     """Findings for one entry's bytes: all of it, or the first SNIFF_BYTES of an oversize one.
 
@@ -671,6 +678,9 @@ def _content_codes(rel: str, data: bytes, oversize: bool) -> list:
             found.append((0, "binary_file"))
         return found
     found.extend(_text_findings(text))
+    if rel.rsplit("/", 1)[-1].casefold() == ".gitattributes":
+        found.extend((number, "filter_attribute") for number, line in _lines(text)
+                     if not line.lstrip().startswith("#") and _SETS_FILTER.search(line))
     return found
 
 
@@ -703,6 +713,38 @@ def _is_git_worktree(root: str) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == b"true"
 
 
+def _filtered(rels) -> set:
+    """The paths of rels that git gives a filter driver (a clean filter, or LFS).
+
+    git stores what the clean filter makes of a file, and the scan sees only that, so a filter
+    could hide anything; each such path is a filter_attribute finding. The attribute is read
+    twice: as `git add` reads it (each worktree .gitattributes, or the index's copy where the
+    worktree has none, $GIT_DIR/info/attributes and core.attributesFile), and with --cached
+    (the index's copies only, which the commit records even when the worktree's differ).
+    Configured drivers (filter.<name>.clean, a global filter.lfs) are not read: they act only
+    through an attribute.
+    Paths with a data-root component are left out, so git reads no .gitattributes along them.
+    """
+    names = [rel for rel in rels if not _has_data_component(rel)]
+    if not names:
+        return set()
+    stdin = b"".join(rel.encode("utf-8", "surrogateescape") + b"\0" for rel in names)
+    flagged = set()
+    for cached in ((), ("--cached",)):
+        proc = subprocess.run(
+            [GIT, "-C", ROOT, "check-attr", *cached, "-z", "--stdin", "filter"],
+            input=stdin, capture_output=True, check=False)
+        if proc.returncode != 0:
+            raise Refusal("git_check_attr")
+        fields = proc.stdout.split(b"\0")  # path, attribute, value; one record per path, in order
+        if len(fields) != 3 * len(names) + 1 or fields[-1]:
+            raise Refusal("git_check_attr")
+        for index, rel in enumerate(names):
+            if fields[3 * index + 2] not in (b"unspecified", b"unset"):
+                flagged.add(rel)
+    return flagged
+
+
 def _read_exact(stream, n: int) -> bytes:
     chunks = []
     while n > 0:
@@ -727,6 +769,7 @@ def _staged_entries():
             raise Refusal("git_index_format")
         records.append((fields[0], fields[1], path.decode("utf-8", "surrogateescape")))
     blobs = [r for r in records if r[0] != b"160000"]
+    filtered = _filtered(sorted({rel for _mode, _sha, rel in records}))
     proc = None
     if blobs:
         proc = subprocess.Popen(
@@ -735,6 +778,8 @@ def _staged_entries():
     try:
         for mode, sha, rel in records:
             found = [(0, c) for c in _path_codes(rel)] + _rel_id_codes(rel)
+            if rel in filtered:
+                found.append((0, "filter_attribute"))
             if mode == b"160000":
                 found.append((0, "submodule"))
                 yield rel, found
@@ -833,6 +878,13 @@ def _tree_entry(rel: str):
             found.append((0, "special_file"))
             return rel, found
         found.extend(_content_codes(rel, data, oversize))
+    return rel, found
+
+
+def _with_filter(entry, filtered: set):
+    rel, found = entry
+    if found is not None and rel in filtered:
+        found.append((0, "filter_attribute"))
     return rel, found
 
 
@@ -997,7 +1049,9 @@ def _main(argv) -> int:
             raise Refusal("not_a_git_worktree")
         return _report(_staged_entries(), "staged")
     rels = _tree_rels(args.paths)
-    return _report((_tree_entry(rel) for rel in rels), "paths" if args.paths else "tree")
+    filtered = _filtered(rels) if _is_git_worktree(ROOT) else set()
+    results = (_with_filter(_tree_entry(rel), filtered) for rel in rels)
+    return _report(results, "paths" if args.paths else "tree")
 
 
 def main(argv=None) -> int:
