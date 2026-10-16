@@ -1410,9 +1410,9 @@ Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `cli.p
   - *Measured:* it built in 15 s, rendered a canvas ladder to PNG, and received chunked NDJSON at 100 ms pacing, with no permission prompt.
   - It runs in the lab's logged-in GUI session.
 - **CI-free.** No hosted CI. Tests run on the lab, and Nuance can run them on the Air.
-- **Fixtures.** `tests/fixtures/gen.py` writes synthetic PRO-shaped streams (reserved ids) with suspensions, images, removals, version changes, 503 windows, in-play and CLOSED. It also writes trd dips for the conservative-parity property, rising trd after a re-seed point, non-finite SP sizes and prices, and markets with no parseable marketTime. Also:
+- **Fixtures.** `betangel_suite/synthetic.py` generates, and `tests/fixtures/gen.py` writes, synthetic PRO-shaped streams (reserved ids) with images, suspensions, removals, version changes, in-play and CLOSED. Traded volume only rises, so there is rising trd after any re-seed point. The `nonfinite_sp` option writes non-finite `spn` and `spf` strings and a non-finite `spl` size, and `no_market_time` writes markets with no marketTime. It does **not** yet write 503 windows, trd dips, non-finite `spb` or `spl` prices, or settlement zeroing (section 11.1). Also:
   - a synthetic TAR in the documented member layout (month 2015-05), run through the vendored `ingest_archive` and `index_archive` into a temp root, so the catalogue and reader are tested against real research code;
-  - a 2026-dated variant that must be refused.
+  - variants the month gate must refuse: 2026 and 2027 members by path, a 2026-01 marketTime under a 2015-05 path (refused by ingest's content scan), and the same with its `marketTime` keys escaped (stored by ingest, and refused only by the index).
   
   Real markets are larger than random walks (5-44 runners, 721-6,166 book entries), so the generator also takes size parameters from the section 6.7 aggregates.
 - **Test groups:**
@@ -1452,6 +1452,9 @@ Gaps in the synthetic fixtures and the Phase 0b engine, recorded from Nuance's P
 | Gap | Why it matters | Owed before | Fix |
 |---|---|---|---|
 | **The in-play flip has one fixed shape** (Nuance, item 5). A synthetic market always flips in play at exactly the published marketTime, which is never revised, with no SUSPENDED at the off. `tests/test_synthetic.py`, `tests/test_integration_ui.py` and `tests/test_engine.py` lock that shape in. The real flip shape is unverified. | Phase 1a's countdown is accepted on synthetic data (section 12). The engine takes `ms_to_off` from the latest marketTime, while section 6.1 anchors the jump marks on the first-published one. In Nuance's early-start probe, 1,114 in-play rows had `ms_to_off` > 0. | Phase 1a | `Spec` options `off_offset`, `market_time_revision` and `suspend_at_off`. |
+| **No 503 windows** in the fixtures (Nuance, item 6). | The yield tracker's parity test needs windows to enter, sit inside and leave (section 6.2). | Phase 1a | A generator option that writes 503 windows. |
+| **No trd dips** in the fixtures (Nuance, item 6). | The conservative-parity property needs traded volume that falls and recovers (section 7.4). | Phase 1b | A generator option that writes trd dips. |
+| **No non-finite `spb`/`spl` prices and no settlement zeroing** in the fixtures (Nuance, item 6). | Nuance: "Upstream has not shown that several of these occur in PRO files at all (F54; data-audit.md:36). There is no current risk, since the engine opens only Spec(seed)." | Not set | Decide once the first PRO ingest shows whether they occur (counts only). Nuance's optional extra, not done yet: one engine test that opens an option market through the engine's `synthetic=` seam. |
 
 ---
 
