@@ -21,7 +21,8 @@ What the hook refuses, in every mode and phase:
   I-3  socket connect, sendto and sendmsg, and every name or address lookup;
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
-       run directory still resolves where it did at arm() (a relative path is never permitted);
+       run directory still resolves where it did at arm() and the socket path is not itself a link (bind
+       follows a dangling one and creates the socket at its target); a relative path is never permitted;
   I-5  ctypes.dlopen and SQLite extension loading always; os.system, os.exec*, os.spawn*, os.fork and
        os.forkpty always; subprocess.Popen and os.posix_spawn except as below;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
@@ -366,9 +367,12 @@ def _check_bind(state, sock, address):
             return
         if family == sockets.AF_UNIX and isinstance(address, (str, bytes)):
             # The exact permitted text (normpath would fold "link/.." that the OS resolves through the link),
-            # in a run directory that still resolves where it did at arm() (not replaced by a link).
+            # in a run directory that still resolves where it did at arm() (not replaced by a link), and not
+            # itself a link: bind follows a final dangling link and creates the socket at its target, outside
+            # the run directory, with no write event. (Any other existing name fails with EADDRINUSE.)
             text = os.fsdecode(address)
-            if text in state.unix_paths and os.path.realpath(os.path.dirname(text)) == state.real_run_dir:
+            if (text in state.unix_paths and os.path.realpath(os.path.dirname(text)) == state.real_run_dir
+                    and not os.path.islink(text)):
                 return
     raise GuardRefusal("bind_refused")
 
