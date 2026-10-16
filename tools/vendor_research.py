@@ -16,9 +16,9 @@ Run by hand by lab-Claude, never automatically. Steps:
   5. Rename the directory into place and chmod -R a-w it.
 
 Every git call has protocol.allow=never (only the local file transport is allowed), no hooks and no user
-or system git config, and runs with the network switch on. The guard, armed in vendor mode, allows
-exactly these git argvs (and none after them) and writes only under ~/.local/share/betangel-suite, this
-checkout's pin/ and the state root.
+or system git config, and runs with the network switch on, in exactly the environment guard.VENDOR_GIT_ENV
+plus HOME. The guard, armed in vendor mode, allows exactly these git argvs with that environment (and none
+after them) and writes only under ~/.local/share/betangel-suite, this checkout's pin/ and the state root.
 Nothing is ever written into ~/betangel-research. A failure after the clone leaves the .partial
 directory for inspection; remove it by hand before running again (partial_exists).
 Output is codes and counts only. Standard library only; never imports betangel_research.
@@ -95,10 +95,13 @@ def _parse(args, default_pin, error):
 
 
 def _git(home, *args):
-    """Run one allowed git argv; return its exit status. Its output is discarded, never printed."""
+    """Run one allowed git argv; return its exit status. Its output is discarded, never printed.
+
+    The environment is guard.VENDOR_GIT_ENV plus HOME, nothing else: the guard refuses any other (Nuance's PR #2
+    review, item 10).
+    """
     from betangel_suite import guard
-    env = {"HOME": home, "PATH": "/usr/bin:/bin", "LANG": "C", "GIT_TERMINAL_PROMPT": "0",
-           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", guard.FORBID_NETWORK_ENV: "1"}
+    env = dict(guard.VENDOR_GIT_ENV, HOME=home)
     result = subprocess.run(list(guard.VENDOR_GIT_PREFIX) + list(args), env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
     return result.returncode

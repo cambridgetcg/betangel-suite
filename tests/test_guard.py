@@ -770,12 +770,16 @@ results["outside"] = sorted(os.listdir(outside))
         sha = "0123456789abcdef0123456789abcdef01234567"
         partial = deps + "/betangel-research-0123456789ab.partial"
         prefix = list(guard.VENDOR_GIT_PREFIX)
-        ok = guard.vendor_argv_ok
+        env = dict(guard.VENDOR_GIT_ENV, HOME="/h")
+
+        def ok(argv, child_env=env):
+            return guard.vendor_argv_ok(argv, child_env, research, deps, "/h")
+
         for rest in (["-C", research, "cat-file", "-e", sha + "^{commit}"],
                      ["clone", "--no-checkout", "--no-hardlinks", "--quiet", research, partial],
                      ["-C", partial, "checkout", "--quiet", "--detach", sha],
                      ["-C", partial, "remote", "remove", "origin"]):
-            self.assertTrue(ok(prefix + rest, research, deps), rest)
+            self.assertTrue(ok(prefix + rest), rest)
         for rest in (["-C", research, "fetch"],
                      ["-C", research, "cat-file", "-e", sha],
                      ["-C", research, "status", "--porcelain"],
@@ -784,8 +788,25 @@ results["outside"] = sorted(os.listdir(outside))
                      ["-C", research, "checkout", "--quiet", "--detach", sha],
                      ["-C", partial, "remote", "add", "origin", research],
                      ["-C", research, "worktree", "add", partial]):
-            self.assertFalse(ok(prefix + rest, research, deps), rest)
-        self.assertFalse(ok(["/usr/bin/git", "-C", research, "cat-file", "-e", sha + "^{commit}"], research, deps))
+            self.assertFalse(ok(prefix + rest), rest)
+        self.assertFalse(ok(["/usr/bin/git", "-C", research, "cat-file", "-e", sha + "^{commit}"]))
+
+    def test_vendor_argv_needs_exactly_the_vendor_environment(self):
+        # Nuance's PR #2 review, item 10: GIT_DIR (also when inherited, env=None) detached the clone's HEAD, and
+        # GIT_CONFIG_COUNT with an fsmonitor pair ran a command. Only VENDOR_GIT_ENV plus the guard's HOME passes.
+        research, deps = "/h/betangel-research", "/h/.local/share/betangel-suite/deps"
+        argv = list(guard.VENDOR_GIT_PREFIX) + ["-C", research, "cat-file", "-e", "0" * 40 + "^{commit}"]
+        good = dict(guard.VENDOR_GIT_ENV, HOME="/h")
+        self.assertTrue(guard.vendor_argv_ok(argv, good, research, deps, "/h"))
+        changes = ({"GIT_DIR": research + "/.git"}, {"GIT_WORK_TREE": research},
+                   {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "/bin/sh"},
+                   {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='x'"}, {"GIT_EXEC_PATH": "/x"},
+                   {"DEVELOPER_DIR": "/x"}, {"PATH": "/x:/usr/bin:/bin"}, {"GIT_CONFIG_GLOBAL": "/h/.gitconfig"},
+                   {"HOME": "/elsewhere"}, {"HOME": None}, {"GIT_CONFIG_NOSYSTEM": None}, {"LANG": None})
+        for change in changes:
+            env = {key: value for key, value in dict(good, **change).items() if value is not None}
+            self.assertFalse(guard.vendor_argv_ok(argv, env, research, deps, "/h"), change)
+        self.assertFalse(guard.vendor_argv_ok(argv, None, research, deps, "/h"))
 
     TMP = "/h/.local/state/betangel-suite/tmp"
     REPO = TMP + "/home-x/repo"
@@ -857,10 +878,17 @@ results["outside"] = sorted(os.listdir(outside))
         results = checks(self, home, mode="vendor", body="""
 import subprocess
 prefix = list(guard.VENDOR_GIT_PREFIX)
-attempt("fetch", lambda: subprocess.run(prefix + ["-C", roots.research_clone(), "fetch"], capture_output=True))
-attempt("plain_git", lambda: subprocess.run(["/usr/bin/git", "-C", roots.research_clone(), "status"], capture_output=True))
-""")
-        self.assertEqual(results, {"fetch": "subprocess_refused", "plain_git": "subprocess_refused"})
+env = dict(guard.VENDOR_GIT_ENV, HOME=home)
+lookup = prefix + ["-C", roots.research_clone(), "cat-file", "-e", "0" * 40 + "^{commit}"]
+attempt("fetch", lambda: subprocess.run(prefix + ["-C", roots.research_clone(), "fetch"], env=env, capture_output=True))
+attempt("plain_git", lambda: subprocess.run(["/usr/bin/git", "-C", roots.research_clone(), "status"], env=env,
+                                            capture_output=True))
+attempt("lookup", lambda: subprocess.run(lookup, env=env, capture_output=True))
+attempt("lookup_inherited_env", lambda: subprocess.run(lookup, capture_output=True))
+attempt("lookup_git_dir", lambda: subprocess.run(lookup, env=dict(env, GIT_DIR=home), capture_output=True))
+""", setup="home = os.environ['HOME']\n")
+        self.assertEqual(results, {"fetch": "subprocess_refused", "plain_git": "subprocess_refused", "lookup": "ok",
+                                   "lookup_inherited_env": "subprocess_refused", "lookup_git_dir": "subprocess_refused"})
 
 
 class WriteTests(unittest.TestCase):

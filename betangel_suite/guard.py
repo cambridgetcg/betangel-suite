@@ -84,7 +84,8 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           --is-inside-work-tree (paths.is_inside_git_worktree, used by config.validate_config) and
           /usr/bin/open http://127.0.0.1:<permitted port>/#c=<code>; after seal(), none. A bare "git"
           must come through subprocess with a search path of /usr/bin and /bin only.
-  vendor  before seal(), exactly the four git argvs tools/vendor_research.py runs; after, none.
+  vendor  before seal(), exactly the four git argvs tools/vendor_research.py runs, each with exactly the
+          environment VENDOR_GIT_ENV plus HOME; after, none.
   test    the test runner never seals. It may start /opt/homebrew/bin/python3.13 or 3.11 (or this
           interpreter) with -I -S -B, /bin/sh on this checkout's bin/suite, and /usr/bin/git only as
           git -C <dir under TMPDIR> [-c <test identity key>=...] <local subcommand> with relative operands,
@@ -125,6 +126,11 @@ SEARCH_DIRS = ("/usr/bin", "/bin")                   # where a bare program name
 TEST_INTERPRETERS = ("/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3.11")
 VENDOR_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                      "-c", "core.hooksPath=/dev/null")
+# The whole environment of every vendor git child, with HOME (the guard's own) added: vendor_argv_ok refuses None
+# (this process's environment, which could hold GIT_DIR) and any other key or value (GIT_CONFIG_COUNT and its
+# pairs can set core.fsmonitor, which runs a command; DEVELOPER_DIR picks another git behind /usr/bin/git).
+VENDOR_GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1",
+                  "GIT_CONFIG_GLOBAL": "/dev/null", FORBID_NETWORK_ENV: "1"}
 # The test runner's git (runner_git_ok): local subcommands only, the synthetic identity, no user config.
 TEST_GIT_SUBCOMMANDS = frozenset({"init", "add", "commit", "update-index", "check-ignore", "rev-parse"})
 TEST_GIT_CONFIG_KEYS = frozenset({"init.defaultBranch", "user.name", "user.email"})
@@ -641,7 +647,7 @@ def _check_spawn(state, event, args):
     elif not state.sealed:
         if state.mode == "engine" and engine_argv_ok(argv, state.roots, state.ports):
             return
-        if state.mode == "vendor" and vendor_argv_ok(argv, state.research, state.deps_root):
+        if state.mode == "vendor" and vendor_argv_ok(argv, names, state.research, state.deps_root, state.home):
             return
     raise GuardRefusal("subprocess_refused")
 
@@ -666,8 +672,15 @@ def engine_argv_ok(argv, write_roots, ports):
     return False
 
 
-def vendor_argv_ok(argv, research, deps_root):
-    """The four git argvs of tools/vendor_research.py: cat-file -e, clone, checkout --detach, remote remove."""
+def vendor_argv_ok(argv, env, research, deps_root, home):
+    """The four git argvs of tools/vendor_research.py: cat-file -e, clone, checkout --detach, remote remove.
+
+    The child's environment must be exactly VENDOR_GIT_ENV plus HOME=home (Nuance's PR #2 review, item 10): None
+    would hand git this process's environment, where GIT_DIR or GIT_WORK_TREE redirect it, and any other key can
+    change what git runs (GIT_CONFIG_COUNT and its pairs, GIT_EXEC_PATH, DEVELOPER_DIR).
+    """
+    if env is None or env != dict(VENDOR_GIT_ENV, HOME=home):
+        return False
     prefix = list(VENDOR_GIT_PREFIX)
     if argv[:len(prefix)] != prefix:
         return False
