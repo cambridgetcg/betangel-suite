@@ -312,6 +312,42 @@ class ActivationTests(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertEqual(outcome(self, home, ARM_ENGINE + TRY_RX).splitlines(), ["pin_mismatch", "upstream_absent"])
 
+    def test_read_pinned_gives_only_the_pinned_bytes(self):
+        # Nuance's PR #2 review, item 8: the month-role JSON is read through pin.read_pinned(), which checks the bytes
+        # against the pin again, so a change after activate() (new bytes, or research/ swapped for a link with the
+        # same bytes) is refused. So is a path that is not pinned, and a call without the guard. The child is armed in
+        # vendor mode, whose write roots hold the deps tree, so it can make those changes itself.
+        home = make_home(self, deps=True)
+        month_roles = "research/experiments/backtest-p0-bsp-v1.json"
+        code = PRELUDE + "from betangel_suite import guard\nguard.arm('vendor')\n" + """
+import hashlib, os, shutil
+from betangel_suite import pin, roots
+from betangel_suite.errors import SuiteError
+def attempt(relpath):
+    try:
+        data = pin.read_pinned(relpath)
+        return hashlib.sha256(data).hexdigest() == pin.load()["files"].get(relpath)
+    except SuiteError as exc:
+        return str(exc)
+deps = pin.activate()
+results = [attempt(%(month)r), attempt("README.md"), attempt("betangel_research/betfair/risk.py")]
+moved = os.path.join(roots.share_dir(), "elsewhere")
+os.rename(os.path.join(deps, "research"), moved)
+os.symlink(moved, os.path.join(deps, "research"))
+results.append(attempt(%(month)r))
+os.remove(os.path.join(deps, "research"))
+os.rename(moved, os.path.join(deps, "research"))
+results.append(attempt(%(month)r))
+with open(os.path.join(deps, %(month)r), "ab") as handle:
+    handle.write(b" ")
+results.append(attempt(%(month)r))
+print(results)
+""" % {"month": month_roles}
+        self.assertEqual(outcome(self, home, code), str([True, "pin_mismatch", "pin_mismatch", "pin_mismatch", True,
+                                                         "pin_mismatch"]))
+        unarmed = "from betangel_suite import pin\ntry:\n    pin.read_pinned(%r)\nexcept Exception as exc:\n    print(exc)\n"
+        self.assertEqual(outcome(self, home, PRELUDE + unarmed % month_roles), "guard_not_armed")
+
     def test_upstream_imported_before_activation_is_refused(self):
         home = make_home(self, deps=True)
         fake = os.path.join(home, "fake")

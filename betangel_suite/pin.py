@@ -80,6 +80,7 @@ _READ_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
 _NOFOLLOW_ANY = getattr(os, "O_NOFOLLOW_ANY", 0)
 
 _ACTIVE = None
+_HASHES = {}            # relpath -> sha256 of the pin activate() verified (read_pinned)
 
 
 def load(path=PIN_FILE):
@@ -163,7 +164,7 @@ def _refuse_shadows(deps, package):
 
 def activate(*, home_dir=None, pin_path=PIN_FILE):
     """Verify the deps clone and append it to sys.path; return its path. Idempotent."""
-    global _ACTIVE
+    global _ACTIVE, _HASHES
     guard.require_armed()
     if _ACTIVE is not None:
         return _ACTIVE
@@ -176,8 +177,27 @@ def activate(*, home_dir=None, pin_path=PIN_FILE):
     verify(pin, deps)
     refuse_research_on_path(home_dir)
     sys.path.append(deps)
+    _HASHES = dict(pin["files"])
     _ACTIVE = deps
     return deps
+
+
+def read_pinned(relpath):
+    """The bytes of one PINNED_FILES entry, from the active deps directory, checked against the pin again.
+
+    The month-role JSON (research/experiments/backtest-p0-bsp-v1.json, DESIGN.md 4.1) is read only this way, never
+    with open() by path, which follows links and reads whatever is there by then (Nuance's PR #2 review, item 8).
+    The file is opened as file_hashes opens it (no symlink below the deps directory, exactly one link, O_NONBLOCK)
+    and its sha256 compared with the pin activate() verified, so a change since activate() is refused too. Calls
+    activate() first (idempotent; it needs the armed guard). SuiteError(pin_mismatch) for bytes that differ, a file
+    that cannot be read that way, or a path that is not a PINNED_FILES entry (it has no pinned bytes).
+    """
+    deps = activate()
+    expected = _HASHES.get(relpath)
+    data = None if expected is None else _read_regular(relpath, None, deps)
+    if data is None or hashlib.sha256(data).hexdigest() != expected:
+        raise SuiteError("pin_mismatch")
+    return data
 
 
 def refuse_research_on_path(home_dir=None):
