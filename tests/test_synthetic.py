@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from collections import Counter
+from unittest import mock
 
 from betangel_suite import rx, synthetic
 from betangel_suite.synthetic import Spec, generate
@@ -281,6 +282,41 @@ class StreamTests(unittest.TestCase):
                     self.assertEqual(rx.ticks.to_pence(rc["tv"]), sum(ladder.values()))
                     self.assertLess(rx.ticks.to_pence(rc["tv"]), synthetic.TV_CAP_P + 1)
         self.assertGreater(trades, 1000)
+
+
+class TradedBasisTests(unittest.TestCase):
+    """trd and tv on the PRO historical basis, backer's stake x 2 (F60), as upstream paper and the engine read them
+    (Nuance's PR #4 review, item 1)."""
+
+    def test_a_trade_adds_twice_the_stake_it_takes_to_trd_and_tv(self):
+        real = synthetic._Simulation._trade
+        seen = []
+
+        def spy(sim, r, field, index, size):
+            level, trd, tv = getattr(r, field).get(index, 0), r.trd.get(index, 0), r.tv
+            done = real(sim, r, field, index, size)
+            seen.append((done, level - getattr(r, field).get(index, 0), r.trd.get(index, 0) - trd, r.tv - tv))
+            return done
+
+        with mock.patch.object(synthetic._Simulation, "_trade", spy):
+            for _line in generate(Spec(seed=48, options={"suspension", "removal"}, **SMALL)).lines():
+                pass
+        trades = [entry[1:] for entry in seen if entry[0]]
+        self.assertGreater(len(trades), 100)
+        for taken, trd_added, tv_added in trades:
+            self.assertGreater(taken, 0)
+            self.assertEqual((trd_added, tv_added), (2 * taken, 2 * taken))
+        self.assertEqual({entry[1:] for entry in seen if not entry[0]} - {(0, 0, 0)}, set())
+
+    def test_the_volume_cap_counts_the_doubled_stake(self):
+        sim = synthetic._Simulation(generate(Spec(seed=49, **SMALL)))
+        r, index = sim.runners[0], 100
+        r.atb[index] = 10_00
+        r.tv = synthetic.TV_CAP_P - 5                       # room for 2 pence of stake, counted as 4
+        self.assertTrue(sim._trade(r, "atb", index, 10_00))
+        self.assertEqual((r.atb[index], r.tv), (10_00 - 2, synthetic.TV_CAP_P - 1))
+        self.assertFalse(sim._trade(r, "atb", index, 10_00))   # no room for a whole doubled penny
+        self.assertEqual((r.atb[index], r.tv), (10_00 - 2, synthetic.TV_CAP_P - 1))
 
 
 class BookTests(unittest.TestCase):
