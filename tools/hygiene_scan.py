@@ -17,7 +17,10 @@ A last line gives the totals per rule code. The entry number is the
 entry's position, counted from 1, in the list the scan worked through:
 
   --staged         the records of `git ls-files --stage`, in that order
-                   (a conflicted path has one record per stage)
+                   (a conflicted path has one record per stage), for the
+                   index git names: the real index when run by hand, but a
+                   temporary one (GIT_INDEX_FILE) when the pre-commit hook
+                   runs under `git commit -a` or `git commit <paths>`
   (no PATH)        the paths of `git ls-files --cached --others
                    --exclude-standard`, de-duplicated and sorted (outside a
                    git work tree: every file under the root, sorted)

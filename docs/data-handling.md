@@ -61,8 +61,14 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   totals per code.
 - **Finding the file.** The entry number is the entry's position, from 1, in the list the scan
   worked through. Yu maps it to a file locally, from the repository root, with git (replace `N`):
-  - after `--staged` or the pre-commit hook:
+  - after `--staged` run by hand:
     `git -c core.quotepath=off ls-files --stage | sed -n 'Np'`
+  - after the pre-commit hook: the hook counts the entries of the index the commit would record.
+    After `git commit -a` or `git commit <paths>`, git gives the hook a temporary index
+    (`GIT_INDEX_FILE`), so its entry numbers need not match `git ls-files --stage`, and the command
+    above can name an innocent file. First stage the change with `git add`, then run
+    `tools/hygiene_scan.py --staged` by hand, which reads the real index, and map the entry number
+    that run prints. A commit with no `-a` and no paths gives the hook the real index;
   - after a working-tree scan (no paths):
     `git -c core.quotepath=off ls-files --cached --others --exclude-standard | LC_ALL=C sort -u | sed -n 'Np'`
     (exact unless a path holds a control character, a double quote or a backslash, which git
