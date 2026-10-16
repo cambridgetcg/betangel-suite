@@ -828,7 +828,8 @@ class ReleaseModeTests(unittest.TestCase):
         return guard.release_argv_ok(argv, self.ENV if env is None else env, repo, self.RESEARCH, self.APP)
 
     def test_release_argv_shapes(self):
-        for rest in (["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        for rest in (["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty"],
+                     ["ls-files", "--stage", "-z"],
                      ["rev-parse", "--verify", "--quiet", "refs/tags/v0.1.0^{commit}"],
                      ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"],
                      ["rev-parse", "--verify", "--quiet", self.COMMIT + "^{tree}"],
@@ -838,6 +839,14 @@ class ReleaseModeTests(unittest.TestCase):
                      ["config", "--includes", "--null", "--get-regexp", "^filter\\."]):
             self.assertTrue(self.ok(rest), rest)
         for rest in (["fetch"], ["pull"], ["push"], ["ls-remote", "origin"], ["status"], ["status", "--porcelain"],
+                     # status never enters a submodule (a nested repository's own filters would run), and the
+                     # index query is exactly ls-files --stage -z, never recursing either
+                     ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                     ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+                     ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty",
+                      "--recurse-submodules"],
+                     ["ls-files", "--stage"], ["ls-files", "-z", "--stage"], ["ls-files", "--stage", "-z", "x"],
+                     ["ls-files", "--stage", "-z", "--recurse-submodules"], ["ls-files", "--stage", "-z", "-o"],
                      ["rev-parse", "--verify", "--quiet", "refs/tags/-x^{commit}"],
                      ["rev-parse", "--verify", "--quiet", "refs/tags/a..b^{commit}"],
                      ["rev-parse", "--verify", "--quiet", "refs/tags/v1"],
@@ -858,7 +867,7 @@ class ReleaseModeTests(unittest.TestCase):
                      ["config", "--file", "/h/x", "--includes", "--null", "--get-regexp", "^filter\\."],
                      ["config", "--add", "filter.x.clean", "/bin/sh"], ["config", "--edit"]):
             self.assertFalse(self.ok(rest), rest)
-        status = ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+        status = ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty"]
         for repo in (self.RESEARCH, self.RESEARCH + "/sub", self.APP + "/v1", "relative", "/h/x/../betangel-suite"):
             self.assertFalse(self.ok(status, repo=repo), repo)
         argv = list(guard.RELEASE_GIT_PREFIX) + ["-C", "/h/other"] + status

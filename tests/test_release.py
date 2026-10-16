@@ -532,6 +532,77 @@ class VerifyCopyTests(ReleaseTestCase):
         self.assertEqual(self.code_of(self.fresh("current")), "release_manifest_invalid")
 
 
+class NestedRepositoryTests(unittest.TestCase):
+    """A repository nested in the checkout, whose own config defines a filter that the parent's filter query never
+    sees. git status would enter a gitlink's repository and run that filter's clean command outside the guard, so
+    a gitlink in the index refuses first (release_gitlink). Each test builds its own repositories: the class
+    fixture's is shared, and the runner's git cannot remove a gitlink again."""
+
+    def make_repo(self):
+        base = tempfile.mkdtemp(prefix="rel-")
+        self.addCleanup(rmtree, base)
+        repo = Repo(os.path.join(base, "repo"))
+        copy_sources(repo.path)
+        repo.annotated_tag("v1", repo.commit("first"))
+        return base, repo
+
+    @staticmethod
+    def make_nested(repo):
+        nested = Repo(os.path.join(repo.path, "nested"))
+        with open(os.path.join(nested.path, "f.txt"), "w", encoding="ascii") as handle:
+            handle.write("synthetic-1\n")
+        nested.commit("nested")
+        return nested
+
+    @staticmethod
+    def plant_filter(nested, marks):
+        """A clean filter in the nested repository's own config, then a same-size edit that only it can judge."""
+        os.makedirs(os.path.join(nested.path, ".git", "info"), exist_ok=True)
+        with open(os.path.join(nested.path, ".git", "info", "attributes"), "w", encoding="ascii") as handle:
+            handle.write("* filter=synthetic\n")
+        with open(os.path.join(nested.path, ".git", "config"), "a", encoding="ascii") as handle:
+            handle.write('[filter "synthetic"]\n\tclean = touch %s/clean && cat\n' % marks)
+        sample = os.path.join(nested.path, "f.txt")
+        with open(sample, "w", encoding="ascii") as handle:
+            handle.write("synthetic-2\n")
+        later = os.stat(sample).st_mtime + 3600
+        os.utime(sample, (later, later))
+
+    def check(self, base, repo, code):
+        home = new_home(base, "home")
+        before = tree_listing(home)
+        self.assertEqual(launch(home, repo.path, "release", "v1"), (2, "", "refused:%s\n" % code))
+        self.assertEqual(tree_listing(home), before)
+
+    def test_a_gitlink_is_refused_before_git_status_can_enter_it(self):
+        for committed in (False, True):
+            base, repo = self.make_repo()
+            nested = self.make_nested(repo)
+            repo.git("add", "nested")                   # an embedded repository is added as a gitlink
+            if committed:
+                repo.git("commit", "-q", "-m", "gitlink")
+            marks = tempfile.mkdtemp(prefix="marks-", dir=base)
+            self.plant_filter(nested, marks)
+            self.check(base, repo, "release_gitlink")
+            self.assertEqual(os.listdir(marks), [], "no filter command ran (committed=%s)" % committed)
+
+    def test_status_still_sees_an_untracked_nested_repository_and_a_removed_gitlink(self):
+        # git status never enters a submodule (--ignore-submodules=dirty), but still reports what the parent
+        # records: an untracked repository, and a gitlink in HEAD whose removal is staged (=all would hide that).
+        base, repo = self.make_repo()
+        marks = tempfile.mkdtemp(prefix="marks-", dir=base)
+        self.plant_filter(self.make_nested(repo), marks)
+        self.check(base, repo, "release_dirty_tree")
+        self.assertEqual(os.listdir(marks), [])
+        base, repo = self.make_repo()
+        nested = self.make_nested(repo)
+        repo.git("add", "nested")
+        repo.git("commit", "-q", "-m", "gitlink")
+        rmtree(nested.path)
+        repo.git("add", "-A")                           # stages the gitlink's removal: the index has none now
+        self.check(base, repo, "release_dirty_tree")
+
+
 class TagAndTreeTests(unittest.TestCase):
 
     def test_tag_names(self):

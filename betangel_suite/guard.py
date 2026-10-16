@@ -48,7 +48,7 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           share dir itself; nowhere else in the share dir (its app/ belongs to release).
   release (bin/suite release, betangel_suite/release.py; I-18) before seal(), only git with RELEASE_GIT_PREFIX
           and -C this checkout's own root (never the deploy clone or a release copy): the filter-driver
-          config query, status, rev-parse of
+          config query, the index listing, status (never entering a submodule), rev-parse of
           refs/tags/<tag>^{commit}, refs/heads/main^{commit} or <id>^{tree}, merge-base --is-ancestor and
           archive --format=tar <id>, with no user or system git config (release_argv_ok); after, none. Its
           writes may also go under ~/.local/share/betangel-suite/app (the release copies) and nowhere else
@@ -129,6 +129,11 @@ RELEASE_GIT_ENV_EXTRA = frozenset({"GIT_TERMINAL_PROMPT"})
 # release.py refuses a repository whose own config (includes too) defines a filter driver: git status would run its
 # clean command and git archive its smudge command, as this user and outside the guard (release_git_filter).
 RELEASE_FILTER_QUERY = ("config", "--includes", "--null", "--get-regexp", r"^filter\.")
+# A nested repository's own config is not in that query, and git status enters a gitlink's repository (its clean
+# filter would run there): release.py refuses any gitlink in the index first, by this read-only index listing,
+# and its status never enters a submodule (--ignore-submodules=dirty) (release_gitlink).
+RELEASE_INDEX_QUERY = ("ls-files", "--stage", "-z")
+RELEASE_STATUS = ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty")
 RELEASE_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -595,8 +600,10 @@ def vendor_argv_ok(argv, research, deps_root):
 def release_argv_ok(argv, env, repo, research, app_root):
     """The git argvs of bin/suite release (release.py), on repo (this checkout's own root) only.
 
-    RELEASE_GIT_PREFIX -C <repo>, then exactly one of: status --porcelain=v1 -z --untracked-files=all;
-    RELEASE_FILTER_QUERY (config --includes --null --get-regexp ^filter\\., read only);
+    RELEASE_GIT_PREFIX -C <repo>, then exactly one of: RELEASE_STATUS (status --porcelain=v1 -z
+    --untracked-files=all --ignore-submodules=dirty: it never enters a submodule); RELEASE_FILTER_QUERY (config
+    --includes --null --get-regexp ^filter\\., read only); RELEASE_INDEX_QUERY (ls-files --stage -z, read only,
+    never --recurse-submodules);
     rev-parse --verify --quiet refs/tags/<tag>^{commit} | refs/heads/main^{commit} | <id>^{tree};
     merge-base --is-ancestor <id> <id>; archive --format=tar <id>. Every subcommand is local (no fetch, no
     remote archive). The environment must be explicit, with no user or system git config and no other GIT_*
@@ -615,7 +622,7 @@ def release_argv_ok(argv, env, repo, research, app_root):
     if argv[:len(prefix)] != prefix:
         return False
     rest = argv[len(prefix):]
-    if rest == ["status", "--porcelain=v1", "-z", "--untracked-files=all"] or rest == list(RELEASE_FILTER_QUERY):
+    if rest in (list(RELEASE_STATUS), list(RELEASE_FILTER_QUERY), list(RELEASE_INDEX_QUERY)):
         return True
     if len(rest) == 4 and rest[:3] == ["rev-parse", "--verify", "--quiet"]:
         revision = rest[3]

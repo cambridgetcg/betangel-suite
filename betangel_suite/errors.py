@@ -72,7 +72,7 @@ CODES = frozenset({
     "release_dirty_tree", "release_tag_unknown", "release_main_missing", "release_not_on_main",
     "release_archive_invalid", "release_tree_mismatch", "release_layout_invalid", "release_manifest_invalid",
     "release_writable", "release_file_missing", "release_file_extra", "release_file_modified",
-    "release_git_filter",
+    "release_git_filter", "release_gitlink",
     # roots and the writer helper
     "path_not_absolute", "already_exists", "not_a_directory", "symlink_refused", "wrong_owner",
     "root_parent_missing", "write_failed", "salt_invalid", "suite_root_invalid",

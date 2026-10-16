@@ -11,7 +11,9 @@ make(tag), the release command (guard mode "release"), in this order:
      existing app/<tag> (release_exists) or a left-over app/.<tag>.partial (partial_exists);
   2. git, only through the guard's release argvs (guard.release_argv_ok) on this checkout: a filter driver
      defined in the repository's own config (release_git_filter: git status and git archive would run its
-     commands outside the guard; checked first, by a read-only config query); a dirty tree,
+     commands outside the guard; checked first, by a read-only config query); a gitlink in the index
+     (release_gitlink: git status would enter that repository and run its own filters; checked next, by a
+     read-only index listing, and status itself never enters a submodule); a dirty tree,
      tracked or untracked (release_dirty_tree); an unknown tag, looked up as refs/tags/<tag> only
      (release_tag_unknown); no local main branch (release_main_missing); a tag commit that main does not
      contain (release_not_on_main). Nothing is fetched;
@@ -341,7 +343,9 @@ def make(tag, home_dir=None, *, out=None):
     git = _Git(repo, home)
     if git.filters_configured():
         raise SuiteError("release_git_filter")
-    if git.output("status", "--porcelain=v1", "-z", "--untracked-files=all") != b"":
+    if git.gitlinks():
+        raise SuiteError("release_gitlink")
+    if git.output(*guard.RELEASE_STATUS) != b"":
         raise SuiteError("release_dirty_tree")
     commit = git.object_id("refs/tags/%s^{commit}" % tag)
     if commit is None:
@@ -433,6 +437,14 @@ class _Git:
         if returncode == 0:
             return True
         raise SuiteError("git_failed")
+
+    def gitlinks(self):
+        """True when the index holds a gitlink (mode 160000: a submodule or an embedded repository).
+
+        git status would enter that repository and run a filter its own config defines, which the query above
+        never sees. ls-files --stage only lists the index: it enters nothing and runs no filter.
+        """
+        return any(record.startswith(b"160000 ") for record in self.output(*guard.RELEASE_INDEX_QUERY).split(b"\0"))
 
     def object_id(self, revision):
         """The object id revision names, or None when it names nothing (rev-parse --verify --quiet exits 1)."""
