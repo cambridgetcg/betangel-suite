@@ -48,7 +48,11 @@ What the hook refuses, in every mode and phase:
        The sqlite3.connect event covers only the main database file. ATTACH DATABASE and VACUUM INTO create
        further files from C, with no audit event, so arm() also replaces sqlite3.connect with a wrapper
        that sets SQLITE_LIMIT_ATTACHED to 0 on every new connection: both statements then fail. (The audit
-       event sqlite3.connect/handle comes too early for that: the connection is not initialised yet.)
+       event sqlite3.connect/handle comes too early for that: the connection is not initialised yet.) Each
+       connection is a guard subclass whose setlimit refuses that limit (sqlite_limit_refused), and the hook
+       refuses every sqlite3.connect event that did not come through the wrapper (sqlite_connect_refused):
+       a sqlite3.Connection constructed or re-initialised directly, a connect reference taken before arm(),
+       or a factory argument.
        SQLite's temporary files (temp tables, sorts, statement journals) are opened from C too, in a
        directory SQLite picks at that moment: SQLITE_TMPDIR, or /var/tmp or /tmp if that is gone. So the
        wrapper also runs PRAGMA temp_store = MEMORY and refuses the connection (sqlite_connect_refused)
@@ -71,10 +75,11 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
 Every child must keep BETANGEL_BETFAIR_FORBID_NETWORK=1 and carry no stray BETFAIR variable.
 
 This is defence in depth, not a sandbox: same-user code can still write through C extensions (SQLite's
-journal beside a database, and its temp files if a PRAGMA sets temp_store back), a child process (in test mode, an isolated interpreter the runner starts is
-unguarded unless it imports betangel_suite), a file descriptor or hard link made before a check, a
-reference to os.mkfifo or sqlite3.connect taken before arm(), or a sqlite3.Connection constructed
-directly. Refusals raise GuardRefusal, whose str() is the code only, never the path or address.
+journal beside a database, and its temp files if a PRAGMA sets temp_store back), a child process (in test
+mode, an isolated interpreter the runner starts is unguarded unless it imports betangel_suite), a file
+descriptor or hard link made before a check, a reference to os.mkfifo taken before arm(), or
+sqlite3.Connection.setlimit called on a connection directly. Refusals raise GuardRefusal, whose str() is
+the code only, never the path or address.
 Standard library only.
 """
 
@@ -181,6 +186,7 @@ class _State:
         self.interpreters = frozenset(TEST_INTERPRETERS + (sys.executable,))
         self.ports = set()
         self.unix_paths = set()
+        self.connecting = threading.local()     # the sqlite3.connect wrapper's token (_wrap_sqlite_connect)
 
 
 # --- arming and phases ---------------------------------------------------------------------------
@@ -209,7 +215,7 @@ def arm(mode):
             raise SuiteError("tmpdir_mismatch")
         _check_placement(state)
         _wrap_node_calls()
-        _wrap_sqlite_connect()
+        _wrap_sqlite_connect(state)
         sys.addaudithook(_make_hook(state))
         _STATE = state
 
@@ -333,19 +339,48 @@ def _wrap_node_calls():
                     setattr(module, name, wrapper)
 
 
-def _wrap_sqlite_connect():
-    """sqlite3.connect, setting on each new connection SQLITE_LIMIT_ATTACHED to 0 (no ATTACH, no VACUUM INTO)
-    and temp_store to MEMORY (no temporary file; Nuance's PR #2 review, item 15). A connection whose temp_store
-    does not then read 2 is closed and refused."""
+def _wrap_sqlite_connect(state):
+    """sqlite3.connect, making each new connection a guard subclass whose setlimit refuses SQLITE_LIMIT_ATTACHED
+    (Nuance's PR #2 review, item 16), and setting on it SQLITE_LIMIT_ATTACHED to 0 (no ATTACH, no VACUUM INTO)
+    and temp_store to MEMORY (no temporary file; item 15). A connection whose temp_store does not then read 2 is
+    closed and refused.
+
+    The wrapper holds a per-thread token while it constructs the connection, and the hook refuses every
+    sqlite3.connect event without one (sqlite_connect_refused), so the limit and temp_store cannot be skipped:
+    a sqlite3.Connection constructed directly, a connection re-initialised with __init__ (which would open a
+    new database with the default limits), and a connect reference taken before arm() are all refused. So is a
+    factory argument: the wrapper picks the class. No authorizer is installed (Nuance's fix).
+
+    Same-process code can still call sqlite3.Connection.setlimit on a connection, or set temp_store back with a
+    PRAGMA; neither the suite nor the pinned closure does (the guard catches mistakes, not a determined attacker).
+    A SQLite built with SQLITE_TEMP_STORE=0 would read 2 and still use files; the tests check that no temporary
+    file is opened, so such a build fails them.
+    """
     import sqlite3
     import sqlite3.dbapi2
     original = sqlite3.connect
+    base = sqlite3.Connection
     limit = sqlite3.SQLITE_LIMIT_ATTACHED
+    token = state.connecting
 
-    def connect(*args, **kwargs):
-        connection = original(*args, **kwargs)
+    class GuardedConnection(base):
+        """The class of every connection the wrapper makes: SQLITE_LIMIT_ATTACHED cannot be changed."""
+
+        def setlimit(self, category, value):
+            if category == limit:
+                raise GuardRefusal("sqlite_limit_refused")
+            return base.setlimit(self, category, value)
+
+    def connect(database, *args, **kwargs):
+        if len(args) > 4 or "factory" in kwargs:        # factory is the sixth parameter
+            raise GuardRefusal("sqlite_connect_refused")
+        token.ready = True
         try:
-            connection.setlimit(limit, 0)
+            connection = original(database, *args, factory=GuardedConnection, **kwargs)
+        finally:
+            token.ready = False
+        try:
+            base.setlimit(connection, limit, 0)
             connection.execute("PRAGMA temp_store = MEMORY")
             row = connection.execute("PRAGMA temp_store").fetchone()
         except Exception:
@@ -554,6 +589,9 @@ def _check_env_change(event, args):
 
 
 def _check_sqlite(state, database):
+    if not getattr(state.connecting, "ready", False):
+        raise GuardRefusal("sqlite_connect_refused")    # not made by the wrapper (Nuance's PR #2 review, item 16)
+    state.connecting.ready = False                      # one connection per wrapper call
     text = os.fsdecode(os.fspath(database))
     if text == "":
         # A private database in a temporary file SQLite opens from C, wherever its temp directory is then, and

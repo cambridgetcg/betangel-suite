@@ -879,16 +879,85 @@ for name, connect, database in (("file", sqlite3.connect, os.path.join(state, "a
     connection.close()
 attempt("empty_name", lambda: sqlite3.connect(""))
 attempt("empty_bytes", lambda: sqlite3.connect(b""))
-class KeepsTempStore(sqlite3.Connection):
-    def execute(self, sql, *args):
-        return super().execute("SELECT 1" if sql.startswith("PRAGMA temp_store =") else sql, *args)
-attempt("temp_store_not_set", lambda: sqlite3.connect(os.path.join(state, "c.sqlite"), factory=KeepsTempStore))
+# The wrapper must fail closed when the setting does not read 2. The guard's connection class (the only one the
+# wrapper makes) is given an execute that drops the PRAGMA, then put back.
+guarded = [cls for cls in sqlite3.Connection.__subclasses__() if cls.__module__ == "betangel_suite.guard"]
+results["guarded_classes"] = len(guarded)
+def drop_pragma(self, sql, *args):
+    return sqlite3.Connection.execute(self, "SELECT 1" if sql.startswith("PRAGMA temp_store =") else sql, *args)
+guarded[0].execute = drop_pragma
+attempt("temp_store_not_set", lambda: sqlite3.connect(os.path.join(state, "c.sqlite")))
+del guarded[0].execute
+attempt("temp_store_set_again", lambda: sqlite3.connect(os.path.join(state, "c.sqlite")).close())
 """)
+        self.assertEqual((results["guarded_classes"], results["temp_store_set_again"]), (1, "ok"))
         self.assertEqual([value for name, value in results.items() if name.startswith("temp_files_")], [0, 0, 0])
         self.assertEqual({name: results[name] for name in ("temp_store_file", "temp_store_dbapi2", "temp_store_memory")},
                          {"temp_store_file": 2, "temp_store_dbapi2": 2, "temp_store_memory": 2})
         for name in ("empty_name", "empty_bytes", "temp_store_not_set"):
             self.assertEqual(results[name], "sqlite_connect_refused", name)
+
+    def test_sqlite_connections_come_only_from_the_wrapper(self):
+        # Nuance's PR #2 review, item 16: setlimit(SQLITE_LIMIT_ATTACHED, 10), or calling __init__ again (a new
+        # database with the default limits), restored ATTACH and VACUUM INTO outside the roots. Every connection is
+        # now the guard's subclass, whose setlimit refuses that limit, and the hook refuses any sqlite3.connect
+        # event without the wrapper's token: a direct Connection, a re-initialised one, a connect reference taken
+        # before arm(), and a factory argument.
+        home = make_home(self)
+        setup = self.SETUP + "import sqlite3, _sqlite3, threading\npre_arm_connect = sqlite3.connect\n"
+        results = checks(self, home, setup=setup, body="""
+attached, vacuumed = os.path.join(home, "attached.db"), os.path.join(home, "vacuumed.db")
+def path(name):
+    return os.path.join(state, name + ".sqlite")
+def attach(connection):
+    connection.execute("ATTACH DATABASE ? AS other", (attached,))
+def vacuum_into(connection):
+    connection.execute("VACUUM INTO ?", (vacuumed,))
+inside = sqlite3.connect(path("a"))
+results["guarded_class"] = type(inside).__module__ == "betangel_suite.guard"
+attempt("setlimit_attached", lambda: inside.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 10))
+attempt("setlimit_attached_zero", lambda: inside.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0))
+attempt("setlimit_other_limit", lambda: inside.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1000000))
+results["limit_after_setlimit"] = inside.getlimit(sqlite3.SQLITE_LIMIT_ATTACHED)
+attempt("attach_after_setlimit", lambda: attach(inside))
+attempt("reinit", lambda: inside.__init__(path("b")))
+attempt("attach_after_reinit", lambda: attach(inside))
+attempt("vacuum_into_after_reinit", lambda: vacuum_into(inside))
+attempt("direct_connection", lambda: sqlite3.Connection(path("c")))
+attempt("direct_guarded_class", lambda: type(inside)(path("d")))
+attempt("pre_arm_reference", lambda: pre_arm_connect(path("e")))
+attempt("factory_keyword", lambda: sqlite3.connect(path("f"), factory=sqlite3.Connection))
+attempt("factory_positional", lambda: sqlite3.connect(path("g"), 5.0, 0, "DEFERRED", True, sqlite3.Connection))
+attempt("wrapped_after_refusals", lambda: sqlite3.connect(path("h")).close())
+attempt("underscore_module", lambda: _sqlite3.connect(path("i")).close())
+attempt("dbapi2_module", lambda: sqlite3.dbapi2.connect(path("j")).close())
+attempt("keyword_arguments", lambda: sqlite3.connect(database=path("k"), timeout=5.0, isolation_level=None).close())
+def in_thread():
+    box = []
+    worker = threading.Thread(target=lambda: box.append(sqlite3.connect(path("l")).getlimit(
+        sqlite3.SQLITE_LIMIT_ATTACHED)))
+    worker.start()
+    worker.join()
+    assert box == [0], box
+attempt("other_thread", in_thread)
+inside.close()
+results["made"] = sorted(name for name in os.listdir(state) if name.endswith(".sqlite"))
+""")
+        for path in (os.path.join(home, "attached.db"), os.path.join(home, "vacuumed.db")):
+            self.assertFalse(os.path.lexists(path), os.path.basename(path))
+        for name in ("attach_after_setlimit", "attach_after_reinit", "vacuum_into_after_reinit"):
+            self.assertEqual(results[name], "other:OperationalError", name)
+        self.assertEqual(results["setlimit_attached"], "sqlite_limit_refused")
+        self.assertEqual(results["setlimit_attached_zero"], "sqlite_limit_refused")
+        self.assertEqual((results["setlimit_other_limit"], results["limit_after_setlimit"]), ("ok", 0))
+        for name in ("reinit", "direct_connection", "direct_guarded_class", "pre_arm_reference", "factory_keyword",
+                     "factory_positional"):
+            self.assertEqual(results[name], "sqlite_connect_refused", name)
+        for name in ("wrapped_after_refusals", "underscore_module", "dbapi2_module", "keyword_arguments",
+                     "other_thread"):
+            self.assertEqual(results[name], "ok", name)
+        self.assertEqual(results["made"], ["a.sqlite", "h.sqlite", "i.sqlite", "j.sqlite", "k.sqlite", "l.sqlite"])
+        self.assertTrue(results["guarded_class"])
 
     def test_sqlite_cannot_attach_vacuum_into_or_load_extensions(self):
         home = make_home(self)
