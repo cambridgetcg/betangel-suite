@@ -614,10 +614,20 @@ class UrlExemptionTests(_RepoCase):
     """The event_id rule's one exemption: 8-digit runs inside https URLs on the exact hosts of URL_HOST_ALLOWLIST."""
 
     def lines_by_code(self, rel: str, mode):
+        # An id finding withholds the whole path ("FAIL event_id <name withheld>.md:2 (entry 2)"), so a file's
+        # lines are told apart by its entry number. The scanner sorts its file list in both modes, and every file
+        # these tests write is staged, so the index and the tree list the same files: the entry is rel's place in
+        # the sorted tree (walked here, since the test guard allows no git ls-files).
+        listing = []
+        for directory, dirs, files in os.walk(self.repo):
+            dirs[:] = [name for name in dirs if name != ".git"]
+            base = os.path.relpath(directory, self.repo)
+            listing += [name if base == "." else base + "/" + name for name in files]
+        entry = sorted(listing).index(rel) + 1
         rc, out = self.scan(*([mode] if mode else []))
         found = {}
         for line in out.splitlines():
-            match = re.match(r"^FAIL (\S+) " + re.escape(rel) + r":([0-9]+) ", line)
+            match = re.match(r"^FAIL (\S+) .+:([0-9]+) \(entry %d\)$" % entry, line)
             if match:
                 found.setdefault(match.group(1), set()).add(int(match.group(2)))
         return rc, out, found
