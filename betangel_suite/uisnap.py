@@ -19,7 +19,8 @@ The launcher arms the guard in mode uisnap (guard.py) and checks the run marker 
    argv the uisnap mode allows after seal(), and only while the file is unchanged; no arguments), write one JSON line
    {"url", "seed", "timeout_s"} to its stdin and close it, read its JSON-lines records under a hard deadline
    (the binary has its own, shorter one), write each PNG and a sanitised report.json through the writer helper
-   (0600, never overwriting), then stop the engine.
+   (0600, never overwriting), then stop the engine. If the engine stops first (a stop request, a run marker or an
+   actor failure), the binary is stopped at once (engine_stopping; a run marker still ends run_marker_present).
 4. Print codes, counts and paths only:
 
        uisnap ok seed=<n> build=<built|cached> pngs=<n> page_errors=<n|none> runtime_s=<s>
@@ -446,7 +447,7 @@ def snap(app, binary, seed, out_dir, *, timeout_s=RUN_TIMEOUT_S, grace_s=RUN_GRA
             break
         except subprocess.TimeoutExpired:
             pass
-        if app.stopping.is_set():
+        if app.stopping.is_set() or app.engine.stopped.is_set():    # a stop request, a run marker, an actor failure
             outcome.fail("engine_stopping")
         elif time.monotonic() > deadline:
             outcome.fail("uisnap_timeout")
@@ -520,10 +521,11 @@ def _stop_child(process):
 
 # --- the command -------------------------------------------------------------------------------------
 
-def main(options, *, out=None, binary=None, timeout_s=RUN_TIMEOUT_S, grace_s=RUN_GRACE_S, home_dir=None, ui_dir=None):
-    """bin/suite uisnap. binary, timeout_s, grace_s and ui_dir (another UI for the engine to serve) exist for tests;
-    the guard still starts only a binary in the build directory layout, registered here before the engine seals
-    it (guard.permit_uisnap_binary: that file, unchanged)."""
+def main(options, *, out=None, binary=None, timeout_s=RUN_TIMEOUT_S, grace_s=RUN_GRACE_S, home_dir=None, ui_dir=None,
+         marker_grace_s=None):
+    """bin/suite uisnap. binary, timeout_s, grace_s, ui_dir (another UI for the engine to serve) and marker_grace_s
+    exist for tests; the guard still starts only a binary in the build directory layout, registered here before
+    the engine seals it (guard.permit_uisnap_binary: that file, unchanged)."""
     from .api import control, server        # here, not at the top: no other command loads socket or http
     out = sys.stdout if out is None else out
     started = time.monotonic()
@@ -555,7 +557,8 @@ def main(options, *, out=None, binary=None, timeout_s=RUN_TIMEOUT_S, grace_s=RUN
         finally:
             app.request_stop("stopped")
 
-    server.run(cfg, command="serve", port=0, on_ready=on_ready, out=io.StringIO(), home_dir=home_dir, ui_dir=ui_dir)
+    server.run(cfg, command="serve", port=0, on_ready=on_ready, out=io.StringIO(), home_dir=home_dir, ui_dir=ui_dir,
+               marker_grace_s=marker_grace_s)
     outcome = results[0] if results else Outcome()
     if not results:
         outcome.fail("uisnap_failed")

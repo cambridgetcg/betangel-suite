@@ -3,8 +3,9 @@
 Synthetic only. Three tiers:
 
 - Always on, in process: argument parsing, the output directory rules, the child's environment, the record
-  parser and report sanitiser, the exit-code table against the Swift source, and a static read of the Swift
-  source (never visible, never off the loopback, no file or screen access of its own).
+  parser and report sanitiser, snap's wait against a fake child, the exit-code table against the Swift source,
+  and a static read of the Swift source (never visible, never off the loopback, no file or screen access of its
+  own).
 - Always on, in fresh uisnap-mode children (an audit hook cannot be removed): the guard mode itself (before
   seal() only the exact swiftc argv, after it only the built binary, both with the exact environment; nothing
   else, including the engine's git and /usr/bin/open shapes), and the whole command run against the real
@@ -23,6 +24,7 @@ can check they appear nowhere else).
 import base64
 import fcntl
 import hashlib
+import io
 import json
 import os
 import re
@@ -30,6 +32,9 @@ import stat
 import struct
 import subprocess
 import sys
+import threading
+import time
+import types
 import unittest
 import zlib
 
@@ -175,6 +180,53 @@ class RecordTests(unittest.TestCase):
             "steps": [{"name": "initial", "ok": True, "ms": 12, "code": "fine"}],
             "checks": {"market_runners": 8, "raf": True},
         })
+
+
+class FakeChild:
+    """A child that never exits on its own: wait() times out until terminate() or kill()."""
+
+    def __init__(self):
+        self.stdin, self.stdout, self.stderr = io.BytesIO(), io.BytesIO(), io.BytesIO()
+        self.returncode = None
+        self.terminated = False
+
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            time.sleep(min(timeout or 0, 0.05))
+            raise subprocess.TimeoutExpired("uisnap", timeout)
+        return self.returncode
+
+    def terminate(self):
+        self.terminated, self.returncode = True, -15
+
+    def kill(self):
+        self.returncode = -9
+
+
+class SnapTests(unittest.TestCase):
+    """snap's wait for the child, against a fake app and child: nothing is started."""
+
+    def snap(self, stop):
+        app = types.SimpleNamespace(port=1, auth=types.SimpleNamespace(issue_code=lambda: "A" * 22),
+                                    stopping=threading.Event(), engine=types.SimpleNamespace(stopped=threading.Event()))
+        stop(app)
+        child = FakeChild()
+        home = make_home(self)
+        out_dir = os.path.join(roots.state_dir(home), "shots")
+        started = time.monotonic()
+        outcome = uisnap.snap(app, "/nonexistent/uisnap", 1, out_dir, timeout_s=5, grace_s=0, home_dir=home,
+                              popen=lambda *args, **kwargs: child)
+        return outcome, child, time.monotonic() - started, out_dir
+
+    def test_a_stopped_engine_ends_the_wait_and_stops_the_child(self):
+        # A run marker or an actor failure sets only engine.stopped (engine.py); a stop request sets app.stopping.
+        for name, stop in (("marker", lambda app: app.engine.stopped.set()),
+                           ("control", lambda app: app.stopping.set())):
+            outcome, child, elapsed, out_dir = self.snap(stop)
+            self.assertEqual(outcome.code, "engine_stopping", name)
+            self.assertTrue(child.terminated, name)
+            self.assertLess(elapsed, 2.0, name)
+            self.assertFalse(os.path.lexists(out_dir), name)
 
 
 class SwiftSourceTests(unittest.TestCase):
@@ -623,6 +675,12 @@ elif MODE == "garbage":
 elif MODE == "hang":
     save("fake.json", facts)
     time.sleep(300)
+elif MODE == "marker":
+    save("fake.json", facts)
+    marker = os.path.join(HOME, ".local", "state", "lab-runs", "ACTIVE")
+    os.makedirs(os.path.dirname(marker), mode=0o700, exist_ok=True)
+    open(marker, "w").close()               # Nuance starts a run mid-snapshot
+    time.sleep(300)
 '''
 
 COMMAND = PRELUDE + """
@@ -634,7 +692,7 @@ os.umask(0o077)
 from betangel_suite import roots, uisnap
 roots.ensure_dir(os.environ["TMPDIR"])
 try:
-    status = uisnap.main({"seed": 5, "out": %r}, binary=%r, timeout_s=%d, grace_s=%d)
+    status = uisnap.main({"seed": 5, "out": %r}, binary=%r, timeout_s=%d, grace_s=%d, marker_grace_s=%r)
 except errors.SuiteError as exc:
     sys.stderr.write(errors.describe(exc) + "\\n")
     status = 2
@@ -645,7 +703,7 @@ sys.exit(status)
 class CommandTests(unittest.TestCase):
     """uisnap.main in a uisnap-mode child: the real engine in process, a stub binary in the build layout."""
 
-    def run_command(self, mode, *, out=None, timeout_s=30, grace_s=5):
+    def run_command(self, mode, *, out=None, timeout_s=30, grace_s=5, marker_grace_s=None):
         """(home, CompletedProcess); out is None or a function of the new HOME giving the --out path."""
         home = short_home(self)
         out = None if out is None else out(home)
@@ -655,7 +713,8 @@ class CommandTests(unittest.TestCase):
         directory = os.path.join(uisnap.build_root(home), hashlib.sha256(mode.encode()).hexdigest())
         binary = place_stub(os.path.join(directory, "uisnap"),
                             "#!/bin/sh\nexec %s -I -S -B %s %s\n" % (PYTHON, fake, mode))
-        result = subprocess.run([PYTHON, "-I", "-S", "-B", "-c", COMMAND % (out, binary, timeout_s, grace_s)],
+        result = subprocess.run([PYTHON, "-I", "-S", "-B", "-c", COMMAND % (out, binary, timeout_s, grace_s,
+                                                                           marker_grace_s)],
                                 env=child_env(home), cwd=home, capture_output=True, text=True, timeout=120)
         self.addCleanup(self.kill_fake, home)
         return home, result
@@ -733,6 +792,18 @@ class CommandTests(unittest.TestCase):
     def test_a_hanging_binary_is_killed_at_the_deadline(self):
         home, result = self.run_command("hang", timeout_s=1, grace_s=0)
         self.assertEqual((result.returncode, result.stderr), (2, "refused:uisnap_timeout\n"))
+        self.assert_codes_only(result)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(read_json(os.path.join(home, "fake.pid")), 0)
+        self.assert_engine_gone(home)
+
+    def test_a_run_marker_mid_snapshot_stops_the_binary_and_the_engine(self):
+        # The actor ends with run_marker after its grace (engine.py); the wait must not hold the lock for the
+        # binary's own deadline (DESIGN.md 6.8).
+        started = time.monotonic()
+        home, result = self.run_command("marker", timeout_s=60, grace_s=5, marker_grace_s=0.5)
+        self.assertEqual((result.returncode, result.stderr), (2, "refused:run_marker_present\n"))
+        self.assertLess(time.monotonic() - started, 20)
         self.assert_codes_only(result)
         with self.assertRaises(ProcessLookupError):
             os.kill(read_json(os.path.join(home, "fake.pid")), 0)
