@@ -46,7 +46,7 @@ class LoadTests(unittest.TestCase):
 
     def test_valid_overrides(self):
         values = {"port": 8766, "frame_hz": 5, "cap_profile": "practice", "watch_grace_s": 60,
-                  "run_marker": "~/.local/state/lab-runs/ACTIVE", "research_months_ruling": "ruling-2026-01",
+                  "run_marker": "~/.local/state/lab-runs/ACTIVE", "research_months_ruling": None,
                   "commission_source": "user_package_verified", "data_roots": ["~/betangel-data/historic-pro"]}
         self.write(values)
         loaded = config.load(self.home)
@@ -66,6 +66,16 @@ class LoadTests(unittest.TestCase):
                            ("research_months_ruling", "has space"), ("research_months_ruling", 7)):
             self.write({key: value})
             self.refused("config_invalid_value")
+
+    def test_research_months_stay_hidden_until_a_reviewed_pr_lists_a_ruling(self):
+        # Nuance's PR #2 review, item 12: any well-formed id used to load, so one config edit could put research-month
+        # rows in the catalogue (DESIGN.md 5.3, 14). Only null loads until Yu rules on Q-Y7 and a reviewed PR lists the id.
+        self.assertEqual(config.ACCEPTED_RULINGS, frozenset())
+        for value in ("ruling-2026-01", "x", "", "null", "RULING-2026-01"):
+            self.write({"research_months_ruling": value})
+            self.refused("config_invalid_value")
+        self.write({"research_months_ruling": None})
+        self.assertIsNone(config.load(self.home)["research_months_ruling"])
 
     def test_shape_refusals(self):
         cases = ((b'{"port": 8765, "port": 8766}', "config_not_json"), (b'{"frame_hz": NaN}', "config_not_json"),

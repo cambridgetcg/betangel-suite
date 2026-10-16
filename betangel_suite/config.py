@@ -7,9 +7,10 @@ most 64 KB of strict JSON (duplicate keys and NaN or Infinity refused).
 
 Phase 0: no command reads a data root, and the repo's own config.validate_config is not called yet; the
 paper config and cap profiles arrive with Phase 1b. Nothing here can weaken the guard: no key names the
-network switch, the audit hook or the write roots, state_root accepts only the value of R-4, and
+network switch, the audit hook or the write roots, state_root accepts only the value of R-4,
 run_marker accepts only the marker path agreed with Nuance (Q-N3; a configurable marker would let a
-config edit point the I-17 start check somewhere that never exists). Only a reviewed change moves either;
+config edit point the I-17 start check somewhere that never exists), and research_months_ruling accepts
+only null or an id in ACCEPTED_RULINGS, which is empty. Only a reviewed change moves any of them;
 configuration alone never does.
 Standard library only.
 """
@@ -17,7 +18,6 @@ Standard library only.
 import copy
 import json
 import os
-import re
 import stat
 
 from . import roots
@@ -38,7 +38,10 @@ CAP_PROFILES = ("v1-live-mirror", "practice")
 COMMISSION_SOURCES = ("user_package_verified", "user_package_unverified", "official_example_basic_2pct")
 MAX_CONFIG_BYTES = 64 << 10
 MAX_DATA_ROOTS = 8
-_RULING_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# The ruling ids research_months_ruling may name (DESIGN.md 5.3 and 14; Nuance's PR #2 review, item 12). Empty: the
+# key stays null until Yu rules on Q-Y7, so no config edit alone can put research-month rows in the catalogue. Each
+# id is added only by a reviewed PR, after Yu's ruling with Nuance and Astra.
+ACCEPTED_RULINGS = frozenset()
 
 
 def load(home_dir=None):
@@ -114,7 +117,7 @@ _CHECKS = {
     "cap_profile": lambda value, home_dir: value in CAP_PROFILES,
     "commission_source": lambda value, home_dir: value in COMMISSION_SOURCES,
     "research_months_ruling": lambda value, home_dir: value is None or (
-        isinstance(value, str) and bool(_RULING_RE.fullmatch(value))),
+        isinstance(value, str) and value in ACCEPTED_RULINGS),
     "run_marker": lambda value, home_dir: value == DEFAULTS["run_marker"],
     "watch_grace_s": lambda value, home_dir: _is_int(value, 60, 3600),
 }
