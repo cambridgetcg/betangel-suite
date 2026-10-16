@@ -903,9 +903,11 @@ if [ "$scenario" = noauth ]; then
     echo 'user@192.168.50.88: Permission denied (publickey).' >> "$log"
     exit 255
 fi
-# What ssh -v logs about keys. In the four scenarios below the lab refuses everything, as in secure, but the log
+# What ssh -v logs about keys. In the six scenarios below the lab refuses everything, as in secure, but the log
 # shows: otherkey, another key accepted; trykey, the viewer key tried without an offer; secondkey, the viewer key
-# accepted and then another key tried; offerother, another key offered before the viewer key was accepted.
+# accepted and then another key tried; offerother, another key offered before the viewer key was accepted;
+# attemptother, another key listed, as when a Match block adds one, but never offered, because the viewer key was
+# accepted first; acceptother, a lone line accepting another key.
 viewer="$HOME/.ssh/id_ed25519_lab_suite ED25519 SHA256:fake explicit"
 other="$HOME/.ssh/id_ed25519 ED25519 SHA256:fake explicit"
 keylog() { for line in "$@"; do printf 'debug1: %s\\n' "$line"; done; }
@@ -917,10 +919,14 @@ case "$scenario" in
                    "Trying private key: $HOME/.ssh/id_ed25519" ;;
     offerother) keylog "Will attempt key: $other" "Will attempt key: $viewer" "Offering public key: $other" \\
                     "Offering public key: $viewer" "Server accepts key: $viewer" ;;
+    attemptother) keylog "Will attempt key: $viewer" "Will attempt key: $other" "Offering public key: $viewer" \\
+                      "Server accepts key: $viewer" ;;
+    acceptother) keylog "Will attempt key: $viewer" "Offering public key: $viewer" "Server accepts key: $viewer" \\
+                     "Server accepts key: $other" ;;
     *) keylog "Will attempt key: $viewer" "Offering public key: $viewer" "Server accepts key: $viewer" ;;
 esac >> "$log"
 echo 'Authenticated to 192.168.50.88 ([192.168.50.88]:22) using "publickey".' >> "$log"
-case "$scenario" in otherkey|trykey|secondkey|offerother) scenario=secure ;; esac
+case "$scenario" in otherkey|trykey|secondkey|offerother|attemptother|acceptother) scenario=secure ;; esac
 if [ -n "$wflag" ]; then
     cat > /dev/null
     if [ "$scenario" = secure ]; then
@@ -1127,8 +1133,11 @@ class SelfTestScriptTests(unittest.TestCase):
     def test_the_log_must_show_the_viewer_key_and_no_other(self):
         # The lab refuses everything in each of these, but the ssh -v log does not show a login with the viewer key
         # alone: the key was tried without an offer (trykey), another key was tried after the viewer key was
-        # accepted (secondkey), or another key was offered first (offerother). No probe counts as refused.
-        names = ("trykey", "secondkey", "offerother")
+        # accepted (secondkey), another key was offered first (offerother), another key was listed but never
+        # offered because the viewer key was accepted first (attemptother: "Will attempt key"), or another key was
+        # accepted (acceptother: "Server accepts key"). No probe counts as refused. The last two each rest on one
+        # pattern of the self-test's other-key rule, so each fails if that pattern goes.
+        names = ("trykey", "secondkey", "offerother", "attemptother", "acceptother")
         runs = [(["/bin/sh", SELFTEST], self.state(name, name)) for name in names]
         for name, (code, out, err) in zip(names, _relay_many(self.home, runs)):
             with self.subTest(scenario=name):
