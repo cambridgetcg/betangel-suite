@@ -170,14 +170,28 @@ class ActivationTests(unittest.TestCase):
         self.assertEqual(outcome(self, home, code).splitlines(), ["imported", "upstream_loaded", "True", "True"])
 
     def test_research_clone_on_sys_path_is_refused(self):
+        # The lab's APFS volume folds case and U+017F (long s), so the last two entries name the clone too.
         home = make_home(self, deps=True)
         research = roots.research_clone(home)
         os.makedirs(os.path.join(research, "sub"))
         os.symlink(os.path.join(research, "sub"), os.path.join(home, "alias"))
-        for entry in (research, os.path.join(research, "sub"), os.path.join(home, "alias")):
+        for entry in (research, os.path.join(research, "sub"), os.path.join(home, "alias"),
+                      os.path.join(home, "BetAngel-Research"), os.path.join(home, "betangel-reſearch", "sub")):
             code = ARM_ENGINE + "sys.path.append(%r)\n" % entry + TRY_RX
             self.assertEqual(outcome(self, home, code).splitlines(),
                              ["research_clone_on_path", "upstream_absent"], entry)
+
+    def test_deps_reached_through_a_link_into_the_research_clone_is_refused(self):
+        # The deps directory itself is real, but an ancestor links into the deploy clone (I-13): refused
+        # before its files are read or it is appended.
+        home = make_home(self, deps=True)
+        research = roots.research_clone(home)
+        os.makedirs(research)
+        moved = os.path.join(research, "vendor")
+        os.rename(roots.deps_root(home), moved)
+        os.symlink(moved, roots.deps_root(home))
+        self.assertEqual(outcome(self, home, ARM_ENGINE + TRY_RX).splitlines(),
+                         ["research_clone_on_path", "upstream_absent"])
 
     def test_upstream_imported_before_activation_is_refused(self):
         home = make_home(self, deps=True)

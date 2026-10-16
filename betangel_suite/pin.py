@@ -9,9 +9,10 @@ hashes the pinned files in ~/.local/share/betangel-suite/deps/betangel-research-
 refuses pin_mismatch on any difference, refuses a deps tree holding bytecode caches (Python would load a
 stale .pyc beside a matching .py) or anything Python would import in preference to a pinned .py (an
 extension module such as paper.cpython-313-darwin.so, a .pyc, or a package directory named like a pinned
-module), refuses any sys.path entry inside ~/betangel-research (the moving deploy
-clone), and only then APPENDS the deps directory to sys.path, so the standard library can never be
-shadowed. assert_origins() then checks that every loaded betangel_research module came from that directory.
+module), refuses a deps directory or any sys.path entry that lies in ~/betangel-research (the moving
+deploy clone) as written or resolved, in any case, and only then APPENDS the deps directory to sys.path,
+so the standard library can never be shadowed. assert_origins() then checks that every loaded
+betangel_research module came from that directory.
 
 Standard library only.
 """
@@ -162,6 +163,8 @@ def activate(*, home_dir=None, pin_path=PIN_FILE):
         raise SuiteError("upstream_imported_early")
     pin = load(pin_path)
     deps = deps_dir(pin, home_dir)
+    if _in_research(deps, home_dir):
+        raise SuiteError("research_clone_on_path")      # an ancestor links there: before any file is read
     verify(pin, deps)
     refuse_research_on_path(home_dir)
     sys.path.append(deps)
@@ -171,15 +174,19 @@ def activate(*, home_dir=None, pin_path=PIN_FILE):
 
 def refuse_research_on_path(home_dir=None):
     """SuiteError(research_clone_on_path) if any sys.path entry lies in ~/betangel-research."""
-    research = roots.research_clone(home_dir)
-    forms = (research, os.path.realpath(research))
     for entry in sys.path:
-        if not isinstance(entry, str) or not entry:
-            continue
-        resolved = os.path.realpath(os.path.abspath(entry))
-        if any(roots.within(candidate, form) for candidate in (os.path.normpath(os.path.abspath(entry)), resolved)
-               for form in forms):
+        if isinstance(entry, str) and entry and _in_research(entry, home_dir):
             raise SuiteError("research_clone_on_path")
+
+
+def _in_research(entry, home_dir=None):
+    """True when entry, as written or resolved, lies in ~/betangel-research, in any case: the lab's APFS
+    volume folds case and U+017F (long s), so /Users/x/BetAngel-Research is the same directory."""
+    research = roots.research_clone(home_dir)
+    forms = (research.casefold(), os.path.realpath(research).casefold())
+    absolute = os.path.abspath(entry)
+    return any(roots.within(candidate.casefold(), form)
+               for candidate in (os.path.normpath(absolute), os.path.realpath(absolute)) for form in forms)
 
 
 def assert_origins(deps):
