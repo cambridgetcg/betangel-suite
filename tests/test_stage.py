@@ -10,7 +10,9 @@ Nothing here touches the real ~/.ssh, /etc, sudo or sshd, and nothing connects a
     temporary HOME and both fakes are marked recording fakes inside it, which is tested too. Real-mode runs
     appear only in refusal tests that stop before any sudo (and with PATH reset by the script itself);
   - air-viewer-selftest.sh runs against a fake ssh and a fake nc, which simulate a lab that refuses
-    everything, one that allows too much, and one that never lets the key log in.
+    everything, one that allows too much, and one that never lets the key log in. The fake ssh answers ssh -G
+    for each form the self-test asks about, so a test can give one probe's form a key or a forward that a
+    Match block would add.
 
 The test runner's guard does not start shells, so the scripts run from an unguarded relay child (as node does
 in tests/test_integration_ui.py), several runs per relay to keep the fast tier quick. The exact texts (the
@@ -813,21 +815,23 @@ class SetupHarnessRunTests(unittest.TestCase):
 
 FAKE_SSH = """#!/bin/sh
 # Stands in for ssh in tests/test_stage.py: it answers like a lab in the scenario $FAKE_STATE/scenario names,
-# and never connects anywhere.
+# and never connects anywhere. Each argv goes to $FAKE_STATE/ssh-argv, one line, each argument followed by a tab.
 S=$FAKE_STATE
 scenario=$(cat "$S/scenario")
-if [ "$1" = -G ]; then cat "$S/ssh-G"; exit 0; fi
-log=/dev/null nflag= tty= wflag= L= R= cmd= auth=0
+{ printf '%s\\t' "$@"; printf '\\n'; } >> "$S/ssh-argv"
+log=/dev/null gflag= nflag= tty= wflag= L= R= cmd= auth=0 opts=
 while [ $# -gt 0 ]; do
     case "$1" in
         -v|-T) shift ;;
+        -G) gflag=1; shift ;;
         -N) nflag=1; shift ;;
         -tt) tty=1; shift ;;
         -E) log=$2; shift 2 ;;
         -W) wflag=$2; shift 2 ;;
         -L) L="$L $2"; shift 2 ;;
         -R) R="$R $2"; shift 2 ;;
-        -o) case "$2" in
+        -o) opts="$opts $2"
+            case "$2" in
                 PreferredAuthentications=publickey|PasswordAuthentication=no|KbdInteractiveAuthentication=no)
                     auth=$((auth + 1)) ;;
             esac
@@ -837,16 +841,86 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ "$host" = lab-suite ] || exit 64
+if [ -n "$gflag" ]; then
+    # ssh -G reads the config and connects nowhere. This prints $S/ssh-G (the config as the plain form sees it),
+    # changed by what a Match block gives this form, $S/ssh-G-FORM: identityfile and the forward keys add up, and
+    # any other key replaces the plain value. The -o options come first and win (ssh keeps the first value). Then
+    # the -L and -R options, as OpenSSH 10.2's ssh -G prints them: a -L to a Unix socket also shows as a
+    # dynamicforward line. As in OpenSSH, -W drops every forward unless clearallforwardings is no.
+    [ -f "$S/ssh-G" ] || { echo 'fake ssh: cannot read the config' >&2; exit 255; }
+    form=plain
+    if [ -n "$wflag" ]; then form=stdio; elif [ -n "$L" ]; then form=local; elif [ -n "$R" ]; then form=remote
+    elif [ -n "$tty" ]; then form=pty; elif [ -n "$cmd" ]; then form=command; fi
+    awk -v given="$opts" -v block="$S/ssh-G-$form" -v stdio="$wflag" '
+        function fwd(key) { return key == "localforward" || key == "remoteforward" || key == "dynamicforward" }
+        BEGIN {
+            n = split(given, o, " ")
+            for (i = 1; i <= n; i++) {
+                eq = index(o[i], "=")
+                k = tolower(substr(o[i], 1, eq - 1))
+                cl[k] = 1
+                print k, substr(o[i], eq + 1)
+            }
+            while ((getline line < block) > 0) {
+                split(line, f, " ")
+                k = tolower(f[1])
+                if (k in cl) continue
+                if (k == "clearallforwardings" && f[2] == "no") keep = 1
+                if (k != "identityfile" && !fwd(k)) set[k] = 1
+                extra[++m] = line
+            }
+            drop = stdio != "" && !keep
+            for (i = 1; i <= m; i++) {
+                split(extra[i], f, " ")
+                if (!(drop && fwd(tolower(f[1])))) print extra[i]
+            }
+        }
+        { k = tolower($1) }
+        (k in cl) || (k in set) || (drop && fwd(k)) { next }
+        { print }
+    ' "$S/ssh-G"
+    for spec in $L; do
+        rest=${spec#127.0.0.1:}
+        to=${rest#*:}
+        case "$to" in
+            /*) printf 'localforward [127.0.0.1]:%s %s\\n' "${rest%%:*}" "$to"
+                printf 'dynamicforward [127.0.0.1]:%s\\n' "${rest%%:*}" ;;
+            *) printf 'localforward [127.0.0.1]:%s [%s]:%s\\n' "${rest%%:*}" "${to%:*}" "${to##*:}" ;;
+        esac
+    done
+    for spec in $R; do
+        case "$spec" in
+            /*) to=${spec#*:}; printf 'remoteforward %s [%s]:%s\\n' "${spec%%:*}" "${to%:*}" "${to##*:}" ;;
+            *) rest=${spec#127.0.0.1:}; to=${rest#*:}
+               printf 'remoteforward [127.0.0.1]:%s [%s]:%s\\n' "${rest%%:*}" "${to%:*}" "${to##*:}" ;;
+        esac
+    done
+    exit 0
+fi
 # Every login must carry the three public-key-only options, so no real probe could reach a Password: prompt.
 [ "$auth" = 3 ] || { echo 'fake ssh: login without the public-key-only options' >&2; exit 64; }
 if [ "$scenario" = noauth ]; then
     echo 'user@192.168.50.88: Permission denied (publickey).' >> "$log"
     exit 255
 fi
-key=id_ed25519_lab_suite
-if [ "$scenario" = otherkey ]; then key=id_ed25519; scenario=secure; fi
-{ echo "debug1: Server accepts key: $HOME/.ssh/$key ED25519 SHA256:fake explicit"
-  echo 'Authenticated to 192.168.50.88 ([192.168.50.88]:22) using "publickey".'; } >> "$log"
+# What ssh -v logs about keys. In the four scenarios below the lab refuses everything, as in secure, but the log
+# shows: otherkey, another key accepted; trykey, the viewer key tried without an offer; secondkey, the viewer key
+# accepted and then another key tried; offerother, another key offered before the viewer key was accepted.
+viewer="$HOME/.ssh/id_ed25519_lab_suite ED25519 SHA256:fake explicit"
+other="$HOME/.ssh/id_ed25519 ED25519 SHA256:fake explicit"
+keylog() { for line in "$@"; do printf 'debug1: %s\\n' "$line"; done; }
+case "$scenario" in
+    otherkey) keylog "Will attempt key: $other" "Offering public key: $other" "Server accepts key: $other" ;;
+    trykey) keylog "Will attempt key: $HOME/.ssh/id_ed25519_lab_suite " \\
+                "Trying private key: $HOME/.ssh/id_ed25519_lab_suite" ;;
+    secondkey) keylog "Will attempt key: $viewer" "Offering public key: $viewer" "Server accepts key: $viewer" \\
+                   "Trying private key: $HOME/.ssh/id_ed25519" ;;
+    offerother) keylog "Will attempt key: $other" "Will attempt key: $viewer" "Offering public key: $other" \\
+                    "Offering public key: $viewer" "Server accepts key: $viewer" ;;
+    *) keylog "Will attempt key: $viewer" "Offering public key: $viewer" "Server accepts key: $viewer" ;;
+esac >> "$log"
+echo 'Authenticated to 192.168.50.88 ([192.168.50.88]:22) using "publickey".' >> "$log"
+case "$scenario" in otherkey|trykey|secondkey|offerother) scenario=secure ;; esac
 if [ -n "$wflag" ]; then
     cat > /dev/null
     if [ "$scenario" = secure ]; then
@@ -955,6 +1029,28 @@ def _strip_hardening(ssh_g):
 ITEMS = ("1 a requested command", "2 a PTY", "3 -L to another port", "4 -L to another host",
          "5 -L to another name", "6 -L to a Unix socket", "7 -W host:22", "8 -R TCP", "9 -R Unix socket")
 
+# The six forms the self-test checks with ssh -G before any login (the fake ssh's names), and the words its
+# refusal uses for each.
+FORMS = {"plain": "ssh lab-suite", "command": "probe 1 (", "pty": "probe 2 (", "local": "probes 3-6 (",
+         "stdio": "probe 7 (", "remote": "probes 8-9 ("}
+OTHER_KEY = "identityfile ~/.ssh/id_ed25519\n"
+PASSWORD_ON = "passwordauthentication yes\nkbdinteractiveauthentication yes\npreferredauthentications password\n"
+
+
+def _ssh_calls(state):
+    """[(kind, argv)] for each fake ssh call in a state directory: "G" for ssh -G (argv after -G), "login" for a
+    login (argv after -v -E LOG)."""
+    calls = []
+    for line in _read(os.path.join(state, "ssh-argv")).splitlines():
+        argv = line.split("\t")[:-1]
+        if argv[:1] == ["-G"]:
+            calls.append(("G", argv[1:]))
+        elif argv[:2] == ["-v", "-E"]:
+            calls.append(("login", argv[3:]))
+        else:
+            calls.append(("other", argv))
+    return calls
+
 
 class SelfTestScriptTests(unittest.TestCase):
 
@@ -965,10 +1061,15 @@ class SelfTestScriptTests(unittest.TestCase):
         _link_fake("nc", FAKE_NC, self.bin)
         _write(os.path.join(self.home, ".ssh", "id_ed25519_lab_suite"), "placeholder, not a key\n")
 
-    def state(self, name, scenario, ssh_g=SSH_G, busy=False):
+    def state(self, name, scenario, ssh_g=SSH_G, busy=False, blocks=None):
+        """The environment for one run. ssh_g is what ssh -G prints for the plain form (None: ssh -G fails), and
+        blocks maps a form to what a Match block adds to it or changes in it."""
         path = os.path.join(self.home, "state-" + name)
         _write(os.path.join(path, "scenario"), scenario + "\n")
-        _write(os.path.join(path, "ssh-G"), ssh_g)
+        if ssh_g is not None:
+            _write(os.path.join(path, "ssh-G"), ssh_g)
+        for form, block in (blocks or {}).items():
+            _write(os.path.join(path, "ssh-G-" + form), block)
         if busy:
             _write(os.path.join(path, "viewer-port-busy"), "")
         return child_env(self.home, PATH=self.bin + ":/usr/bin:/bin", FAKE_STATE=path,
@@ -995,6 +1096,11 @@ class SelfTestScriptTests(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         self.assertEqual(self.statuses(out), {item: "refused" for item in ITEMS})
         self.assertTrue(out.endswith("verdict: PASS (9 of 9 refused)\n"), out)
+        # ssh -G ran for the plain form and then for each login's exact arguments, all before the first login.
+        calls = _ssh_calls(os.path.join(self.home, "state-secure"))
+        self.assertEqual([kind for kind, _argv in calls], ["G"] * 6 + ["login"] * 5, calls)
+        self.assertEqual(calls[0][1], ["lab-suite"])
+        self.assertEqual([argv for _kind, argv in calls[6:]], [argv for _kind, argv in calls[1:6]])
 
         code, out, err = leaky
         self.assertEqual(code, 1, out + err)
@@ -1018,8 +1124,59 @@ class SelfTestScriptTests(unittest.TestCase):
             self.assertEqual([entry for entry in os.listdir(os.path.join(self.home, "state-" + name))
                               if entry.startswith("listen-")], [], "every fake ssh was stopped")
 
+    def test_the_log_must_show_the_viewer_key_and_no_other(self):
+        # The lab refuses everything in each of these, but the ssh -v log does not show a login with the viewer key
+        # alone: the key was tried without an offer (trykey), another key was tried after the viewer key was
+        # accepted (secondkey), or another key was offered first (offerother). No probe counts as refused.
+        names = ("trykey", "secondkey", "offerother")
+        runs = [(["/bin/sh", SELFTEST], self.state(name, name)) for name in names]
+        for name, (code, out, err) in zip(names, _relay_many(self.home, runs)):
+            with self.subTest(scenario=name):
+                self.assertEqual(code, 3, out + err)
+                self.assertEqual(self.statuses(out), {item: "unclear" for item in ITEMS})
+                self.assertIn("verdict: INCONCLUSIVE (0 of 9 refused", out)
+
+    def test_a_match_block_that_changes_one_form_is_refused(self):
+        # A Match block (sessiontype, command) applies to some forms only. Anywhere in ~/.ssh/config it can add a
+        # key or a forward to that form; above the lab-suite block it can also set a single-value option first.
+        # Each case changes one probe form only, so ssh lab-suite looks right; each refuses before any login.
+        cases = [
+            ("command", OTHER_KEY, "air_config_identityfile"),
+            ("pty", OTHER_KEY, "air_config_identityfile"),
+            ("local", OTHER_KEY, "air_config_identityfile"),
+            ("stdio", OTHER_KEY, "air_config_identityfile"),
+            ("remote", OTHER_KEY, "air_config_identityfile"),
+            ("command", "remoteforward [127.0.0.1]:2222 [127.0.0.1]:22\n", "air_config_remoteforward"),
+            ("pty", "dynamicforward 1080\n", "air_config_dynamicforward"),
+            ("local", "localforward [127.0.0.1]:9999 [127.0.0.1]:22\n", "air_config_localforward"),
+            ("local", "dynamicforward [127.0.0.1]:1080\n", "air_config_dynamicforward"),
+            ("stdio", "clearallforwardings no\n", "air_config_localforward"),
+            ("remote", "remoteforward [127.0.0.1]:2222 [127.0.0.1]:22\n", "air_config_remoteforward"),
+            ("remote", "localforward [127.0.0.1]:9999 [127.0.0.1]:22\n", "air_config_localforward"),
+            ("command", "hostname 192.168.50.89\n", "air_config_hostname"),
+            ("local", "controlmaster auto\ncontrolpath /tmp/cm-%C\n", "air_config_controlmaster"),
+            ("stdio", "identityagent /tmp/agent.sock\n", "air_config_identityagent"),
+            ("remote", "proxycommand /usr/bin/nc %h %p\n", "air_config_proxy"),
+        ]
+        runs = [(["/bin/sh", SELFTEST], self.state("match%d" % i, "secure", blocks={form: block}))
+                for i, (form, block, _code) in enumerate(cases)]
+        # The control: a Match block that turns passwords on for probe 1's form changes nothing, because the
+        # probe's own -o options win. The preflight passes and the lab refuses all nine.
+        runs.append((["/bin/sh", SELFTEST], self.state("password", "secure", blocks={"command": PASSWORD_ON})))
+        results = _relay_many(self.home, runs)
+        for i, ((form, block, expected), (code, out, err)) in enumerate(zip(cases, results)):
+            with self.subTest(form=form, block=block):
+                self.assertEqual((code, _codes(err)), (2, [expected]), out + err)
+                self.assertIn(FORMS[form], err)
+                self.assertNotIn("probe 1", out)
+                calls = _ssh_calls(os.path.join(self.home, "state-match%d" % i))
+                self.assertEqual({kind for kind, _argv in calls}, {"G"}, "no login")
+        code, out, err = results[-1]
+        self.assertEqual(code, 0, out + err)
+        self.assertTrue(out.endswith("verdict: PASS (9 of 9 refused)\n"), out)
+
     def test_preflight_refusals(self):
-        other_key = SSH_G + "identityfile ~/.ssh/id_ed25519\n"
+        other_key = SSH_G + OTHER_KEY
         cases = [
             ("wrong host", self.state("host", "secure", SSH_G.replace("192.168.50.88", "192.168.50.89")),
              "air_config_hostname"),
@@ -1029,6 +1186,12 @@ class SelfTestScriptTests(unittest.TestCase):
              "air_config_addkeystoagent"),
             ("no local forward", self.state("fwd", "secure", SSH_G.replace("localforward", "#")),
              "air_config_localforward"),
+            # A later Host * block adds a forward to every form, the plain one included.
+            ("a remote forward", self.state("rfwd", "secure",
+                                            SSH_G + "remoteforward [127.0.0.1]:2222 [127.0.0.1]:22\n"),
+             "air_config_remoteforward"),
+            ("a dynamic forward", self.state("dfwd", "secure", SSH_G + "dynamicforward 1080\n"),
+             "air_config_dynamicforward"),
             ("viewer port busy", self.state("busy", "secure", busy=True), "viewer_port_busy"),
             # The Host block of the DESIGN text alone, below a Host * that shares connections and an agent.
             ("an inherited ControlMaster", self.state("shared", "secure", _strip_hardening(SSH_G) + SHARED),

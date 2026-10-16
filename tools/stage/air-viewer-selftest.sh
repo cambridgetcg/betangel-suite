@@ -7,11 +7,14 @@
 #     sh air-viewer-selftest.sh              five SSH logins: type the passphrase at each prompt
 #     sh air-viewer-selftest.sh --keep-logs  also keep the ssh -v logs (host, user and key path; no secrets)
 #
-# It uses only the "lab-suite" Host of ~/.ssh/config (tools/stage/air-ssh-config.snippet) and refuses to
-# start unless `ssh -G lab-suite` shows that block, public-key-only authentication, connection sharing
-# (ControlMaster, ControlPath, ControlPersist), the agent, proxies and LocalCommand included. Its own logins
-# also pass the public-key-only options with -o, which no config block can override. Run it while no
-# `ssh lab-suite` viewer session is open: the Host's LocalForward needs port 8765 on the Air.
+# It uses only the "lab-suite" Host of ~/.ssh/config (tools/stage/air-ssh-config.snippet). Before any login it
+# runs ssh -G, which reads the config and connects nowhere, for six forms: the plain `ssh lab-suite`, and the
+# exact form of each of its five logins (the same options, forwards and command). A Match block (sessiontype,
+# command) can change one form and not another. It refuses to start unless every form shows the block: the viewer
+# key as the only identity, public-key-only authentication, no forwards but the Host's LocalForward and the
+# probe's own, and no connection sharing (ControlMaster, ControlPath, ControlPersist), agent, proxy or
+# LocalCommand. Its own logins also pass the public-key-only options with -o, which no config block can override.
+# Run it while no `ssh lab-suite` viewer session is open: the Host's LocalForward needs port 8765 on the Air.
 #
 # No probe starts an engine on the lab: probes 3-9 open no session at all (-N, -W), and probes 1-2 send a
 # command, which the forced command (bin/suite ssh-session) refuses (refused:ssh_original_command).
@@ -24,9 +27,10 @@
 #   7  -W host:22                    -W 127.0.0.1:22
 #   8  -R TCP                        -R 127.0.0.1:0:127.0.0.1:9
 #   9  -R Unix socket                -R /tmp/suite-selftest-<n>.sock:127.0.0.1:9
-# Probes 3-6 share one login and probes 8-9 another. A probe counts as refused only with evidence: the
-# login used the viewer key (ssh -v shows "Server accepts key: ...id_ed25519_lab_suite") and the lab's
-# refusal was seen (refused:ssh_original_command, "PTY allocation request failed", "administratively
+# Probes 3-6 share one login and probes 8-9 another. A probe counts as refused only with evidence in the ssh -v
+# log: the lab accepted the viewer key ("Server accepts key: ...id_ed25519_lab_suite"), no other key was listed,
+# offered or accepted, no key was tried without an offer ("Trying private key"), the login succeeded, and the
+# lab's refusal was seen (refused:ssh_original_command, "PTY allocation request failed", "administratively
 # prohibited", "stdio forwarding failed", "remote port forwarding failed").
 #
 # Verdict and exit status: PASS (0) only if all nine were refused. FAIL (1) if anything was ALLOWED: then
@@ -90,10 +94,45 @@ trap 'exit 129' HUP
 
 command -v ssh >/dev/null 2>&1 || refuse no_ssh "ssh is not on PATH"
 command -v nc >/dev/null 2>&1 || refuse no_nc "nc is not on PATH"
-CFG=$(ssh -G "$HOST" 2>/dev/null | awk '{ $1 = tolower($1); print }') || CFG=
-if [ -z "$CFG" ]; then refuse air_config_unreadable "ssh -G $HOST failed"; fi
 
-cfg_has() {                 # cfg_has KEY VALUE...: the Host's KEY is one of the VALUEs
+free_port() {               # the first port from $1 up that nothing listens on
+    fp_port=$1
+    while nc -z -w 1 127.0.0.1 "$fp_port" >/dev/null 2>&1; do fp_port=$(( fp_port + 1 )); done
+    echo "$fp_port"
+}
+
+# What the five logins use, fixed before the checks, so that ssh -G sees each login exactly as it will run.
+MARK="suite-selftest-$$-$(date +%s)"
+SOCK="/tmp/suite-selftest-$$.sock"
+P3=$(free_port 47110)
+P4=$(free_port $(( P3 + 1 )))
+P5=$(free_port $(( P4 + 1 )))
+P6=$(free_port $(( P5 + 1 )))
+
+with_form() {               # with_form FORM COMMAND...: run COMMAND... followed by FORM's exact ssh arguments
+    wf_form=$1
+    shift
+    # Public-key login only, whatever ~/.ssh/config says (a Match block can differ for -T, -N or -W): the command
+    # line wins over every config block, so no probe can end at a Password: prompt. The plain form is Yu's own
+    # `ssh lab-suite`, which must get this from the config alone.
+    if [ "$wf_form" != plain ]; then
+        set -- "$@" -o PreferredAuthentications=publickey -o PasswordAuthentication=no \
+            -o KbdInteractiveAuthentication=no
+    fi
+    case "$wf_form" in
+        plain) set -- "$@" "$HOST" ;;
+        command) set -- "$@" -T "$HOST" "echo $MARK" ;;
+        pty) set -- "$@" -tt "$HOST" "echo $MARK" ;;
+        local) set -- "$@" -N -o ExitOnForwardFailure=yes -L "127.0.0.1:$P3:127.0.0.1:22" \
+                   -L "127.0.0.1:$P4:$LAB_IP:22" -L "127.0.0.1:$P5:localhost:$VIEWER_PORT" \
+                   -L "127.0.0.1:$P6:$SOCK" "$HOST" ;;
+        stdio) set -- "$@" -W 127.0.0.1:22 "$HOST" ;;
+        remote) set -- "$@" -N -o ExitOnForwardFailure=no -R "127.0.0.1:0:127.0.0.1:9" -R "$SOCK:127.0.0.1:9" "$HOST" ;;
+    esac
+    "$@"
+}
+
+cfg_has() {                 # cfg_has KEY VALUE...: the form's KEY is one of the VALUEs
     ch_key=$1
     shift
     ch_got=$(printf '%s\n' "$CFG" | awk -v k="$ch_key" '$1 == k { $1 = ""; sub(/^ /, ""); print }')
@@ -103,40 +142,91 @@ cfg_has() {                 # cfg_has KEY VALUE...: the Host's KEY is one of the
     return 1
 }
 
+forwards() {                # forwards KEY: the form's KEY lines without brackets, sorted
+    printf '%s\n' "$CFG" | awk -v k="$1" '$1 == k { gsub(/[][]/, ""); print }' | LC_ALL=C sort
+}
+
+sorted() { printf '%s\n' "$@" | LC_ALL=C sort; }
+
 CONFIG_HINT="put the lab-suite block (tools/stage/air-ssh-config.snippet) at the TOP of ~/.ssh/config: ssh keeps the first value it reads"
-cfg_has hostname "$LAB_IP" || refuse air_config_hostname "$CONFIG_HINT"
-cfg_has user user || refuse air_config_user "$CONFIG_HINT"
-cfg_has addressfamily inet || refuse air_config_addressfamily "$CONFIG_HINT"
-cfg_has identitiesonly yes true || refuse air_config_identitiesonly "$CONFIG_HINT"
-cfg_has addkeystoagent no false || refuse air_config_addkeystoagent "$CONFIG_HINT"
-cfg_has exitonforwardfailure yes true || refuse air_config_exitonforwardfailure "$CONFIG_HINT"
-cfg_has stricthostkeychecking yes true || refuse air_config_stricthostkeychecking "$CONFIG_HINT"
-cfg_has localforward "[127.0.0.1]:$VIEWER_PORT [127.0.0.1]:$VIEWER_PORT" "127.0.0.1:$VIEWER_PORT 127.0.0.1:$VIEWER_PORT" ||
-    refuse air_config_localforward "$CONFIG_HINT"
-# Public-key login only: the lab's sshd still takes passwords, so a refused viewer key would otherwise end at a
-# Password: prompt, and the lab password typed there would open a full shell with no forced command.
-cfg_has preferredauthentications publickey || refuse air_config_auth "$CONFIG_HINT"
-cfg_has passwordauthentication no false || refuse air_config_auth "$CONFIG_HINT"
-cfg_has kbdinteractiveauthentication no false || refuse air_config_auth "$CONFIG_HINT"
-# No shared connection and no agent: a master connection left by `ssh lab-suite` (ControlMaster/ControlPersist
-# from a later Host * block) would let any process on the Air open sessions through it without the passphrase,
-# and an agent could sign with a copy of the key. ssh -G prints no controlpath, proxycommand or proxyjump line
-# once the block sets them to none.
-cfg_has controlmaster false no || refuse air_config_controlmaster "$CONFIG_HINT"
-cfg_has controlpersist no false || refuse air_config_controlpersist "$CONFIG_HINT"
-cfg_has controlpath "" none || refuse air_config_controlpath "$CONFIG_HINT"
-cfg_has identityagent none || refuse air_config_identityagent "$CONFIG_HINT"
-cfg_has proxycommand "" none || refuse air_config_proxy "$CONFIG_HINT"
-cfg_has proxyjump "" none || refuse air_config_proxy "$CONFIG_HINT"
-cfg_has permitlocalcommand no false || refuse air_config_permitlocalcommand "$CONFIG_HINT"
-IDENTITIES=$(printf '%s\n' "$CFG" | awk '$1 == "identityfile" { $1 = ""; sub(/^ /, ""); print }')
-case "$IDENTITIES" in
-    *"
-"*) refuse air_config_identityfile "lab-suite must offer one key only, ~/.ssh/$KEY_NAME: $CONFIG_HINT" ;;
-    "~/.ssh/$KEY_NAME") KEY_PATH="$HOME/.ssh/$KEY_NAME" ;;
-    */"$KEY_NAME") KEY_PATH=$IDENTITIES ;;
-    *) refuse air_config_identityfile "lab-suite must offer one key only, ~/.ssh/$KEY_NAME: $CONFIG_HINT" ;;
-esac
+VIEWER_FORWARD="localforward 127.0.0.1:$VIEWER_PORT 127.0.0.1:$VIEWER_PORT"
+
+check_form() {              # check_form FORM WHAT: ssh -G for FORM's exact arguments shows the lab-suite block in force
+    cf_form=$1
+    cf_hint=$CONFIG_HINT
+    if [ "$cf_form" != plain ]; then
+        cf_hint="ssh -G shows this for $2, not for ssh lab-suite: a Match block in ~/.ssh/config (such as"
+        cf_hint="$cf_hint Match sessiontype or Match command) changes that login. Add !originalhost lab-suite to its Match line"
+    fi
+    CFG=$(with_form "$cf_form" ssh -G 2>/dev/null | awk '{ $1 = tolower($1); print }') || CFG=
+    if [ -z "$CFG" ]; then refuse air_config_unreadable "ssh -G failed for $2"; fi
+    cfg_has hostname "$LAB_IP" || refuse air_config_hostname "$cf_hint"
+    cfg_has user user || refuse air_config_user "$cf_hint"
+    cfg_has addressfamily inet || refuse air_config_addressfamily "$cf_hint"
+    cfg_has identitiesonly yes true || refuse air_config_identitiesonly "$cf_hint"
+    cfg_has addkeystoagent no false || refuse air_config_addkeystoagent "$cf_hint"
+    if [ "$cf_form" = remote ]; then         # probes 8-9 pass ExitOnForwardFailure=no, to hear both answers
+        cfg_has exitonforwardfailure no false || refuse air_config_exitonforwardfailure "$cf_hint"
+    else
+        cfg_has exitonforwardfailure yes true || refuse air_config_exitonforwardfailure "$cf_hint"
+    fi
+    cfg_has stricthostkeychecking yes true || refuse air_config_stricthostkeychecking "$cf_hint"
+    # Public-key login only: the lab's sshd still takes passwords, so a refused viewer key would otherwise end at a
+    # Password: prompt, and the lab password typed there would open a full shell with no forced command.
+    cfg_has preferredauthentications publickey || refuse air_config_auth "$cf_hint"
+    cfg_has passwordauthentication no false || refuse air_config_auth "$cf_hint"
+    cfg_has kbdinteractiveauthentication no false || refuse air_config_auth "$cf_hint"
+    # No shared connection and no agent: a master connection left by `ssh lab-suite` (ControlMaster/ControlPersist
+    # from a later Host * block) would let any process on the Air open sessions through it without the passphrase,
+    # and an agent could sign with a copy of the key. ssh -G prints no controlpath, proxycommand or proxyjump line
+    # once the block sets them to none.
+    cfg_has controlmaster false no || refuse air_config_controlmaster "$cf_hint"
+    cfg_has controlpersist no false || refuse air_config_controlpersist "$cf_hint"
+    cfg_has controlpath "" none || refuse air_config_controlpath "$cf_hint"
+    cfg_has identityagent none || refuse air_config_identityagent "$cf_hint"
+    cfg_has proxycommand "" none || refuse air_config_proxy "$cf_hint"
+    cfg_has proxyjump "" none || refuse air_config_proxy "$cf_hint"
+    cfg_has permitlocalcommand no false || refuse air_config_permitlocalcommand "$cf_hint"
+    # One key only, the viewer key. IdentityFile adds up across blocks, so a Match block anywhere in ~/.ssh/config
+    # can add a key to one form, wherever the lab-suite block sits.
+    cf_ids=$(printf '%s\n' "$CFG" | awk '$1 == "identityfile" { $1 = ""; sub(/^ /, ""); print }')
+    case "$cf_ids" in
+        *"
+"*) cf_key= ;;
+        "~/.ssh/$KEY_NAME") cf_key="$HOME/.ssh/$KEY_NAME" ;;
+        */"$KEY_NAME") cf_key=$cf_ids ;;
+        *) cf_key= ;;
+    esac
+    if [ -z "$cf_key" ]; then
+        refuse air_config_identityfile "lab-suite must offer one key only, ~/.ssh/$KEY_NAME: $cf_hint"
+    fi
+    KEY_PATH=$cf_key
+    # Forwards add up across blocks too. Each form may have the Host's LocalForward and the probe's own forwards,
+    # and nothing else. ssh drops the config's forwards for -W.
+    cf_local=$VIEWER_FORWARD
+    cf_remote=
+    case "$cf_form" in
+        local) cf_local=$(sorted "$VIEWER_FORWARD" "localforward 127.0.0.1:$P3 127.0.0.1:22" \
+                   "localforward 127.0.0.1:$P4 $LAB_IP:22" "localforward 127.0.0.1:$P5 localhost:$VIEWER_PORT" \
+                   "localforward 127.0.0.1:$P6 $SOCK") ;;
+        stdio) cf_local= ;;
+        remote) cf_remote=$(sorted "remoteforward 127.0.0.1:0 127.0.0.1:9" "remoteforward $SOCK 127.0.0.1:9") ;;
+    esac
+    [ "$(forwards localforward)" = "$cf_local" ] || refuse air_config_localforward "$cf_hint"
+    [ "$(forwards remoteforward)" = "$cf_remote" ] || refuse air_config_remoteforward "$cf_hint"
+    # ssh -G (OpenSSH 10.2) prints a -L to a Unix socket a second time, as a dynamicforward line with the same
+    # listen address. Probe 6's own line is accepted; any other dynamicforward line refuses.
+    cf_dynamic=$(forwards dynamicforward)
+    if [ "$cf_form" = local ] && [ "$cf_dynamic" = "dynamicforward 127.0.0.1:$P6" ]; then cf_dynamic=; fi
+    [ -z "$cf_dynamic" ] || refuse air_config_dynamicforward "$cf_hint"
+}
+
+check_form plain "ssh lab-suite"
+check_form command "probe 1 (ssh -T lab-suite 'echo ...')"
+check_form pty "probe 2 (ssh -tt lab-suite 'echo ...')"
+check_form local "probes 3-6 (ssh -N with four -L)"
+check_form stdio "probe 7 (ssh -W 127.0.0.1:22)"
+check_form remote "probes 8-9 (ssh -N with two -R)"
 if [ ! -f "$KEY_PATH" ]; then refuse key_missing "no $KEY_PATH: make the key first (README step 2)"; fi
 if nc -z -w 2 127.0.0.1 "$VIEWER_PORT" >/dev/null 2>&1; then
     refuse viewer_port_busy "port $VIEWER_PORT is in use on this Mac: close the viewer session (ssh lab-suite) first"
@@ -144,8 +234,6 @@ fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/air-viewer-selftest.XXXXXX") || WORK=
 if [ -z "$WORK" ]; then refuse workdir "cannot make a temporary directory"; fi
-MARK="suite-selftest-$$-$(date +%s)"
-SOCK="/tmp/suite-selftest-$$.sock"
 printf 'SUITE-SELFTEST\r\n' > "$WORK/hello"
 : > "$WORK/results"
 
@@ -167,10 +255,16 @@ running() { [ -n "$SSH_PID" ] && kill -0 "$SSH_PID" 2>/dev/null; }
 exited() { ! running; }
 log_has() { grep -qF -- "$2" "$WORK/$1.log"; }
 
-authed() {                  # authed NAME: the login succeeded with the viewer key and no other key
-    { grep -F 'Server accepts key: ' "$WORK/$1.log" | grep -qF "/$KEY_NAME " ||
-        grep -F 'Trying private key: ' "$WORK/$1.log" | grep -qF "/$KEY_NAME"; } || return 1
-    if grep -F 'Server accepts key: ' "$WORK/$1.log" | grep -vqF "/$KEY_NAME "; then return 1; fi
+authed() {                  # authed NAME: the login succeeded with the viewer key, and the log names no other key
+    # ssh always has the viewer key's public half (from the .pub file, or else from the private key file, which
+    # keeps it unencrypted), so it offers that key and logs "Server accepts key" when the lab takes it. It logs
+    # "Trying private key" only for a key whose public half it cannot read, never for the viewer key.
+    grep -F 'Server accepts key: ' "$WORK/$1.log" | grep -qF "/$KEY_NAME " || return 1
+    if log_has "$1" 'Trying private key: '; then return 1; fi
+    if grep -F -e 'Will attempt key: ' -e 'Offering public key: ' -e 'Server accepts key: ' "$WORK/$1.log" |
+            grep -vqF "/$KEY_NAME "; then
+        return 1
+    fi
     log_has "$1" 'Authenticated to ' || log_has "$1" 'Authentication succeeded'
 }
 
@@ -179,16 +273,17 @@ record() {                  # record STATUS NUMBER ITEM [DETAIL]
     printf '  %-8s %s %s%s\n' "$1" "$2" "$3" "${4:+  ($4)}"
 }
 
-start_ssh() {               # start_ssh NAME STDIN ARGS...: ssh in the background, logging to WORK/NAME.*
-    ss_name=$1
-    ss_in=$2
+ssh_login() {               # ssh_login NAME STDIN SSH-ARGUMENT...: ssh -v in the background, logging to WORK/NAME.*
+    lg_name=$1
+    lg_in=$2
     shift 2
-    : > "$WORK/$ss_name.log"
-    # Public-key login only, whatever ~/.ssh/config says (a Match block can differ for -T, -N or -W): the
-    # command line wins over every config block, so no probe can end at a Password: prompt.
-    ssh -v -E "$WORK/$ss_name.log" -o PreferredAuthentications=publickey -o PasswordAuthentication=no \
-        -o KbdInteractiveAuthentication=no "$@" < "$ss_in" > "$WORK/$ss_name.out" 2> "$WORK/$ss_name.err" &
+    : > "$WORK/$lg_name.log"
+    ssh -v -E "$WORK/$lg_name.log" "$@" < "$lg_in" > "$WORK/$lg_name.out" 2> "$WORK/$lg_name.err" &
     SSH_PID=$!
+}
+
+start_ssh() {               # start_ssh FORM STDIN: FORM's login, as the preflight checked it, logging to WORK/FORM.*
+    with_form "$1" ssh_login "$1" "$2"
 }
 
 lines_of() { wc -l < "$WORK/$1.log" | tr -d ' '; }
@@ -196,9 +291,9 @@ since() { tail -n "+$(( $2 + 1 ))" "$WORK/$1.log"; }
 
 # --- 1 and 2: sessions with a command --------------------------------------------------------------
 
-probe_session() {           # probe_session NAME NUMBER ITEM SSH-OPTION
+probe_session() {           # probe_session FORM NUMBER ITEM
     printf 'probe %s: %s (type the passphrase when asked)\n' "$2" "$3"
-    start_ssh "$1" /dev/null "$4" "$HOST" "echo $MARK"
+    start_ssh "$1" /dev/null
     if ! wait_until $(( AUTH_TIMEOUT + STEP_TIMEOUT )) exited; then
         stop_ssh
         if grep -qF -- "$MARK" "$WORK/$1.out"; then record ALLOWED "$2" "$3" "the command ran"; return; fi
@@ -220,12 +315,6 @@ probe_session() {           # probe_session NAME NUMBER ITEM SSH-OPTION
 }
 
 # --- 3 to 6: local forwards, one login -------------------------------------------------------------
-
-free_port() {               # the first port from $1 up that nothing listens on
-    fp_port=$1
-    while nc -z -w 1 127.0.0.1 "$fp_port" >/dev/null 2>&1; do fp_port=$(( fp_port + 1 )); done
-    echo "$fp_port"
-}
 
 all_listening() {
     for al_port in $P3 $P4 $P5 $P6; do
@@ -255,14 +344,8 @@ probe_local() {             # probe_local NUMBER ITEM PORT
 }
 
 probe_local_forwards() {
-    P3=$(free_port 47110)
-    P4=$(free_port $(( P3 + 1 )))
-    P5=$(free_port $(( P4 + 1 )))
-    P6=$(free_port $(( P5 + 1 )))
     printf 'probe 3-6: -L forwards to other places (type the passphrase when asked)\n'
-    start_ssh local /dev/null -N -o ExitOnForwardFailure=yes \
-        -L "127.0.0.1:$P3:127.0.0.1:22" -L "127.0.0.1:$P4:$LAB_IP:22" \
-        -L "127.0.0.1:$P5:localhost:$VIEWER_PORT" -L "127.0.0.1:$P6:$SOCK" "$HOST"
+    start_ssh local /dev/null
     wait_until $(( AUTH_TIMEOUT + STEP_TIMEOUT )) forward_listening_or_gone
     if ! running || ! authed local || ! all_listening; then
         pf_why="no login with the viewer key"
@@ -284,7 +367,7 @@ probe_local_forwards() {
 
 probe_stdio() {
     printf 'probe 7: -W 127.0.0.1:22 (type the passphrase when asked)\n'
-    start_ssh stdio "$WORK/hello" -W 127.0.0.1:22 "$HOST"
+    start_ssh stdio "$WORK/hello"
     if ! wait_until $(( AUTH_TIMEOUT + STEP_TIMEOUT )) exited; then stop_ssh; fi
     wait "$SSH_PID" 2>/dev/null
     SSH_PID=
@@ -318,8 +401,7 @@ remote_decided() {
 
 probe_remote_forwards() {
     printf 'probe 8-9: -R listeners on the lab (type the passphrase when asked)\n'
-    start_ssh remote /dev/null -N -o ExitOnForwardFailure=no \
-        -R "127.0.0.1:0:127.0.0.1:9" -R "$SOCK:127.0.0.1:9" "$HOST"
+    start_ssh remote /dev/null
     wait_until $(( AUTH_TIMEOUT + STEP_TIMEOUT )) remote_decided
     stop_ssh
     if ! authed remote; then
@@ -342,8 +424,8 @@ probe_remote_forwards() {
 # --- run -----------------------------------------------------------------------------------------
 
 printf 'air-viewer-selftest: nine forbidden actions through Host %s (%s), five logins\n' "$HOST" "$LAB_IP"
-probe_session command 1 "a requested command" -T
-probe_session pty 2 "a PTY" -tt
+probe_session command 1 "a requested command"
+probe_session pty 2 "a PTY"
 probe_local_forwards
 probe_stdio
 probe_remote_forwards
