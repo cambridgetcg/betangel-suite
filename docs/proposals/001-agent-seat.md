@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| Status | Draft for review, round 2 (reviewers' fixes applied 2026-10-15). A proposal, not a decision. It adds about one day to Phase 1b (section 7) and otherwise leaves the MVP's scope and dates alone. |
+| Status | Draft for review, round 3 (reviewers' fixes applied 2026-10-15, Codex review fixes 2026-10-16). A proposal, not a decision. It adds about one day to Phase 1b (section 7) and otherwise leaves the MVP's scope and dates alone. |
 | Date | 2026-10-15 |
 | Author | lab-Claude (Claude Code session 03026dfa on the lab MacBook Pro) |
 | Reviewers | Nuance (data and paper paths, upstream AGENTS.md), Astra (seat socket, guard, control socket, boundary tests, the bridge) |
 | Approver | Yu |
-| Base | docs/DESIGN.md draft 0.2 (branch `design/mvp-draft-0.2`, daf9c64) with Yu's rulings R-1..R-7 (section 2.2.1) |
+| Base | docs/DESIGN.md draft 0.2 (branch `design/mvp-draft-0.2`, daf9c64) with Yu's rulings R-1..R-7 (section 2.2.1); the I-3/I-4 and control-socket "Today" cells in 3.8 quote phase0/viewing (f931637) |
 | Process | DESIGN.md section 14; suite AGENTS.md rule 10 |
 | Request | Yu, 2026-10-15: an agent seat so agents can trade in the suite, "potentially with models like Jev" (TypeSafe AI's decision model) "and for you [lab-Claude] to use of course". Yu called the agent seat a good idea. |
 
@@ -61,7 +61,7 @@ So a synthetic seat needs AS-3, which amends rule 3 for synthetic mode, and Nuan
 |---|---|---|---|---|
 | Decides | Python an agent wrote, run inside `seat-arm` on the lab | a model on the lab, through an adapter outside this repo | TypeSafe AI's API (US-hosted), through the bridge | scripted: Anthropic's API on an API key, through the bridge. Interactive: lab-Claude through `seat-cli`, synthetic only |
 | Licensed-derived data leaving the Mac, on real data | aggregate reports, if agents read them: they enter the authoring agent's hosted context (AS-7) | the same aggregates; the model itself must have no egress | bucketed features at every decision, plus the aggregates | every observation, plus the aggregates |
-| Charged latency, in market messages near the off (median about 9 a second, DESIGN 6.7) | about 0-3 (a declared 250 ms) | about 30-90 (3-10 s, *inference*) | about 2-4 (about 0.1 s model time, *secondary*, plus 70-150 ms UK-US, typical values) | about 10-140 (1-15 s, *secondary*; to be measured) |
+| Charged latency, in market messages near the off (median about 9 a second, DESIGN 6.7) | about 2-9 (measured: 250 ms floor, 1 s timeout) | about 30-90 (3-10 s, *inference*) | about 2-4 (about 0.1 s model time, *secondary*, plus 70-150 ms UK-US, typical values) | about 10-140 (1-15 s, *secondary*; to be measured) |
 | What limits its cadence | CPU only | memory and latency | rate limits, spend, Jev's weak numbers | spend, latency, rate limits |
 | Licence exposure on real data | low, not none | low, not none | high: another organisation processes derivatives | high |
 | Rulings needed for real data | AS-6..AS-11 | plus AS-12 | AS-13(b) and Betfair's agreement naming TypeSafe | AS-14(b) and Betfair's agreement naming Anthropic |
@@ -70,7 +70,7 @@ Every seat order also pays paper-v1's 500 ms submit latency (about 4-5 messages)
 
 ### 2.3 S1: strategy code
 
-- **What.** An agent writes a strategy module: one function from `seat-obs-v1` to `seat-cmd-v1`, which must pass an AST allowlist (3.1). It is written and tested on synthetic markets. On real data it runs only in a batch Yu has armed, loaded by a code hash Yu armed.
+- **What.** An agent writes a strategy module: one function from `seat-obs-v1` to `seat-cmd-v1`, which must pass an AST allowlist (3.1). It is written and tested on synthetic markets. On real data it runs only in a batch Yu has armed, from bytes that match a code hash Yu armed (3.1).
 - **Where the code lives.** Strategies written and tested only on synthetic markets may go in git. A strategy changed after any real-data run has been tuned on licensed-data feedback. It stays under the suite root (`strategies/`), never in git, until Betfair answers 5.3(b) or Yu rules otherwise (AS-10). The hygiene scanner cannot detect fitted thresholds.
 - **What the author sees.** Only what AS-7 allows. Jev or another model may help write code from synthetic results only. No report from a real-data run goes to Jev, or to any agent not named in Yu's OK.
 - **Good for.** Execution plans (enter, wait, green, cancel), turning Yu's written plan into code, testing the harness, and running hundreds of markets headless.
@@ -116,30 +116,31 @@ Every seat order also pays paper-v1's 500 ms submit latency (about 4-5 messages)
    guard as today, plus one pre-seal bind permit for run/seat.sock
    actor thread -> PaperDesk -> PaperExchange + journal for the seat's session
    observation builder (3.2), decision scheduler and lockstep clock (3.6)
-   run/seat.sock (0600, 0700 run dir, same uid via getpeereid, one connection per token)
+   run/seat.sock (0600, 0700 run dir, same uid via getpeereid, one concurrent connection per token)
         ^                           ^                             ^
  seat-arm (S1 host)           seat-cli                     bridge or S2 adapter
  release copy, run by Yu      synthetic only               outside this repo, unguarded,
  guarded: connect only to     guarded: connect only to     bridge rules (3.9) -> one API host,
- seat.sock; read-deny         seat.sock                    or the local model runtime
+ seat.sock (control.sock      seat.sock                    or the local model runtime
+ to arm); read-deny
 ```
 
 - **The human path is untouched.** The HTTP route table and command enum are unchanged (I-7), and a headless run has no UI.
 - **Out of process.** Strategy code inside the engine could reach the decompressed member, which holds future messages, through `gc`. A separate process gets only what the socket gives it, plus whatever it can read from disk. The guard change below addresses the disk.
 - **Guard changes (3.8, routed to Astra).**
   - Engine: a pre-seal bind permit for `run/seat.sock`, beside the control socket (I-4).
-  - `seat-arm` and `seat-cli`: a pre-seal `AF_UNIX` connect permit for exactly that path. Every other connect stays refused (I-3), including other Unix paths: the control socket, the bridge, Collab, a llama-server socket.
-  - `seat-arm`: once the strategy is loaded, refuse read opens, `listdir`, `scandir` and `stat` under `~/betangel-data`, the suite state roots and the deps clone. `guard.py` today audits only writes (I-6), so without this a strategy could read PRO members, the catalogue or journals.
+  - `seat-arm` and `seat-cli`: a pre-seal `permit_unix_connect` for exactly that path. `seat-arm` also gets one for `run/control.sock`, as `stop`, `open` and `ssh-session` do, to send `seat_arm`. It closes that connection, and the guard drops that permit, before any strategy code runs (permits outlive `seal()` today, so this is new). Every other connect stays refused (I-3), including other Unix paths: the bridge, Collab, a llama-server socket.
+  - `seat-arm`: before any strategy code runs, refuse read opens, `listdir`, `scandir` and `stat` under `~/betangel-data`, the suite state roots and the deps clone (`stat` raises no audit event, so it needs wrappers in `os` and `posix`, as `guard.py` already has for `mkfifo` and `mknod`). `seat-arm` reads the strategy file's bytes, checks them against the armed hash and the AST allowlist, imports everything it needs itself, enables the read-deny, and only then compiles and executes the strategy from those bytes, never through the import system (no `sys.path` or `__pycache__` lookup). `guard.py` today audits only writes (I-6), so without this a strategy could read PRO members, the catalogue or journals.
   - This is defence in depth, not a sandbox. Same-uid code that escapes the audit hook is out of reach (DESIGN 9.4).
-- **Strategy AST allowlist (I-20).** Imports only from a short list (for example `math`). No `open`, `print`, `eval`, `exec`, `compile`, `__import__`, `getattr`, `os` or `sys`, and no dunder names or attributes.
+- **Strategy AST allowlist (I-20).** Imports only from a short list (for example `math`). Names are an allowlist: the strategy's own bindings plus a short list of builtins (for example `abs`, `min`, `max`, `len`, `range`, `round`, `sum`, `sorted`, `enumerate`, `zip`, `int`, `bool`, `dict`, `list`, `tuple`). So `open`, `print`, `eval`, `exec`, `compile`, `__import__`, `getattr`, `globals`, `locals`, `vars`, `dir`, `type`, `os` and `sys` are out. Attributes starting with `_` are refused, as are frame and code attributes (`gi_*`, `cr_*`, `ag_*`, `f_*`, `tb_*`, `co_*`). The same rule applies to attribute names in `match` class patterns (`case C(gi_frame=...)`), and the `format` and `format_map` attributes are refused, because their fields walk attributes at run time. The strategy runs from its verified bytes with a `__builtins__` mapping holding only those names, plus an `__import__` that admits only the allowlisted modules (no `__build_class__`, so a strategy defines no classes). None of this is a sandbox. The read-deny stops accidental and naive reads, including those from module-level code. The allowlist makes it harder to reach `seat-arm`'s own objects, among them the guard's state. A strategy that escapes the allowlist can turn the read-deny off (`guard.py` docstring, DESIGN 9.4). So against a deliberately hostile strategy, the protection is rule 5 conduct and review of the strategy code.
 - **Egress lives outside this repo**, in the bridge (S3, scripted S4) or the S2 adapter. For those kinds the bridge, not `guard.py`, is the egress boundary.
 
 **Arming and tokens.**
 
 - **Synthetic engine.** Agents may arm: `bin/suite seat-arm --synthetic` writes the token to a 0600 file in the run dir for `seat-cli` or the bridge.
 - **Real-data engine.** Only Yu arms, with `bin/suite seat-arm` from the release copy at the lab's terminal. It reads a typed line at `/dev/tty`, then asks the engine over the control socket (new verb `seat_arm`) for a headless run with this manifest: seat kind, strategy-hash allowlist, sample seed, size and filters, budgets, expiry and ruling id. Yu sets these; agents and strategies do not.
-  - For S1, `seat-arm` itself is the seat host. It loads the strategy by an armed hash, applies the read-deny, connects to `seat.sock` and keeps the token in memory. No token is ever written to disk on a real-data engine.
-  - The engine binds the token to the armed kind and picks the observation profile from that kind, never from what a client declares. A second connection with the same token is refused. A kind not in `SEAT_REAL_DATA_KINDS` (a reviewed code constant, empty today) is refused on a real-data engine.
+  - For S1, `seat-arm` itself is the seat host. It reads the strategy's bytes and checks them against an armed hash and the AST allowlist, applies the read-deny, and connects to `seat.sock`, keeping the token in memory. Only then does it compile and execute the strategy from those bytes, never through the import system (no `sys.path` or `__pycache__` lookup). No token is ever written to disk on a real-data engine.
+  - The engine binds the token to the armed kind and picks the observation profile from that kind, never from what a client declares. A second concurrent connection with the same token is refused (`seat-cli observe` and `send` connect one after the other). A kind not in `SEAT_REAL_DATA_KINDS` (a reviewed code constant, empty today) is refused on a real-data engine.
   - S2 and S3 on real data would need the adapter or bridge to get its token without a file on disk. That is open (Q-SA1), and neither step is near.
 - **The `/dev/tty` step is friction, not a barrier.** *Measured* 2026-10-15: lab-Claude's plain shell cannot open `/dev/tty` ("Device not configured"), but under `/usr/bin/script` it can, and `ssh -tt` with the Air's full-shell key would allocate a terminal too. The engine also cannot tell how an arm message on the same-uid control socket was produced. So arming rests on the conduct rule (rule 6) alone. `session.json` records the arming channel. Yu arms from the lab's own keyboard, or from a full-shell terminal session from the Air. The R-2 viewer key gives no terminal, so it cannot arm.
 
@@ -174,7 +175,7 @@ Every seat order also pays paper-v1's 500 ms submit latency (about 4-5 messages)
 
 ### 3.3 Command: `seat-cmd-v1`
 
-Every command is `{seat_id, nonce, obs_seq, cmd, reason}` plus the exact keys its `cmd` needs. It is parsed with `receipts.strict_json_loads` against an exact-key schema per `cmd`, integers only. `obs_seq` must be the latest observation issued to this seat; otherwise it is refused as `seat_stale_observation`.
+Every command is `{seat_id, nonce, obs_seq, cmd, reason}` plus the exact keys its `cmd` needs. It is parsed with `receipts.strict_json_loads` against an exact-key schema per `cmd`, integers only. The engine's seat-socket handler checks the nonce first, in a nonce cache of its own for this seat session, never the one the HTTP tabs share: a frame that repeats a nonce returns the first result and does nothing new (DESIGN 9.2 item 7). Then `obs_seq` must be the latest observation issued to this seat; otherwise it is refused as `seat_stale_observation`. The first command on an observation answers it. Any later command on that `obs_seq`, except `seat_stop`, is refused as `seat_observation_answered`. `seat-cli send` derives its nonce from the observation and the command, so re-running it after a lost reply returns the first result. With one command per observation, a two-leg entry takes two decision points, at least K s apart.
 
 | `cmd` | Extra keys | Effect |
 |---|---|---|
@@ -213,7 +214,7 @@ Every command is `{seat_id, nonce, obs_seq, cmd, reason}` plus the exact keys it
 | Interactive S4 | markets per day (it draws on the Max allowance) | no new market |
 | Run size and wall time | at most 400 markets for S1 (about 30 s of CPU each, so about 3.5 h); 4 h wall cap | markets not reached are reported as `seat_not_run_wall_cap` |
 | Runs | per day, set by Yu at arming | no new run |
-| Decision timeout | 1 s for S3, 30 s for scripted S4, then `pass` | 3 in a row halt the seat |
+| Decision timeout | 1 s for S1 and S3, 30 s for scripted S4, set at arming for S2 and interactive S4, counted from when the engine issues the observation; then `pass` | 3 in a row halt the seat |
 
 - **Halt-and-cancel** is kept for STOP, the watchdog, the loss limit and spend breaches: pending orders are withdrawn, executable ones cancelled (DESIGN 7.6), and `halt {reason}` is journalled. Matched positions stay and settle. Running out of orders or decisions only refuses new `place`, and unmatched orders lapse at the off as usual.
 - **STOP beats the agent.** Yu's STOP (`bin/suite stop` or `run/STOP`) ends a headless run. Seats cannot resume. `bin/suite seat-stop <id>` (control-socket verb `seat_stop`) stops one seat; agents may run it, as rule 6 already allows `stop`.
@@ -226,7 +227,7 @@ Every command is `{seat_id, nonce, obs_seq, cmd, reason}` plus the exact keys it
 
 - **Lockstep**, for every v1 seat:
   1. At a decision point the engine pauses at V, issues an observation, and waits.
-  2. On the reply, T_submit = V + the charged latency: the measured wall-clock round trip for S2-S4 and `seat-cli`, or a declared 250 ms for S1 (*inference*).
+  2. On the reply, T_submit = V + the charged latency: the measured wall-clock round trip from when the engine issues the observation, for every seat, with a floor of 250 ms for S1 (*inference*). So a slow strategy pays for its own time, `seat-arm`'s JSON and socket overhead included. This is AS-5's "lockstep with measured latency", so it needs no new ruling.
   3. The engine replays forward to T_submit and validates against the book there.
   4. The 500 ms paper submit latency then applies (DESIGN 7.3).
 - **Decision points:** T-10, T-5, T-2 and T-1 minutes; every K s of replay time (K ≥ 1 for S1, ≥ 5 for S3, ≥ 10 for S4, set at arming); on the seat's own fills; and on an LTP move of N ticks or more.
@@ -253,10 +254,10 @@ Each row takes effect only through the AS item in its last column. AS-1 adopts n
 | Rule 3, real data | Every paper order on real data is an `OperatorClick` | "...or an `AgentIntent` from a seat Yu armed for that run, of a kind in `SEAT_REAL_DATA_KINDS`, under a ruling id recorded in `session.json`. Agent intents are consumed only by `PaperExchange`. There are no other rule-generated orders." | AS-6 |
 | Rule 5 | A model context counts as an upload | Add: "A seat observation is a model context. Agents never read real-data seat observations, seat logs, seat session folders, decision envelopes or seat-host output; `bin/suite seat-report` is the only reader and prints only what AS-7 allows. S3 and S4 seats receive real-data observations only under a ruling id whose scope (provider, endpoint, pinned model, observation-profile hash, spend cap, end date) is recorded, and only when Betfair's specific written agreement permitting this use for the named provider is recorded." | AS-6, AS-7; the S3/S4 clause with AS-13(b), AS-14(b) |
 | Rule 6 | Commands agents never run | Add: "On an engine with real data roots, agents never run `seat-arm`, `seat-cli` or a bridge, never connect to `run/seat.sock`, and never read seat tokens. Yu starts real-data seat runs. Agents may run `seat-stop`." | AS-6 |
-| I-3, I-4 (guard) | Every connect refused; binds only to 127.0.0.1:port and the control socket | Engine also binds `run/seat.sock`; `seat-arm` and `seat-cli` may connect to exactly that path; `seat-arm` read-deny after strategy load (3.1) | AS-3 (Astra) |
-| Control socket (DESIGN 9.1) | `attach`, `new_code`, `pause`, `stop` | Add `seat_arm` (which starts a headless run) and `seat_stop`; the verb test changes | AS-3 (Astra) |
+| I-3, I-4 (guard) | Every connect refused except one: an absolute Unix socket path directly in the run dir, permitted before `seal()` with `permit_unix_connect` (the control socket, which `stop` and the takeovers by `open` and `ssh-session` use); binds only to 127.0.0.1:port and the control socket | Engine also binds `run/seat.sock`; `seat-arm` and `seat-cli` may connect to exactly that path, and `seat-arm` also to `run/control.sock` until its strategy runs; `seat-arm` read-deny before any strategy code executes (3.1) | AS-3 (Astra) |
+| Control socket (DESIGN 9.1) | `attach`, `new_code`, `pause`, `stop`, plus `ssh-session`'s `attach_viewer`, `viewer_code`, `viewer_heartbeat` and `viewer_away` | Add `seat_arm` (which starts a headless run) and `seat_stop`; the verb test changes | AS-3 (Astra) |
 | I-8 | Orders on real data come only through the operator-click path | "...or the armed-seat path. `AgentIntent` is minted only in the seat-socket handler for an armed seat. Neither converts into the other." | AS-3 (synthetic), AS-6 (real) |
-| I-16 | Agents are not handed Yu's token or real rows by the code | Add: "`seat-arm`, `seat-cli` and `seat-report` print codes and AS-7 aggregates only. The seat socket hands real-data observations only to one connection holding a token bound to an armed kind in `SEAT_REAL_DATA_KINDS`." | AS-6 |
+| I-16 | Agents are not handed Yu's token or real rows by the code | Add: "`seat-arm`, `seat-cli` and `seat-report` print codes and AS-7 aggregates only. The seat socket hands real-data observations only to one connection at a time holding a token bound to an armed kind in `SEAT_REAL_DATA_KINDS`." | AS-6 |
 | I-19 | Pause unless watched | Scoped to UI sessions; headless runs are bounded by the wall cap | AS-3 |
 | R-6 (Yu) | No rule-generated paper orders in the MVP | MVP unchanged. After the MVP, superseded by AS-6 and AS-11. | AS-6 |
 | betangel-research AGENTS.md:9 (Nuance) | Simulated intents only inside `betfair/backtest` | Nuance to answer or draft: suite seats consumed only by `PaperExchange`, on synthetic files (Q-SN1), and later on local historical files | AS-3, AS-6 |
@@ -267,13 +268,13 @@ Each row takes effect only through the AS item in its last column. AS-1 adopts n
 
 | ID | Invariant | Test |
 |---|---|---|
-| I-20 | Seat isolation | The HTTP route-table and enum tests are unchanged. An AST test finds `AgentIntent(` only in the seat-socket handler and `OperatorClick(` sites unchanged. An unarmed or stopped seat is refused; a second connection with the same token is refused; the profile follows the armed kind. Strategy modules pass the AST allowlist. |
+| I-20 | Seat isolation | The HTTP route-table and enum tests are unchanged. An AST test finds `AgentIntent(` only in the seat-socket handler and `OperatorClick(` sites unchanged. An unarmed or stopped seat is refused; a second concurrent connection with the same token is refused; the profile follows the armed kind. A replayed seat nonce places or cancels nothing and returns the first result, also after the next observation is issued, and re-running `seat-cli send` does the same. A second command on an answered observation is refused, except `seat_stop`. Strategy modules pass the AST allowlist. A strategy that reaches `open` or `__import__` through `globals()`, `vars()` or `locals()` with string keys fails the allowlist, and still fails under the restricted `__builtins__`. A frame walk to the host fails the allowlist, whether written as attributes (`gi_frame.f_back`), as a `match` class pattern (`case O(gi_frame=...)`) or as a `str.format` field (`"{0.gi_frame}".format(g)`). An allowed `import math` works under the restricted `__builtins__`, which hold only the allowlisted names and the import filter. A planted `__pycache__` file beside an armed strategy never runs. |
 | I-21 | Observations are spoiler-free, identifier-free and pre-off only | Planted outcomes and identifiers never appear in an observation. Prefix invariance: cut the member at t, or alter later BSP, results, removals and definitions, and every observation at or before t is identical. No observation after the in-play flip, and no settled total. A planted stateful strategy across a run sees no outcome or in-play data. |
 | I-22 | STOP beats seats | STOP ends a headless run; the seat enum has no `resume`; Yu's `open` preempts; watchdog test. |
-| I-23 | Still no network in this repo | `seat-arm` and `seat-cli` run under the guard. Every connect other than the `seat.sock` path raises: TEST-NET and other Unix paths (control socket, Collab, a llama-server path). A planted strategy that tries to read a synthetic member, the catalogue or a journal is refused. |
-| I-24 | Budgets hold | Each counter refuses at its limit. Order and decision budgets refuse only `place`; loss and spend breaches halt. A run marker mid-run means no writes by any seat process (tree diff, I-17). |
+| I-23 | Still no network in this repo | `seat-arm` and `seat-cli` run under the guard. Every connect other than the `seat.sock` path, and `seat-arm`'s connect to `control.sock` before its strategy runs, raises: TEST-NET and other Unix paths (Collab, a llama-server path). A connect to `control.sock` from strategy code raises. A planted strategy that tries to read a synthetic member, the catalogue or a journal is refused, including from module-level code when first executed. |
+| I-24 | Budgets hold | Each counter refuses at its limit. Order and decision budgets refuse only `place`; loss and spend breaches halt. A stub S1 host that takes 600 ms has T_submit ≥ V + 600 ms; one past the S1 timeout becomes `pass`, journalled as `engine:<seat-id>`. A run marker mid-run means no writes by any seat process (tree diff, I-17). |
 
-- **Tests that change.** The `OperatorClick` AST test gains the `AgentIntent` site. The forbidden-name test covers the seat enum. The I-3/I-4 tests gain the `seat.sock` permits. The control-socket verb test gains two verbs.
+- **Tests that change.** The `OperatorClick` AST test gains the `AgentIntent` site. The forbidden-name test covers the seat enum. The I-3/I-4 tests gain the `seat.sock` permits and `seat-arm`'s `control.sock` permit. The control-socket verb test gains two verbs.
 - **Safeguards kept.** All of DESIGN section 10: no live code, no credentials, paper only, licensed data under `~/betangel-data`.
 - **Evidence required before any real-data seat.** I-20..I-24 green on synthetic markets. Measured p50 and p95 latency per backend from the lab on synthetic payloads (Jev; Sonnet 5.5 and Haiku 5.5 with thinking off and at low effort). A STOP demonstration that Yu has watched. For S3 and S4, Betfair's specific written agreement for the named provider.
 - **Rollback.** Immediately: Yu stops arming, and STOP or `seat-stop` ends what runs. In code: `SEAT_REAL_DATA_KINDS` back to empty, which takes effect only with `bin/suite release <tag>`, because real-data engines run the release copy (I-18); `seat-arm` checks the constant in the running release. The AGENTS.md text reverts (Nuance upstream). Seat sessions stay readable and labelled.
@@ -475,8 +476,8 @@ An agent placing real bets would need all of the following, each through its own
 
 | ID | Question |
 |---|---|
-| Q-SA1 | A seat socket with a per-run token bound to the armed kind, one connection per token, and no token on disk for real data: agreed? How should an S2 adapter or S3 bridge get a real-data token without a file? |
-| Q-SA2 | Is `seat-arm`'s guard mode (one `AF_UNIX` connect path; read-deny after the strategy loads) plus the strategy AST allowlist enough, as defence in depth? |
+| Q-SA1 | A seat socket with a per-run token bound to the armed kind, one concurrent connection per token, and no token on disk for real data: agreed? How should an S2 adapter or S3 bridge get a real-data token without a file? |
+| Q-SA2 | Is `seat-arm`'s guard mode (connects only to `seat.sock`, plus `control.sock` until the strategy runs; read-deny before any strategy code executes) plus the strategy AST allowlist enough, as defence in depth? Neither is a sandbox: the read-deny holds only while the allowlist does. |
 | Q-SA3 | The bridge and S2 adapter: a separate repo? Which host allowlist, scans and run-marker checks? How should the S2 adapter's lack of egress be shown? |
 | Q-SA4 | Arming rests on conduct alone (the `/dev/tty` step is easily bypassed), with the arming channel recorded: acceptable? |
 | Q-SA5 | The I-21 prefix-invariance test design, and leak tests for `bucketed-v1`. |
@@ -487,7 +488,7 @@ An agent placing real bets would need all of the following, each through its own
 
 ## Appendix A. Sources (read 2026-10-15)
 
-- **Suite and upstream (read-only):** DESIGN.md draft 0.2, sections 0-16 (`design/mvp-draft-0.2`), including the suite AGENTS.md rules (section 3.9); Phase 0a `betangel_suite/guard.py` (every connect refused at :92; `open` checked for writes only). betangel-research at 76f71dc: AGENTS.md:9; journal.py:95-97 and :210; docs/backtest-plan.md sections 3, 5, 6 and 10.
+- **Suite and upstream (read-only):** DESIGN.md draft 0.2, sections 0-16 (`design/mvp-draft-0.2`), including the suite AGENTS.md rules (section 3.9); Phase 0a `betangel_suite/guard.py` (every connect refused at :92, Phase 0b added `permit_unix_connect`; `open` checked for writes only). betangel-research at 76f71dc: AGENTS.md:9; journal.py:95-97 and :210; docs/backtest-plan.md sections 3, 5, 6 and 10.
 - **Betfair:** Historical Data terms (bundle https://historicdata.betfair.com/assets/en-BbBIUOj_.js); General Terms https://support.betfair.com/app/answers/detail/betfair-general-terms-and-conditions/ (403 to automated fetches; checked against https://web.archive.org/web/20260511012028/https://support.betfair.com/app/answers/detail/betfair-general-terms-and-conditions/); Application Keys https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687105/Application+Keys ; read-only live key https://support.developer.betfair.com/hc/en-us/articles/25033076334748 ; live key fee https://support.developer.betfair.com/hc/en-us/articles/115003864531 ; Software Vendor licence https://support.developer.betfair.com/hc/en-us/articles/360000391912 ; charges https://support.betfair.com/app/answers/detail/betfair-charges/
 - **TypeSafe AI / Jev:** https://typesafe.ai ; https://docs.typesafe.ai/models ; https://docs.typesafe.ai/api ; https://typesafe.ai/blog/jev-1-14 ; https://typesafe.ai/blog/introducing-system-one-models-and-jev ; https://docs.typesafe.ai/model-jaggedness/jev-1.13 ; https://docs.typesafe.ai/confidence ; https://docs.typesafe.ai/sdk/python/api/retries ; https://docs.typesafe.ai/sdk/python/usage/advanced ; legal: https://typesafe.ai/legal/mca ; https://typesafe.ai/legal/privacy-policy ; https://typesafe.ai/legal/acceptable-use-policy ; https://typesafe.ai/legal/terms
 - **Jev, third parties (*secondary*):** https://www.vals.ai/blogs/independent-evaluation-of-jev ; https://github.com/scienthoon/jev-ood-calibration ; https://dev.to/gde/jev-after-eight-days-of-independent-tests-level-with-mid-price-llms-behind-the-frontier-1kln ; https://flaviocopes.com/jev-api-key/ ; https://community.vercel.com/t/typesafe-ai-jev-requests-shed-with-429-and-providerattemptcount-0-per-team-throttling/49779 ; Clef: https://letsdatascience.com/news/cloudflare-releases-open-weight-clef-decision-models-c52886d6
