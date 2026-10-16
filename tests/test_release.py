@@ -24,9 +24,10 @@ import tempfile
 import unittest
 import zlib
 
-from betangel_suite import guard, release, roots
+from betangel_suite import cli, guard, release, roots
 from betangel_suite.errors import SuiteError
-from tests import FORBID, PYTHON, ROOT, child_env, make_home, rmtree, run_relayed, tree_listing
+from tests import (FORBID, PYTHON, ROOT, child_env, make_home, require_no_run_marker, rmtree, run_relayed,
+                   stand_in_marker, tree_listing)
 
 SOURCES = ("bin", "betangel_suite", "pin")
 SOURCE_FILES = ("AGENTS.md",)
@@ -115,12 +116,40 @@ def new_home(base, name):
 
 def launch(home, root, *args):
     """root's bin/_launch.py with args, as bin/suite runs it (child_env(home) with the TMPDIR bin/suite gives the
-    command, roots.tmp_dir); (code, stdout, stderr)."""
+    command, roots.tmp_dir); (code, stdout, stderr).
+
+    As tests.run_suite does, every command the launcher checks the marker for is first checked against the runner's
+    real marker: the child's own check reads only the temporary HOME's (Nuance's PR #4 review, item 14).
+    """
+    if not args or args[0] not in cli.NO_RUN_MARKER_CHECK:
+        require_no_run_marker()
     tmp = roots.tmp_dir(args[0] if args else "", home)
     result = subprocess.run([PYTHON, "-I", "-S", "-B", os.path.join(root, "bin", "_launch.py"), *args],
                             env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp), cwd=home, capture_output=True,
                             text=True, timeout=120)
     return result.returncode, result.stdout, result.stderr
+
+
+class RunnerMarkerTests(unittest.TestCase):
+    """launch() starts commands, serve among them, from release copies under temporary HOMEs, whose own marker checks
+    never see a real run. So it checks the runner's real marker first ("check it before each engine launch", Nuance's
+    PR #4 review, item 14). A stand-in takes the real marker's place (tests.stand_in_marker)."""
+
+    def test_launch_checks_the_runner_marker_before_it_starts_anything(self):
+        base = tempfile.mkdtemp(prefix="release-marker-")
+        self.addCleanup(rmtree, base)
+        for present, code in ((True, "run_marker_present"), (False, "run_marker_unreadable")):
+            with self.subTest(present=present):
+                stand_in_marker(self, present)
+                home = new_home(base, code)
+                before = tree_listing(home)
+                for args in (("serve", "--port", "0"), ("release", "-not-a-tag"), ()):
+                    with self.assertRaises(SuiteError) as caught:
+                        launch(home, ROOT, *args)
+                    self.assertEqual(caught.exception.code, code, args)
+                self.assertEqual(tree_listing(home), before)
+                _code, _out, err = launch(home, ROOT, "stop")              # stop skips it, as in bin/suite
+                self.assertNotIn("run_marker", err)
 
 
 def modes_under(path):

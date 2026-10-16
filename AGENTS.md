@@ -204,8 +204,8 @@ reviewed PR changes them.
   - The engines that tests start run under temporary HOMEs, so their own marker checks never
     see a real run. The test helpers check the real marker before each engine they start
     (`tests.require_no_run_marker`; Nuance's PR #4 review, item 14: "check it before each engine
-    launch"): `serve`, `open` and `ssh-session` children, uisnap's in-process engine, and the inner
-    `bin/suite test` runs. So a run announced mid-way starts no further engine. An engine a test
+    launch"): `serve`, `open` and `ssh-session` children, uisnap's in-process engine, the commands
+    `tests/test_release.py` starts from release copies, and the inner `bin/suite test` runs. So a run announced mid-way starts no further engine. An engine a test
     has already started runs until its test ends. Nuance's wrapper waits on the real
     `run/engine.lock` and cannot see it, because its lock is under the temporary HOME.
   - `stop` is exempt because it only reduces activity (DESIGN.md 3.9 rule 6).
