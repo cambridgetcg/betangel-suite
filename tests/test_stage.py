@@ -63,13 +63,12 @@ def _design_block(marker):
 DESIGN_DROPIN = _design_block("**The sshd drop-in**")
 DESIGN_AK_LINE = _design_block("**The lab's `authorized_keys` line:**")
 DESIGN_HOST_BLOCK = _design_block("**The Air's `~/.ssh/config`:**")
-# The Host block's hardening (Phase 0c security review): no connection sharing, agent, proxy or LocalCommand that a
-# later `Host *` block could add, and no password fallback (the lab's sshd still takes passwords). DESIGN.md 8.6
-# carries every line, and the snippet is exactly that block.
-HOST_HARDENING = ["  PreferredAuthentications publickey", "  PasswordAuthentication no",
-                  "  KbdInteractiveAuthentication no", "  ControlMaster no", "  ControlPath none",
-                  "  ControlPersist no", "  IdentityAgent none", "  ProxyCommand none", "  ProxyJump none",
-                  "  PermitLocalCommand no"]
+# The Host block's seven hardening lines (Phase 0c security review): no connection sharing, agent, proxy or
+# LocalCommand that a later `Host *` block could add. Its three authentication lines: no password fallback (the
+# lab's sshd still takes passwords). DESIGN.md 8.6 carries all ten, and the snippet is exactly that block.
+HOST_HARDENING = ["  ControlMaster no", "  ControlPath none", "  ControlPersist no", "  IdentityAgent none",
+                  "  ProxyCommand none", "  ProxyJump none", "  PermitLocalCommand no"]
+HOST_AUTH = ["  PreferredAuthentications publickey", "  PasswordAuthentication no", "  KbdInteractiveAuthentication no"]
 APP_SUITE = re.search(r'command="([^"]+) ssh-session"', DESIGN_AK_LINE[0]).group(1)
 
 
@@ -360,7 +359,7 @@ class StagedFilesTests(unittest.TestCase):
         self.assertEqual(APP_SUITE, "/Users/user/.local/share/betangel-suite/app/current/bin/suite")
 
     def test_air_snippet_is_exactly_the_design_host_block(self):
-        self.assertEqual([line for line in HOST_HARDENING if line not in DESIGN_HOST_BLOCK], [])
+        self.assertEqual([line for line in HOST_AUTH + HOST_HARDENING if line not in DESIGN_HOST_BLOCK], [])
         self.assertEqual(_read(SNIPPET), "\n".join(DESIGN_HOST_BLOCK) + "\n")
 
     def test_staged_files_use_the_viewer_port(self):
@@ -818,7 +817,7 @@ FAKE_SSH = """#!/bin/sh
 S=$FAKE_STATE
 scenario=$(cat "$S/scenario")
 if [ "$1" = -G ]; then cat "$S/ssh-G"; exit 0; fi
-log=/dev/null nflag= tty= wflag= L= R= cmd=
+log=/dev/null nflag= tty= wflag= L= R= cmd= auth=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -v|-T) shift ;;
@@ -828,12 +827,18 @@ while [ $# -gt 0 ]; do
         -W) wflag=$2; shift 2 ;;
         -L) L="$L $2"; shift 2 ;;
         -R) R="$R $2"; shift 2 ;;
-        -o) shift 2 ;;
+        -o) case "$2" in
+                PreferredAuthentications=publickey|PasswordAuthentication=no|KbdInteractiveAuthentication=no)
+                    auth=$((auth + 1)) ;;
+            esac
+            shift 2 ;;
         -*) echo 'fake ssh: unexpected option' >&2; exit 64 ;;
         *) host=$1; shift; cmd="$*"; break ;;
     esac
 done
 [ "$host" = lab-suite ] || exit 64
+# Every login must carry the three public-key-only options, so no real probe could reach a Password: prompt.
+[ "$auth" = 3 ] || { echo 'fake ssh: login without the public-key-only options' >&2; exit 64; }
 if [ "$scenario" = noauth ]; then
     echo 'user@192.168.50.88: Permission denied (publickey).' >> "$log"
     exit 255

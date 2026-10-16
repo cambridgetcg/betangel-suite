@@ -94,7 +94,7 @@ fingerprint again, and the name of the `authorized_keys` backup.
 ## Step 5 (Air): the ssh config
 
 Put the block from `air-ssh-config.snippet` at the **top** of the Air's `~/.ssh/config`, before any
-`Host *` block. ssh keeps the first value it reads, so a `Host *` block above it could add other keys or
+`Host *` or `Match` block. ssh keeps the first value it reads, so a `Host *` block above it could add other keys or
 the Keychain.
 
 The block also switches off what a later `Host *` block could otherwise add: connection sharing

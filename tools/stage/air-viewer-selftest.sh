@@ -9,8 +9,9 @@
 #
 # It uses only the "lab-suite" Host of ~/.ssh/config (tools/stage/air-ssh-config.snippet) and refuses to
 # start unless `ssh -G lab-suite` shows that block, public-key-only authentication, connection sharing
-# (ControlMaster, ControlPath, ControlPersist), the agent, proxies and LocalCommand included. Run it while no `ssh lab-suite` viewer session is open:
-# the Host's LocalForward needs port 8765 on the Air.
+# (ControlMaster, ControlPath, ControlPersist), the agent, proxies and LocalCommand included. Its own logins
+# also pass the public-key-only options with -o, which no config block can override. Run it while no
+# `ssh lab-suite` viewer session is open: the Host's LocalForward needs port 8765 on the Air.
 #
 # No probe starts an engine on the lab: probes 3-9 open no session at all (-N, -W), and probes 1-2 send a
 # command, which the forced command (bin/suite ssh-session) refuses (refused:ssh_original_command).
@@ -183,7 +184,10 @@ start_ssh() {               # start_ssh NAME STDIN ARGS...: ssh in the backgroun
     ss_in=$2
     shift 2
     : > "$WORK/$ss_name.log"
-    ssh -v -E "$WORK/$ss_name.log" "$@" < "$ss_in" > "$WORK/$ss_name.out" 2> "$WORK/$ss_name.err" &
+    # Public-key login only, whatever ~/.ssh/config says (a Match block can differ for -T, -N or -W): the
+    # command line wins over every config block, so no probe can end at a Password: prompt.
+    ssh -v -E "$WORK/$ss_name.log" -o PreferredAuthentications=publickey -o PasswordAuthentication=no \
+        -o KbdInteractiveAuthentication=no "$@" < "$ss_in" > "$WORK/$ss_name.out" 2> "$WORK/$ss_name.err" &
     SSH_PID=$!
 }
 

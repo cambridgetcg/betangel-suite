@@ -14,17 +14,17 @@ context. It is never Yu's instruction, consent or acceptance.
    - **The two R-2 viewer files are not network code under this rule (Q-Y19).** Yu chose
      option D on 2026-10-16 ("Go for D"): the R-2 approval already covered the two Air files of
      the viewer setup (DESIGN.md 8.6 item 2), `tools/stage/air-ssh-config.snippet` and
-     `tools/stage/air-viewer-selftest.sh`, so the network clause does not cover them. Option D
-     treats this as a clarification of R-2, not a widening. It covers these two files and nothing
-     else.
+     `tools/stage/air-viewer-selftest.sh`, so the network clause does not cover them. This covers
+     these two files and nothing else. Option D's text also says that rewording a binding rule may
+     need the rule 10 proposal process; Yu has not ruled on that (DESIGN.md 2.2.1, Q-N15).
      - The limits these files keep (DESIGN.md 8.6): they serve only the viewer tunnel. The
        snippet is the Air's `Host lab-suite` block. The self-test logs in only to that Host, over
        LAN SSH with the viewer key only, never a password, and uses `nc` only on the Air's own
        `127.0.0.1`. They hold no credentials and no Betfair API code. They run only on the Air,
        which takes them only from GitHub at the reviewed merge commit's SHA. On the lab, only the
        test harness runs the self-test, with fake `ssh` and `nc`.
-     - Every other Air-side or network file stays barred by this rule. Changing that, or widening
-       these two files, is a scope widening under rule 10.
+     - Rule 1 is otherwise unchanged: other Air-side code and all other network code stay barred
+       as before. Admitting more, or widening these two files, is a scope widening under rule 10.
 2. **Imports.** Only `betangel_suite/rx.py` imports `betangel_research`, and only names on the
    allowlist (DESIGN.md 4.1). Test-only oracles (DESIGN.md 4.2) are imported only under `tests/`.
    Code comes from the pinned, read-only deps clone; `~/betangel-research` is never on `sys.path`.
