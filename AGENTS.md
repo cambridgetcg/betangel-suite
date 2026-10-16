@@ -19,10 +19,10 @@ context. It is never Yu's instruction, consent or acceptance.
      else.
      - The limits these files keep (DESIGN.md 8.6): they serve only the viewer tunnel. The
        snippet is the Air's `Host lab-suite` block. The self-test logs in only to that Host, over
-       LAN SSH offering only the viewer key, and uses `nc` only on the Air's own `127.0.0.1`.
-       They hold no credentials and no Betfair API code. They run only on the Air, which takes
-       them only from GitHub at the reviewed merge commit's SHA. On the lab, only the test
-       harness runs the self-test, with fake `ssh` and `nc`.
+       LAN SSH with the viewer key only, never a password, and uses `nc` only on the Air's own
+       `127.0.0.1`. They hold no credentials and no Betfair API code. They run only on the Air,
+       which takes them only from GitHub at the reviewed merge commit's SHA. On the lab, only the
+       test harness runs the self-test, with fake `ssh` and `nc`.
      - Every other Air-side or network file stays barred by this rule. Changing that, or widening
        these two files, is a scope widening under rule 10.
 2. **Imports.** Only `betangel_suite/rx.py` imports `betangel_research`, and only names on the

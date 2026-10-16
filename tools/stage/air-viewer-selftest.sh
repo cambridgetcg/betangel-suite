@@ -8,8 +8,8 @@
 #     sh air-viewer-selftest.sh --keep-logs  also keep the ssh -v logs (host, user and key path; no secrets)
 #
 # It uses only the "lab-suite" Host of ~/.ssh/config (tools/stage/air-ssh-config.snippet) and refuses to
-# start unless `ssh -G lab-suite` shows that block, connection sharing (ControlMaster, ControlPath,
-# ControlPersist), the agent, proxies and LocalCommand included. Run it while no `ssh lab-suite` viewer session is open:
+# start unless `ssh -G lab-suite` shows that block, public-key-only authentication, connection sharing
+# (ControlMaster, ControlPath, ControlPersist), the agent, proxies and LocalCommand included. Run it while no `ssh lab-suite` viewer session is open:
 # the Host's LocalForward needs port 8765 on the Air.
 #
 # No probe starts an engine on the lab: probes 3-9 open no session at all (-N, -W), and probes 1-2 send a
@@ -112,6 +112,11 @@ cfg_has exitonforwardfailure yes true || refuse air_config_exitonforwardfailure 
 cfg_has stricthostkeychecking yes true || refuse air_config_stricthostkeychecking "$CONFIG_HINT"
 cfg_has localforward "[127.0.0.1]:$VIEWER_PORT [127.0.0.1]:$VIEWER_PORT" "127.0.0.1:$VIEWER_PORT 127.0.0.1:$VIEWER_PORT" ||
     refuse air_config_localforward "$CONFIG_HINT"
+# Public-key login only: the lab's sshd still takes passwords, so a refused viewer key would otherwise end at a
+# Password: prompt, and the lab password typed there would open a full shell with no forced command.
+cfg_has preferredauthentications publickey || refuse air_config_auth "$CONFIG_HINT"
+cfg_has passwordauthentication no false || refuse air_config_auth "$CONFIG_HINT"
+cfg_has kbdinteractiveauthentication no false || refuse air_config_auth "$CONFIG_HINT"
 # No shared connection and no agent: a master connection left by `ssh lab-suite` (ControlMaster/ControlPersist
 # from a later Host * block) would let any process on the Air open sessions through it without the passphrase,
 # and an agent could sign with a copy of the key. ssh -G prints no controlpath, proxycommand or proxyjump line

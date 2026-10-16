@@ -4,6 +4,9 @@ Host lab-suite
   AddressFamily inet
   IdentityFile ~/.ssh/id_ed25519_lab_suite
   IdentitiesOnly yes
+  PreferredAuthentications publickey
+  PasswordAuthentication no
+  KbdInteractiveAuthentication no
   AddKeysToAgent no
   UseKeychain no
   LocalForward 127.0.0.1:8765 127.0.0.1:8765

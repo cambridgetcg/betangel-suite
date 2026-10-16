@@ -64,10 +64,12 @@ DESIGN_DROPIN = _design_block("**The sshd drop-in**")
 DESIGN_AK_LINE = _design_block("**The lab's `authorized_keys` line:**")
 DESIGN_HOST_BLOCK = _design_block("**The Air's `~/.ssh/config`:**")
 # The Host block's hardening (Phase 0c security review): no connection sharing, agent, proxy or LocalCommand that a
-# later `Host *` block could add. Lab-Claude adds them to DESIGN.md 8.6; until then the snippet is the DESIGN
-# block plus whichever of these lines it still lacks, in this order.
-HOST_HARDENING = ["  ControlMaster no", "  ControlPath none", "  ControlPersist no", "  IdentityAgent none",
-                  "  ProxyCommand none", "  ProxyJump none", "  PermitLocalCommand no"]
+# later `Host *` block could add, and no password fallback (the lab's sshd still takes passwords). DESIGN.md 8.6
+# carries every line, and the snippet is exactly that block.
+HOST_HARDENING = ["  PreferredAuthentications publickey", "  PasswordAuthentication no",
+                  "  KbdInteractiveAuthentication no", "  ControlMaster no", "  ControlPath none",
+                  "  ControlPersist no", "  IdentityAgent none", "  ProxyCommand none", "  ProxyJump none",
+                  "  PermitLocalCommand no"]
 APP_SUITE = re.search(r'command="([^"]+) ssh-session"', DESIGN_AK_LINE[0]).group(1)
 
 
@@ -358,8 +360,8 @@ class StagedFilesTests(unittest.TestCase):
         self.assertEqual(APP_SUITE, "/Users/user/.local/share/betangel-suite/app/current/bin/suite")
 
     def test_air_snippet_is_exactly_the_design_host_block(self):
-        expected = DESIGN_HOST_BLOCK + [line for line in HOST_HARDENING if line not in DESIGN_HOST_BLOCK]
-        self.assertEqual(_read(SNIPPET), "\n".join(expected) + "\n")
+        self.assertEqual([line for line in HOST_HARDENING if line not in DESIGN_HOST_BLOCK], [])
+        self.assertEqual(_read(SNIPPET), "\n".join(DESIGN_HOST_BLOCK) + "\n")
 
     def test_staged_files_use_the_viewer_port(self):
         # ssh-session's forced command serves and attaches only on VIEWER_PORT (viewer_port_mismatch otherwise), so
@@ -910,6 +912,9 @@ SSH_G = """User user
 hostname 192.168.50.88
 addressfamily inet
 identitiesonly yes
+kbdinteractiveauthentication no
+passwordauthentication no
+preferredauthentications publickey
 addkeystoagent false
 exitonforwardfailure yes
 stricthostkeychecking true
@@ -926,6 +931,15 @@ controlpersist no
 # config, no connection): the lab-suite block sets none of the four, so they come from Host *.
 SHARED = ("controlmaster auto\ncontrolpath /tmp/cm-user@192.168.50.88:22\ncontrolpersist yes\n"
           "identityagent /tmp/agent.sock\n")
+
+# What OpenSSH 10.2's ssh -G prints for authentication when the block sets none of it (checked with a scratch -F
+# config, no connection): password and keyboard-interactive on, and no preferredauthentications line.
+PASSWORD_DEFAULTS = "kbdinteractiveauthentication yes\npasswordauthentication yes\n"
+
+def _strip_auth(ssh_g):
+    """ssh -G output less the three authentication lines."""
+    return "".join(line for line in ssh_g.splitlines(keepends=True) if line.split(" ", 1)[0] not in
+                   ("kbdinteractiveauthentication", "passwordauthentication", "preferredauthentications"))
 
 def _strip_hardening(ssh_g):
     """ssh -G output less the lines the hardening sets (what the DESIGN block alone leaves to other blocks)."""
@@ -1028,6 +1042,17 @@ class SelfTestScriptTests(unittest.TestCase):
             ("a local command", self.state("local", "secure", SSH_G.replace("permitlocalcommand no",
                                                                             "permitlocalcommand yes")),
              "air_config_permitlocalcommand"),
+            # The block before the authentication lines: OpenSSH's defaults allow a password prompt.
+            ("password fallback", self.state("pwauth", "secure", _strip_auth(SSH_G) + PASSWORD_DEFAULTS),
+             "air_config_auth"),
+            ("password allowed", self.state("pw", "secure", SSH_G.replace("passwordauthentication no",
+                                                                          "passwordauthentication yes")),
+             "air_config_auth"),
+            ("keyboard-interactive allowed", self.state("kbd", "secure", SSH_G.replace(
+                "kbdinteractiveauthentication no", "kbdinteractiveauthentication yes")), "air_config_auth"),
+            ("other methods preferred", self.state("pref", "secure", SSH_G.replace(
+                "preferredauthentications publickey", "preferredauthentications keyboard-interactive,publickey")),
+             "air_config_auth"),
         ]
         runs = [(["/bin/sh", SELFTEST], env) for _label, env, _code in cases]
         runs.append((["/bin/sh", SELFTEST, "--force"], self.state("usage", "secure")))

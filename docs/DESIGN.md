@@ -445,7 +445,7 @@ Phase 0 creates only `run/engine.lock` and `run/control.sock` in `run/`: no `eng
 - **The suite's AGENTS.md (binding on every agent):**
   1. **Paper-only MVP.** No credentials, Betfair API, network or live code. Never a "temporary" live endpoint. Later live and Air code never lives in this repo.
      - **The two R-2 viewer files are not network code under this rule** (Q-Y19, section 2.2.1). Yu chose option D: the R-2 approval already covered the two Air files of section 8.6 item 2, `tools/stage/air-ssh-config.snippet` and `tools/stage/air-viewer-selftest.sh`, so the network clause does not cover them. Option D treats this as a clarification of R-2, not a widening. It covers these two files and nothing else.
-       - The limits these files keep (section 8.6): they serve only the viewer tunnel. The snippet is the Air's `Host lab-suite` block, and the self-test logs in only to that Host, over LAN SSH offering only the viewer key, and uses `nc` only on the Air's own `127.0.0.1`. They hold no credentials and no Betfair API code. They run only on the Air, which takes them only from GitHub at the reviewed merge commit's SHA; on the lab only the test harness runs the self-test, with fake `ssh` and `nc`.
+       - The limits these files keep (section 8.6): they serve only the viewer tunnel. The snippet is the Air's `Host lab-suite` block, and the self-test logs in only to that Host, over LAN SSH with the viewer key only, never a password, and uses `nc` only on the Air's own `127.0.0.1`. They hold no credentials and no Betfair API code. They run only on the Air, which takes them only from GitHub at the reviewed merge commit's SHA; on the lab only the test harness runs the self-test, with fake `ssh` and `nc`.
        - Every other Air-side or network file stays barred by this rule. Changing that, or widening these two files, is a scope widening under rule 10.
   2. **Imports.** Only `rx.py` imports betangel_research, and only from the allowlist.
   3. **Orders.** Every paper order on real data is an operator click (the OperatorClick rule, section 7.1). Scripted orders (`TestOrder`) exist only in synthetic mode, which refuses every real data root. There are no rule-generated orders.
@@ -1228,6 +1228,9 @@ There is no auto-keypress and no timed action, because those are automation.
        AddressFamily inet
        IdentityFile ~/.ssh/id_ed25519_lab_suite
        IdentitiesOnly yes
+       PreferredAuthentications publickey
+       PasswordAuthentication no
+       KbdInteractiveAuthentication no
        AddKeysToAgent no
        UseKeychain no
        LocalForward 127.0.0.1:8765 127.0.0.1:8765
@@ -1243,9 +1246,10 @@ There is no auto-keypress and no timed action, because those are automation.
        ProxyJump none
        PermitLocalCommand no
      ```
+     - `PreferredAuthentications publickey`, `PasswordAuthentication no` and `KbdInteractiveAuthentication no` mean `ssh lab-suite` never falls back to a password prompt. The lab's sshd config leaves password logins on (OpenSSH's default) for other uses, so without these lines a refused viewer key (not installed yet, removed, or three wrong passphrases) would end at a `Password:` prompt, and the lab password typed there would open a full shell with no forced command. With them, ssh stops with `Permission denied (publickey)`.
      - The passphrase, together with `AddKeysToAgent no`, `UseKeychain no` and `IdentityAgent none`, means no other process on the Air can use the key silently. That includes Nuance, which runs as the same user.
      - `ControlMaster no`, `ControlPath none` and `ControlPersist no` mean an open `ssh lab-suite` leaves no shared connection that another Air process could reuse without the passphrase.
-     - `ProxyCommand none`, `ProxyJump none` and `PermitLocalCommand no` stop a later `Host *` block from adding a proxy or a local command. ssh keeps the first value it reads, so the block goes at the top of `~/.ssh/config`. The self-test refuses to start unless `ssh -G lab-suite` shows all seven of these lines in force.
+     - `ProxyCommand none`, `ProxyJump none` and `PermitLocalCommand no` stop a later `Host *` block from adding a proxy or a local command. ssh keeps the first value it reads, so the block goes at the top of `~/.ssh/config`. The self-test refuses to start unless `ssh -G lab-suite` shows these seven lines and the three authentication lines in force.
    - **Use.** Yu types `ssh lab-suite` on the Air. Do **not** use `-N`: a forced command runs only when a session channel is opened.
      - `bin/suite` checks `SSH_CONNECTION` and `SSH_ORIGINAL_COMMAND` before `env -i` (section 3.6).
      - `ssh-session` without `--port`, which is how the forced command runs it, serves or attaches only on 8765, the port of `permitopen` and the `LocalForward`. Another config `port` refuses with `viewer_port_mismatch` before any engine starts, and so does a running engine on another port (from `serve --port N` or `open --port N`), before any takeover.
@@ -1272,7 +1276,7 @@ There is no auto-keypress and no timed action, because those are automation.
      - A takeover by `suite open` hands the session to the lab's screen, which has no terminal viewer. Such a session never ends as `abandoned`. It ends on `suite stop`; on a stop signal to the process that hosts the engine (SIGTERM or SIGINT, and SIGHUP too when `serve` or `open` hosts it, as when its Terminal window closes); at the maximum session time; when the run marker appears (reason `run_marker`, after the 30 s grace of section 6.8); or on an engine failure. In Phase 0 the page's STOP only pauses the engine. The same holds for an engine started by `serve` or `open`, until an `ssh-session` takes it over.
      - The maximum session time, `max_session_s` (default 4 h), applies to every engine (`serve`, `open`, `ssh-session`), measured from the engine's start. The session then ends as `max_session`.
    - **What the key can and cannot do.** Lab-Claude stages an Air-side self-test, `air-viewer-selftest.sh`, which Yu runs right after installing the key (Nuance may start it, but only Yu types the passphrase).
-     - It refuses to start unless `ssh -G lab-suite` shows the block's host, user, address family, single identity, `LocalForward`, `AddKeysToAgent`, `IdentitiesOnly`, `ExitOnForwardFailure` and `StrictHostKeyChecking` values, and all seven hardening lines. It does not check `UseKeychain`, `RequestTTY` or `ServerAliveInterval`.
+     - It refuses to start unless `ssh -G lab-suite` shows the block's host, user, address family, single identity, `LocalForward`, `AddKeysToAgent`, `IdentitiesOnly`, `ExitOnForwardFailure` and `StrictHostKeyChecking` values, the three authentication lines, and all seven hardening lines. It does not check `UseKeychain`, `RequestTTY` or `ServerAliveInterval`.
      - It makes nine probes over five logins, and reports each one as refused or ALLOWED. A probe counts as refused only with evidence that the viewer key logged in and the lab refused.
      - The probes: a requested command (the launcher refuses it); a PTY; `-L` to another port, to another host, to `localhost:8765` (`permitopen` names `127.0.0.1` only) and to a Unix socket; `-W host:22`; `-R` to a TCP port (port 0) and to a Unix socket.
      - The verdict is PASS only if all nine were refused. On FAIL, Yu runs the undo on the lab at once.

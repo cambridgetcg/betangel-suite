@@ -103,6 +103,12 @@ The block also switches off what a later `Host *` block could otherwise add: con
 open new sessions through it without the passphrase, and an agent could sign with a copy of the key. The
 self-test refuses to start unless `ssh -G lab-suite` shows all of these switched off.
 
+The block also allows only the key to log in (`PreferredAuthentications publickey`, `PasswordAuthentication no`,
+`KbdInteractiveAuthentication no`). The lab still accepts passwords for other logins, so without these lines a
+refused key would end at a `Password:` prompt, and your lab password typed there would open a full shell. If
+`ssh lab-suite` ever asks for a password rather than the key's passphrase, do not type it: the block is not in
+force. The self-test refuses to start unless these three lines are in force too.
+
 The block has `StrictHostKeyChecking yes`, so `~/.ssh/known_hosts` on the Air must already hold the lab's
 host key for `192.168.50.88`. It does if the Air has logged in to the lab before. If the self-test reports
 "Host key verification failed", compare the lab's key first. On the lab, run
