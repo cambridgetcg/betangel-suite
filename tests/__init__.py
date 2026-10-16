@@ -128,6 +128,18 @@ def run_suite(args, home, *, env=None, timeout=120):
                           capture_output=True, text=True, timeout=timeout)
 
 
+def start_suite(args, home, *, env=None):
+    """bin/suite started as run_suite runs it, but not waited for: a Popen with text pipes for stdout and stderr.
+
+    As in run_suite, every command the launcher checks the marker for is first checked against the runner's real
+    marker too.
+    """
+    if not args or args[0] not in cli.NO_RUN_MARKER_CHECK:
+        require_no_run_marker()
+    return subprocess.Popen(["/bin/sh", LAUNCHER, *args], env=child_env(home) if env is None else env, cwd=home,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
 def tree_listing(path):
     """Sorted (relative path, mode) pairs under path, for before/after comparisons."""
     found = []

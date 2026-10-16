@@ -57,15 +57,17 @@ context. It is never Yu's instruction, consent or acceptance.
 - No network. Tests that probe the network use TEST-NET-1 (`192.0.2.1`) or the `.invalid` TLD.
 - Ask Yu first for anything that needs the admin password, installs system software or changes
   security settings. Never ask Yu to paste a secret.
-- Keep load modest on the shared 8 GB M1: tests run under `nice -n 10`, and no test tier runs
-  during an announced Nuance run. `bin/suite test` refuses while the run marker exists
-  (adaptation E).
+- Keep load modest on the shared 8 GB M1: tests run under `nice -n 10`, and no test tier starts
+  during an announced Nuance run. `bin/suite test` refuses while the run marker exists, and a run
+  already going stops before its next test once the marker appears; the test then running
+  finishes first (adaptation E).
 
 ## Review routing and merging (DESIGN.md 3.9; Yu's ruling on Q-Y8; Nuance's answer to Q-N12)
 
 | Change | Reviewer |
 |---|---|
-| `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `cli.py`, `roots.py`, `api/`, the launcher (`bin/suite`, `bin/_launch.py`), uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`), the staged scripts (`tools/stage/`), the boundary tests, the hygiene scanner (`tools/hygiene_scan.py`, `tools/pre-commit`, `.gitignore`) and pin bumps | Astra |
+| `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the launcher (`bin/suite`, `bin/_launch.py`), the boundary tests, the hygiene scanner (`tools/hygiene_scan.py`, `tools/pre-commit`, `.gitignore`) and pin bumps | Astra |
+| `cli.py`, uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`) and the staged scripts (`tools/stage/`): lab-Claude's proposal, open (see below) | Astra |
 | The data and paper paths (`betangel_suite/data/`, `betangel_suite/paper/`, `betangel_suite/replay/`), the synthetic generator (`betangel_suite/synthetic.py`, `tests/fixtures/`), the tick export (`tools/export_ticks.py`, `ui/ticks.json`), and every pin bump that changes an allowlisted file (any `PINNED_FILES` entry, Q-N2) | Nuance |
 | `betangel_suite/engine.py` and the roots (`betangel_suite/roots.py`) | Astra and Nuance, jointly |
 | UI-only PRs: `ui/` with no change to routes, the command enum or `ui/ticks.json` | Yu's acceptance alone |
@@ -76,10 +78,15 @@ context. It is never Yu's instruction, consent or acceptance.
   any merge.
   - Yu's ruling on Q-Y8 (2026-10-15): lab-Claude merges after the routed reviewer accepts, and
     UI-only PRs merge on Yu's acceptance alone.
-  - Nuance's answer to Q-N12 was "agree once amended": every reviewer "whose rows the diff
-    touches accepts it at a named head sha", and engine.py and the roots are reviewed jointly.
-    The rows and the rule above are that amendment. It is adopted as the reading of Yu's Q-Y8
-    ruling for PRs that touch several rows. Yu can override it.
+  - Nuance's answer to Q-N12 was "agree once amended". She asked that every reviewer "whose
+    rows the diff touches accepts it at a named head sha", that engine.py and the roots be
+    reviewed jointly, and that her row gain synthetic.py, tests/fixtures/, tools/export_ticks.py,
+    ui/ticks.json and replay/. Those rows and the merge rule above are her amendment.
+  - Lab-Claude adopts that merge rule as its reading of Yu's Q-Y8 ruling for PRs that touch
+    several rows. Yu has not ruled on this reading and can override it.
+  - The second Astra row is lab-Claude's proposal, from Phase 0c's review plan. Nuance did not
+    ask for it. It only adds a reviewer, so it never lets a PR merge on fewer acceptances. It
+    stays open for Yu to rule on with Nuance (Q-N12, Q-Y8), and Yu can override it.
   - Asked of Yu on 2026-10-16, and not answered yet: must the tests also pass on 3.13 and 3.11
     at that head SHA?
 - Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS. Collab edit tasks use
@@ -133,7 +140,9 @@ reviewed PR changes them.
   - With the flag False, any write or mkdir under `~/betangel-data` would be refused with code
     `state_root_not_agreed`, and every command would use `~/.local/state/betangel-suite/tmp`.
 - **B. Install salt.** The per-install salt for identifier hashes lives at
-  `~/.local/state/betangel-suite/install-salt` (mode 0600), not under the suite root.
+  `~/.local/state/betangel-suite/install-salt` (mode 0600), not under the suite root. It stayed
+  there when the root was agreed: the first process that hashes makes it, and only the engine may
+  write the suite root. Whether it should move is open; a move must keep the same bytes.
 - **C. Pin.** betangel-research `76f71dc94588a50f0df56dde2c3fabcf6e102f88`. The deps clone is at
   `~/.local/share/betangel-suite/deps/betangel-research-76f71dc94588/`, made by
   `tools/vendor_research.py` exactly as DESIGN.md 3.5 describes. Nuance answered Q-N2: keep this
@@ -149,15 +158,22 @@ reviewed PR changes them.
   file that never exists; only a reviewed change could move it. Nuance's wrapper creates the
   marker with O_EXCL, waits up to 60 s for `engine.lock`, and refuses its own run if the lock is
   still held. The engine may hold the lock for about 35 s after the marker appears. Lab-Claude
-  never creates or removes the marker. Every command except `stop` and `vendor` refuses to start
-  while the marker is present, unreadable, or in an unreadable directory (DESIGN.md 6.8).
+  never creates or removes the marker. Every command except `stop` refuses to start while the
+  marker is present, unreadable, or in an unreadable directory (DESIGN.md 6.8).
   - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
     be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
     exists too; stop stays exempt".
+  - A test run checks the marker again after every test, and stops before the next one if the
+    marker is present or cannot be checked (`refused:run_marker_present` or `_unreadable`, exit
+    2). The test then running is not stopped: it finishes first.
   - The engines that tests start run under temporary HOMEs, so their own marker checks never
     see a real run. The test helpers check the real marker before each engine they start
-    (`tests.require_no_run_marker`), so a run announced mid-way starts no further engine.
+    (`tests.require_no_run_marker`; Nuance's PR #4 review, item 14: "check it before each engine
+    launch"), so a run announced mid-way starts no further engine. An engine a test has already
+    started runs until its test ends. Nuance's wrapper waits on the real `run/engine.lock` and
+    cannot see it, because its lock is under the temporary HOME.
   - `stop` is exempt because it only reduces activity (DESIGN.md 3.9 rule 6).
-  - `vendor` stays exempt. It starts no engine and writes nothing under `~/betangel-data`: it
-    makes only the deps clone under `~/.local/share`, and only when run by hand (DESIGN.md 3.5).
+  - `vendor` refuses too. Nuance, in her PR #1 review: "test and vendor refuse under the marker;
+    stop stays exempt". It was first exempt by lab-Claude's own choice, on a reason that left out
+    its writes to `pin/` with `--bump` and its clone of the whole of `~/betangel-research`.
   - `runmarker.py` exposes a check function that later phases call on every tick.
