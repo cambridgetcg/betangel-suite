@@ -26,9 +26,9 @@ plus HOME. The guard, armed in vendor mode, allows exactly these git argvs with 
 after them) and writes only under ~/.local/share/betangel-suite, this checkout's pin/ and the state root.
 Nothing is ever written into ~/betangel-research: before any git call or mkdir, and again just before the
 clone, vendor refuses (research_clone_on_path) a deps root, pin directory or checkout that lies in the clone
-by name or by identity (roots.lies_in), and the guard refuses a partial clone path that does.
-A failure after the clone leaves the .partial
-directory for inspection; remove it by hand before running again (partial_exists).
+by name or by identity (roots.lies_in), and the guard refuses a partial clone path that does. A failure
+after the clone leaves the .partial directory for inspection; remove it by hand before running again
+(partial_exists).
 Output is codes and counts only. Standard library only; never imports betangel_research.
 """
 

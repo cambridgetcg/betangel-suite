@@ -50,8 +50,7 @@ CODES = frozenset({
     # the pin (I-13) and the vendor tool
     "pin_invalid", "pin_mismatch", "deps_missing", "deps_bytecode_present", "deps_shadow_present",
     "research_clone_on_path", "upstream_imported_early", "upstream_origin_mismatch", "upstream_import_refused",
-    "commit_not_present",
-    "commit_not_on_main", "partial_exists", "git_failed", "deps_link_present",
+    "commit_not_present", "commit_not_on_main", "partial_exists", "git_failed", "deps_link_present",
     # roots and the writer helper
     "path_not_absolute", "already_exists", "not_a_directory", "symlink_refused", "wrong_owner",
     "root_parent_missing", "write_failed", "salt_invalid", "suite_root_invalid", "suite_root_misplaced",

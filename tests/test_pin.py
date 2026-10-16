@@ -331,7 +331,7 @@ def attempt(relpath):
         return str(exc)
 deps = pin.activate()
 results = [attempt(%(month)r), attempt("README.md"), attempt("betangel_research/betfair/risk.py")]
-moved = os.path.join(roots.share_dir(), "elsewhere")
+moved = os.path.join(roots.deps_root(), "elsewhere")
 os.rename(os.path.join(deps, "research"), moved)
 os.symlink(moved, os.path.join(deps, "research"))
 results.append(attempt(%(month)r))
