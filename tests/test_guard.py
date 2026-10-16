@@ -484,7 +484,7 @@ attempt("shell", lambda: subprocess.run("true", shell=True))
 attempt("os_system", lambda: os.system("true"))
 attempt("posix_spawn", lambda: os.posix_spawn("/usr/bin/true", ["/usr/bin/true"], dict(os.environ)))
 attempt("fork", fork)
-attempt("dlopen", lambda: __import__("ctypes"))
+attempt("ctypes", lambda: __import__("ctypes"))
 guard.seal()
 attempt("git_probe_after_seal", lambda: run(["git", "-C", state, "rev-parse", "--is-inside-work-tree"]))
 attempt("security_cli", lambda: run(["/usr/bin/" + "secur" + "ity", "help"]))
@@ -496,7 +496,7 @@ attempt("execv", lambda: os.execv("/usr/bin/true", ["/usr/bin/true"]))
         for name in ("git_probe_outside_roots", "git_other_argv", "shell", "os_system", "posix_spawn", "fork",
                      "git_probe_after_seal", "security_cli", "execv"):
             self.assertEqual(results[name], "subprocess_refused", name)
-        self.assertEqual(results["dlopen"], "dlopen_refused")
+        self.assertEqual(results["ctypes"], "import_refused")
         self.assertTrue(results["sealed"])
 
     def test_engine_bare_git_needs_the_system_search_path(self):
@@ -616,6 +616,42 @@ results["outside"] = sorted(os.listdir(outside))
             self.assertEqual(results, {"fork_exec": "subprocess_refused", "process_start": "import_refused",
                                        "pool_submit": "import_refused", "thread_pool": "ok", "outside": []}, mode)
 
+    def test_ctypes_cannot_reach_libc(self):
+        # Nuance's PR #2 review, item 18: _ctypes.call_function(_ctypes.dlsym(RTLD_DEFAULT, "mkdir"), ...) made a
+        # directory outside the roots with no dlopen. Importing ctypes or _ctypes is refused however it is spelled,
+        # and the symbol lookup and the raw call are refused as a backstop (audit-only: _ctypes cannot load).
+        home = make_home(self)
+        results = checks(self, home, setup=self.CHILDREN_SETUP, body="""
+import importlib, sys
+outside = os.path.join(os.environ["HOME"], "outside")
+def libc_mkdir(name):
+    import _ctypes
+    address = _ctypes.dlsym((1 << 64) - 2, "mkdir")       # RTLD_DEFAULT on macOS
+    _ctypes.call_function(address, (os.fsencode(os.path.join(outside, name)), 0o700))
+def cdll_mkdir(name):
+    import ctypes
+    ctypes.CDLL(None).mkdir(os.fsencode(os.path.join(outside, name)), 0o700)
+attempt("libc_through_ctypes_private", lambda: libc_mkdir("private"))
+attempt("libc_through_ctypes", lambda: cdll_mkdir("public"))
+attempt("import_module_ctypes", lambda: importlib.import_module("ctypes"))
+attempt("import_module_private", lambda: importlib.import_module("_ctypes"))
+attempt("import_util", lambda: importlib.import_module("ctypes.util"))
+attempt("dunder_import", lambda: __import__("_ctypes"))
+attempt("audit_dlsym", lambda: sys.audit("ctypes.dlsym", None, "mkdir"))
+attempt("audit_dlsym_handle", lambda: sys.audit("ctypes.dlsym/handle", (1 << 64) - 2, "mkdir"))
+attempt("audit_call_function", lambda: sys.audit("ctypes.call_function", 0, ()))
+guard.seal()
+attempt("libc_after_seal", lambda: libc_mkdir("sealed"))
+results["loaded"] = sorted(name for name in sys.modules if "ctypes" in name)
+results["outside"] = sorted(os.listdir(outside))
+""")
+        for name in ("libc_through_ctypes_private", "libc_through_ctypes", "import_module_ctypes",
+                     "import_module_private", "import_util", "dunder_import", "libc_after_seal"):
+            self.assertEqual(results[name], "import_refused", name)
+        for name in ("audit_dlsym", "audit_dlsym_handle", "audit_call_function"):
+            self.assertEqual(results[name], "dlopen_refused", name)
+        self.assertEqual((results["loaded"], results["outside"]), ([], []))
+
     def test_arm_fails_closed_when_a_child_route_is_already_open(self):
         # The import event fires only for a module not loaded yet, and subprocess binds fork_exec when it is
         # imported, so arm() refuses rather than trust either.
@@ -623,6 +659,8 @@ results["outside"] = sorted(os.listdir(outside))
         for setup, expected in (
                 ("import multiprocessing\n", "module_loaded_early"),
                 ("import concurrent.futures.process\n", "module_loaded_early"),
+                ("import ctypes\n", "module_loaded_early"),
+                ("import _ctypes\n", "module_loaded_early"),
                 ("import subprocess\nsubprocess._fork_exec = lambda *args: 0\n", "call_replaced_early"),
                 ("import _posixsubprocess\noriginal = _posixsubprocess.fork_exec\n"
                  "_posixsubprocess.fork_exec = lambda *args: original(*args)\n", "call_replaced_early"),

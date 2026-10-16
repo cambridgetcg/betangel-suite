@@ -24,7 +24,10 @@ What the hook refuses, in every mode and phase:
        run directory still resolves where it did at arm() and the socket path is not itself a link (bind
        follows a dangling one and creates the socket at its target); a relative path, or one with a NUL in
        it (the kernel ends the socket name at the first NUL), is never permitted;
-  I-5  ctypes.dlopen and SQLite extension loading always; os.system, os.exec*, os.spawn*, os.fork and
+  I-5  importing ctypes or _ctypes, with any submodule (import_refused): _ctypes reaches libc through dlsym and
+       call_function without any dlopen, so arm() also refuses (module_loaded_early) if either is already
+       loaded. ctypes.dlopen, ctypes.dlsym and ctypes.call_function (a backstop: ctypes cannot load) and
+       SQLite extension loading always; os.system, os.exec*, os.spawn*, os.fork and
        os.forkpty always; subprocess.Popen and os.posix_spawn except as below. Also always: a direct call of
        _posixsubprocess.fork_exec, which starts a child from C with no audit event of its own (arm() replaces it
        with a wrapper that raises one, "_posixsubprocess.fork_exec", and leaves subprocess its own reference to
@@ -136,9 +139,13 @@ _SPAWN = frozenset({"subprocess.Popen", "os.posix_spawn", "os.system", "os.exec"
 # Modules whose import the hook refuses (import_refused), with every submodule, and which arm() refuses to find
 # already loaded (module_loaded_early). multiprocessing (spawn, the macOS default, and forkserver) and
 # concurrent.futures.process start children through _posixsubprocess.fork_exec, which raises no audit event of
-# its own (Nuance's PR #2 review, item 3).
-_REFUSED_IMPORTS = ("multiprocessing", "concurrent.futures.process")
-_LIBRARY_LOADS = frozenset({"ctypes.dlopen", "sqlite3.enable_load_extension", "sqlite3.load_extension"})
+# its own (Nuance's PR #2 review, item 3). _ctypes calls into libc with dlsym(RTLD_DEFAULT, name) and
+# call_function, which need no dlopen (item 18); the ctypes package imports it.
+_REFUSED_IMPORTS = ("multiprocessing", "concurrent.futures.process", "ctypes", "_ctypes")
+# ctypes.dlsym, ctypes.dlsym/handle and ctypes.call_function back up the ctypes refusal: _ctypes cannot be loaded
+# once the hook is in place, but if it ever were, a symbol lookup or a raw call is refused too.
+_LIBRARY_LOADS = frozenset({"ctypes.dlopen", "ctypes.dlsym", "ctypes.dlsym/handle", "ctypes.call_function",
+                            "sqlite3.enable_load_extension", "sqlite3.load_extension"})
 # event -> ((index of a path argument, index of its dir_fd argument or None, follows a final symlink,
 #            puts a name in place or moves one away: never a root's or TMPDIR's), ...)
 _MUTATIONS = {
