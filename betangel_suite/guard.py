@@ -30,17 +30,18 @@ What the hook refuses, in every mode and phase:
        puts a wrapper that raises "socket.listen" on socket.socket.listen at the first socket.__new__ event
        (arm() does it at once if socket is already loaded, and never imports socket), and refuses to create a
        socket whose class would not call that wrapper: a bare _socket.socket, or a subclass with its own listen;
-  I-5  importing ctypes or _ctypes, with any submodule (import_refused): _ctypes reaches libc through dlsym and
-       call_function without any dlopen, so arm() also refuses (module_loaded_early) if either is already
-       loaded. ctypes.dlopen, ctypes.dlsym and ctypes.call_function (a backstop: ctypes cannot load) and
-       SQLite extension loading always; os.system, os.exec*, os.spawn*, os.fork and
-       os.forkpty always; subprocess.Popen and os.posix_spawn except as below. Also always: a direct call of
-       _posixsubprocess.fork_exec, which starts a child from C with no audit event of its own (arm() replaces it
-       with a wrapper that raises one, "_posixsubprocess.fork_exec", and leaves subprocess its own reference to
-       the original, behind the subprocess.Popen event), and importing multiprocessing or any submodule of it,
-       or concurrent.futures.process (import_refused): they start children through fork_exec. arm() refuses
-       (module_loaded_early) if one of those modules is already loaded, and (call_replaced_early) unless
-       subprocess._fork_exec and _posixsubprocess.fork_exec are both the C original. Threads are unaffected;
+  I-5  os.system, os.exec*, os.spawn*, os.fork and os.forkpty always; subprocess.Popen and os.posix_spawn
+       except as below. Always, too:
+       - a direct call of _posixsubprocess.fork_exec, which starts a child from C with no audit event of its
+         own. arm() replaces it with a wrapper that raises one, "_posixsubprocess.fork_exec", and leaves
+         subprocess its own reference to the original, behind the subprocess.Popen event. arm() refuses
+         (call_replaced_early) unless both are the C original when it runs;
+       - importing multiprocessing (any submodule) or concurrent.futures.process, which start children through
+         fork_exec, and ctypes or _ctypes (any submodule), since _ctypes reaches libc through dlsym and
+         call_function with no dlopen (import_refused). arm() refuses (module_loaded_early) if one of them is
+         already loaded: the import event fires only for a module that is not loaded yet;
+       - ctypes.dlopen, plus ctypes.dlsym and ctypes.call_function as a backstop, and SQLite extension loading.
+       Threads are unaffected;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
        link (both paths: a hard link would alias an outside inode inside the roots), symlink, truncate,
        chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. The write roots are the state
