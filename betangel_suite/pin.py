@@ -17,6 +17,7 @@ betangel_research module came from that directory.
 Standard library only.
 """
 
+import fcntl
 import hashlib
 import importlib.machinery
 import json
@@ -212,7 +213,7 @@ def _in_research(entry, home_dir=None):
 
 
 def _kernel_path(path):
-    """The kernel's own path (F_GETPATH) for the directory or regular file at path, or None."""
+    """The kernel's own path (macOS F_GETPATH) for the directory or regular file at path, or None."""
     try:
         mode = os.stat(path).st_mode
         if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
@@ -221,11 +222,12 @@ def _kernel_path(path):
     except OSError:
         return None
     try:
-        return guard._fd_path(fd)
+        buffer = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
     except OSError:
         return None
     finally:
         os.close(fd)
+    return os.fsdecode(buffer.split(b"\0", 1)[0])
 
 
 def assert_origins(deps):
