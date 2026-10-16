@@ -643,7 +643,10 @@ attempt("plain_git", lambda: subprocess.run(["/usr/bin/git", "-C", roots.researc
 
 
 class WriteTests(unittest.TestCase):
-    """I-6: writes stay inside the roots; nothing under ~/betangel-data while the suite root is not agreed."""
+    """I-6: writes stay inside the roots; nothing under ~/betangel-data while the suite root is not agreed.
+
+    roots.STATE_ROOT_AGREED is True since Q-N3; the flag-off tests set it to False in the child before arming.
+    """
 
     SETUP = """
 home = os.environ["HOME"]
@@ -661,7 +664,7 @@ with open(os.path.join(state, "tree", "a", "b"), "w") as handle:
 
     def test_writes_with_the_suite_root_not_agreed(self):
         home = make_home(self)
-        results = checks(self, home, setup=self.SETUP, body="""
+        results = checks(self, home, setup=self.SETUP + "roots.STATE_ROOT_AGREED = False\n", body="""
 import shutil, sqlite3, tempfile
 def write(path):
     with open(path, "w") as handle:
@@ -787,9 +790,15 @@ attempt("remove_the_link_itself", lambda: os.remove(os.path.join(state, "empty")
 
     def test_calls_without_their_own_audit_event(self):
         # CPython raises no audit event for os.mkfifo or os.mknod; arm() wraps them so that they do.
+        for agreed, data_code in ((False, "state_root_not_agreed"), (True, "write_outside_roots")):
+            with self.subTest(agreed=agreed):
+                self.fifo_and_node_calls(agreed, data_code)
+
+    def fifo_and_node_calls(self, agreed, data_code):
         home = make_home(self)
         os.makedirs(roots.data_home(home), mode=0o700)      # a synthetic ~/betangel-data in the temporary HOME
-        results = checks(self, home, setup=self.SETUP, body="""
+        setup = self.SETUP + "roots.STATE_ROOT_AGREED = %r\n" % agreed
+        results = checks(self, home, setup=setup, body="""
 import posix
 data = roots.data_home()
 def mkfifo_dir_fd():
@@ -810,7 +819,7 @@ results["wrapped"] = os.mkfifo is posix.mkfifo and os.mkfifo.__module__ == "beta
         for name in ("mkfifo_outside", "posix_mkfifo_outside", "mkfifo_dir_fd_outside", "mknod_outside"):
             self.assertEqual(results[name], "write_outside_roots", name)
         for name in ("mkfifo_data_home", "mknod_data_home"):
-            self.assertEqual(results[name], "state_root_not_agreed", name)
+            self.assertEqual(results[name], data_code, name)
         self.assertEqual(results["mkfifo_inside"], "ok")
         self.assertTrue(results["wrapped"])
         self.assertEqual(os.listdir(roots.data_home(home)), [])

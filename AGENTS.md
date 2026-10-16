@@ -105,18 +105,23 @@ context. It is never Yu's instruction, consent or acceptance.
 Phase 0 is synthetic-only. These adaptations, decided by lab-Claude for Phase 0, hold until a
 reviewed PR changes them.
 
-- **A. Suite root not yet agreed.** Yu agreed `~/betangel-data/suite.noindex` (R-4), but
-  Nuance's agreement (Q-N3) is still pending. `betangel_suite/roots.py` sets
-  `STATE_ROOT_AGREED = False`. While it is False:
-  - any write or mkdir under `~/betangel-data` is refused with code `state_root_not_agreed`;
-  - `bin/suite` points `TMPDIR` and `SQLITE_TMPDIR` at `~/.local/state/betangel-suite/tmp` for
-    every command;
-  - no Phase 0 command reads a data root.
-
-  The design's eventual behaviour stays behind the flag. Turning it on is a two-line reviewed
-  change: the flag in `roots.py` and the default `TMP` branch in `bin/suite`, which a shell script
-  cannot read from Python. `_launch.py` refuses any mismatch between the two (`tmpdir_mismatch`),
-  so a half-done flip fails closed. Tests cover both settings under a temporary HOME.
+- **A. Suite root agreed.** Yu agreed `~/betangel-data/suite.noindex` (R-4), and Nuance agreed it
+  on three conditions (Q-N3; DESIGN.md 3.7). So `betangel_suite/roots.py` sets
+  `STATE_ROOT_AGREED = True`, and the default `TMP` branch in `bin/suite`, which a shell script
+  cannot read from Python, is the suite root's `tmp/`. The two lines changed together.
+  `_launch.py` refuses any mismatch between them (`tmpdir_mismatch`), so a half-done change fails
+  closed. Tests cover both settings under a temporary HOME.
+  - Every command except `test`, `uisnap` and `vendor` uses `~/betangel-data/suite.noindex/tmp`
+    as `TMPDIR` and `SQLITE_TMPDIR`, created 0700 only after the run-marker check. The first
+    engine command run with the real HOME creates the suite root itself.
+  - Only the engine may write the suite root. The test runner and `vendor` write only under
+    `~/.local/state/betangel-suite` (`vendor` also its deps clone and `pin/`). Any other write
+    under `~/betangel-data` is refused (`write_outside_roots`).
+  - No Phase 0 command reads a data root. Before Phase 1a the suite owes Nuance's condition 2: it
+    refuses a data root that equals, contains or lies inside `suite.noindex`, `lab-state` or
+    `logs`, or that lies inside `incoming/`, comparing roots by file identity.
+  - With the flag False, any write or mkdir under `~/betangel-data` would be refused with code
+    `state_root_not_agreed`, and every command would use `~/.local/state/betangel-suite/tmp`.
 - **B. Install salt.** The per-install salt for identifier hashes lives at
   `~/.local/state/betangel-suite/install-salt` (mode 0600), not under the suite root.
 - **C. Pin.** betangel-research `76f71dc94588a50f0df56dde2c3fabcf6e102f88`. The deps clone is at
@@ -125,11 +130,13 @@ reviewed PR changes them.
 - **D. Synthetic only.** No data-root reading, no paper trading, no HTTP server yet (Phase 0b),
   and no release copies or `ssh-session` yet (Phase 0c). `cli.py` commands that are not built
   yet refuse with code `not_implemented` and exit 2.
-- **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE`, proposed to Nuance (Q-N3).
+- **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE`, agreed with Nuance (Q-N3).
   The config key `run_marker` accepts only that path, so no config edit can point the check at a
-  file that never exists; a reviewed change moves it once Nuance answers. Every command except
-  `stop` and `vendor` refuses to start while the marker is present, unreadable, or in an
-  unreadable directory (DESIGN.md 6.8).
+  file that never exists; only a reviewed change could move it. Nuance's wrapper creates the
+  marker with O_EXCL, waits up to 60 s for `engine.lock`, and refuses its own run if the lock is
+  still held. The engine may hold the lock for about 35 s after the marker appears. Lab-Claude
+  never creates or removes the marker. Every command except `stop` and `vendor` refuses to start
+  while the marker is present, unreadable, or in an unreadable directory (DESIGN.md 6.8).
   - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
     be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
     exists too; stop stays exempt".

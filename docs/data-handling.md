@@ -21,8 +21,10 @@ clone, and is never uploaded or shared. A model context counts as an upload.
 | **The browser** | A Safari Private window (or a profile with no Betfair login, extensions or iCloud sync); UI preferences in `localStorage` | The session token in storage, cookies, external requests; a page title that names a race (it is always `betangel-suite`) |
 | **Disk** | Derivatives under the suite root (0700); data roots are read-only to the suite | Decompressed members anywhere; any derivative outside `~/betangel-data`; temp files outside the suite's own `TMPDIR` |
 
-In Phase 0 nothing is written under `~/betangel-data` at all: the suite root is not agreed yet
-(AGENTS.md, Phase 0 status A), and Phase 0 is synthetic-only.
+Phase 0 is synthetic-only, so it writes no licensed derivative. The suite root is agreed
+(AGENTS.md, Phase 0 status A): an engine command creates `~/betangel-data/suite.noindex/` and its
+`tmp/` (both 0700), and only the engine may write there. Tests use temporary HOMEs and never
+write under the real `~/betangel-data`.
 
 ## Exceptions
 

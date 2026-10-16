@@ -136,7 +136,7 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
 | R-1 | **Yes.** The suite drives `paper.PaperExchange` directly with its own paper journal, outside `gateway.py`, for paper orders Yu clicks on historical replay. |
 | R-2 | **Yes.** Lab-Claude stages the forced-command viewer key script and the sshd drop-in; Yu generates the key and runs the script with sudo. |
 | R-3 | `user_package_unverified` until Yu checks the package in My Account. |
-| R-4 | **Agreed by Yu.** `~/betangel-data/suite.noindex`. Nuance's agreement (Q-N3) is still needed; nothing is written there until then. |
+| R-4 | **Agreed by Yu.** `~/betangel-data/suite.noindex`. Nuance agreed too, on three conditions (Q-N3, 2026-10-16; section 3.7), so `roots.STATE_ROOT_AGREED` is now True. |
 | R-5 | **Yes.** A suite-side, display-only SP parser; no `schemas.py` change. Nuance to confirm (Q-N9). |
 | R-6 | **Confirmed.** No rule-generated paper orders in the MVP. Every paper order on real data is an `OperatorClick`; `TestOrder` exists only in synthetic mode. |
 | R-7 | **Practise live v1** by default (`v1-live-mirror` caps, live-parity mode). The `practice` profile is still built and selectable. |
@@ -334,8 +334,8 @@ for a in "$@"; do
   [ "$a" != "--print-url" ] || [ -z "${SSH_CONNECTION:-}" ] || { echo "refused:print_url_over_ssh" >&2; exit 2; }
 done
 case "${1:-}" in
-  test|uisnap) TMP="$HOME/.local/state/betangel-suite/tmp" ;;
-  *)           TMP="$HOME/betangel-data/suite.noindex/tmp" ;;   # created 0700 by _launch.py after the run-marker check
+  test|uisnap|vendor) TMP="$HOME/.local/state/betangel-suite/tmp" ;;
+  *)                  TMP="$HOME/betangel-data/suite.noindex/tmp" ;;   # created 0700 after the run-marker check
 esac
 exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/bin \
   TMPDIR="$TMP" SQLITE_TMPDIR="$TMP" SUITE_VIA_SSH="$VIA_SSH" \
@@ -361,7 +361,7 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
   - Nothing installs or upgrades an interpreter. `session.json` records the interpreter version.
 - **Tests.** `bin/suite test` runs `python3.13 -I -S -B -m unittest discover -s tests -t .` from the repo root under the same environment, then `~/.local/bin/node --test ui/tests` (section 11 for the fast and heavy tiers).
 
-### 3.7 State roots (proposed; R-4 needs Yu's and Nuance's agreement)
+### 3.7 State roots (agreed: R-4 by Yu, Q-N3 by Nuance)
 
 | Root | Mode | Contents | Licensed? |
 |---|---|---|---|
@@ -379,6 +379,11 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
   - `~/betangel-data/lab-state`, `~/betangel-data/logs`, `incoming/`, and anything under a data root for writing;
   - `~/Library/Application Support/betangel-research/betfair` and `~/.config/betangel-research`;
   - the Keychain.
+- **Nuance's conditions (Q-N3).** Nuance agreed the suite root on three conditions (PR #4 review, 2026-10-16):
+  1. Nuance never uses `~/betangel-data` or `suite.noindex` itself as a data or lab-state root.
+  2. Before Phase 1a, the suite refuses a data root that equals, contains or lies inside `suite.noindex`, `lab-state` or `logs`, or that lies inside `incoming/`. It compares roots by file identity, not by path text. **Owed before Phase 1a** (section 5.2); Phase 0 reads no data root.
+  3. The marker half is agreed first. It now is (section 6.8).
+- **The flag.** `roots.STATE_ROOT_AGREED` is True, and `bin/suite`'s default `TMP` branch is the suite root's `tmp/` (section 3.6). The two change together; `_launch.py` refuses a mismatch (`tmpdir_mismatch`). Only the engine's guard mode has the suite root as a write root: the test runner and `vendor` never write under `~/betangel-data`, and tests use temporary HOMEs. The first engine command run with the real HOME creates `~/betangel-data/suite.noindex/` (0700) and its `tmp/`, after the run-marker check.
 - **Why `~/betangel-data/suite.noindex`.**
   - It sits beside the data roots, so Nuance's discovery never sees it. That discovery is `archive_shas(root)` over `<root>/manifests` (market_index.py:927).
   - The `.noindex` suffix keeps Spotlight from indexing the suite's text derivatives (CSV exports, `session.json`, `report.json`, `commands.jsonl`). Yu is also asked to add all of `~/betangel-data` to Spotlight Privacy (Q-Y15), which Nuance called sensible (mailbox 08:57Z, B3).
@@ -391,13 +396,13 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 | Key | Default | Notes |
 |---|---|---|
 | `data_roots` | `[]` until Nuance names the PRO root (Q-N4), then `["~/betangel-data/historic-pro"]` | Each must pass `archive.check_data_root`. With no root, the engine runs synthetic mode only. The BASIC root is used only by explicit counts-only commands (section 5.1). |
-| `state_root` | `~/betangel-data/suite.noindex` | R-4 |
+| `state_root` | `~/betangel-data/suite.noindex` | R-4 (Yu); Q-N3 (Nuance, on three conditions, section 3.7) |
 | `port` | 8765 | loopback only |
 | `frame_hz` | 10 | 5-20 |
 | `cap_profile` | `v1-live-mirror` | or `practice` (section 7.2; R-7) |
 | `commission_source` | `user_package_unverified` | R-3 |
 | `research_months_ruling` | `null` | A ruling id. While it is null, research months are hidden and not written to the catalogue (section 5.3). |
-| `run_marker` | `~/.local/state/lab-runs/ACTIVE` (proposed; agreed with Nuance) | section 6.8 |
+| `run_marker` | `~/.local/state/lab-runs/ACTIVE` (agreed with Nuance, Q-N3) | section 6.8 |
 | `watch_grace_s` | 600 | pause-unless-watched grace (section 8.6) |
 
 - **Paper config.** It is `deepcopy(config.DEFAULTS)` (config.py:27-72), with the active cap profile merged in, plus:
@@ -565,6 +570,7 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
 ### 5.2 Data roots and discovery
 
 - The suite reads a configured list of indexed data roots. Each must pass `archive.check_data_root` (archive.py:273). It never reads `incoming/`.
+- **Owed before Phase 1a (Nuance's Q-N3 condition 2).** The suite refuses a data root that equals, contains or lies inside the suite root, `~/betangel-data/lab-state` or `~/betangel-data/logs`, or that lies inside `incoming/`. It compares roots by file identity, not by path text.
 - For every `manifests/<sha>.json` found by `market_index.archive_shas(root)` (market_index.py:927), it needs `index/<sha>/head-v1.json`, with these checks:
   - the head's `kind` is `betfair_historical_market_index_head`;
   - its `schema_version` is 1;
@@ -771,7 +777,8 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
 Nuance has answered: during a real run, "a suite elsewhere is harmless but slows the run; please avoid it" (mailbox 08:57Z, A5). So the rule is **no engine during runs**, not a reduced quiet mode.
 
 - **The marker.**
-  - A run-active marker is agreed with Nuance, outside `~/betangel-data` and not under the unagreed `~/betangel-data/lab-state`. The proposal is `~/.local/state/lab-runs/ACTIVE`, written by Nuance's run wrapper.
+  - The marker is `~/.local/state/lab-runs/ACTIVE`, agreed with Nuance (Q-N3, 2026-10-16). It lies outside `~/betangel-data`, and not under `~/betangel-data/lab-state`.
+  - Only Nuance's run wrapper creates and removes it. Lab-Claude never does.
   - It is checked first by `_launch.py`, before anything is created under `~/betangel-data`.
   - It covers both real backtest runs and the PRO ingest and index.
 - **At start.** The engine, every real-data command (`catalogue`, `selfcheck`, `diagnose`) and `bin/suite test` refuse to start while the marker exists. An unreadable marker, or an unreadable marker directory, counts as present.
@@ -782,10 +789,16 @@ Nuance has answered: during a real run, "a suite elsewhere is harmless but slows
   - the UI shows why;
   - the engine exits after a grace period of 30 s without writing.
   
+  So the engine may hold `engine.lock` for about 35 s after the marker appears. Nuance agreed this (Q-N3); Nuance measured the lock free only after 30.23-30.60 s (PR #4 review, item 15).
+  
   At the next start, after the run, the session is marked `interrupted_run`. It is not counted as abandoned by Yu.
-- **Nuance's side.** Nuance's wrapper writes the marker, then waits until `~/.local/state/betangel-suite/run/engine.lock` is free (at most about 30 s) before touching sources or data. This is a request to Nuance (Q-N3).
+- **Nuance's side (agreed, Q-N3).** Nuance's wrapper creates the marker with O_EXCL, then waits up to 60 s for `~/.local/state/betangel-suite/run/engine.lock` to be free before touching sources or data. If the lock is still held after 60 s, it refuses its own run. Nuance's PR #4 review adds:
+  - the marker holds only the job kind, the UTC start and the pid, and the wrapper holds a flock on it for the job's life;
+  - a missing lock file counts as free, and any other error as busy;
+  - the wrappers run outside betangel_research;
+  - the wrapper removes only its own marker, and only after the job exits.
 - **No automatic work.** The catalogue is rebuilt only on an explicit command, never on a head change, so nothing fires during Nuance's ingest.
-- **Until a marker is agreed.** Lab-Claude runs no real-data commands while a run is announced, and Yu is told before starting. **The agreed marker is a Phase 0 exit criterion, and Phase 1b journal writes on real data do not ship without it.**
+- **The marker is agreed (Q-N3).** It was a Phase 0 exit criterion, and Phase 1b journal writes on real data do not ship without it. Lab-Claude still runs no real-data commands while a run is announced, and Yu is told before starting.
 
 ---
 
@@ -1343,7 +1356,7 @@ These headers apply to error responses too (section 9.1).
 | I-14 | Right interpreter | The launcher's absolute path; the version check | 3.15 or below 3.11 is refused. |
 | I-15 | Paper fidelity | Exact mode, the yield tracker, position-based re-seeding | The parity contract (section 7.4), the yield-tracker oracle test, the no-look-ahead re-seed test, the full-cancel test, and `journal.verify()` for every session. |
 | I-16 | Agents are not handed Yu's token or real rows by the code. This is a code-path property: the code never prints them, but a same-uid agent that disobeys rule 6 is out of reach. | Single-use codes printed only by `open` (to `/usr/bin/open`), `ssh-session` and `--print-url`; token in memory and registered with `secret`; aggregate-only diagnostics; error mapping | Test runs capture stdout and stderr and assert no token or code pattern. A `selfcheck` run over fixtures does not print the fixture's synthetic names or prices. A synthetic member with a bad hash or a truncated line produces no market-id or event-id pattern on stdout, stderr, `logs/` or HTTP. |
-| I-17 | No engine during Nuance's runs | The run marker, checked before anything is written under `~/betangel-data` and on every tick | A marker present at start refuses the engine, real-data commands and `bin/suite test` on both interpreters; only `stop` and `vendor` skip the check. An unreadable marker refuses them too. A marker appearing mid-session freezes the engine with no writes (tree diff), and it exits within the grace period. |
+| I-17 | No engine during Nuance's runs | The run marker, checked before anything is written under `~/betangel-data` and on every tick. Nuance's wrapper creates it with O_EXCL, waits up to 60 s for `engine.lock`, and refuses its own run if the lock is still held (Q-N3). | A marker present at start refuses the engine, real-data commands and `bin/suite test` on both interpreters; only `stop` and `vendor` skip the check. An unreadable marker refuses them too. A marker appearing mid-session freezes the engine with no writes (tree diff), and it exits within the grace period, releasing `engine.lock` within about 35 s. |
 | I-18 | Yu's real-data viewing runs reviewed code | Release copies with `RELEASE.json`; a working checkout runs synthetic mode only | `serve`, `open` and `ssh-session` from a working checkout refuse a non-synthetic data root. A modified file in a release copy is refused. |
 | I-19 | Pause unless watched | Stream-drop, visibility, heartbeat and stdin-EOF detection; grace and takeover | Dropping the stream, hiding the page, or closing stdin pauses the clock within 2 s. A takeover within the grace period keeps the session. Expiry marks it `abandoned`. |
 
@@ -1571,7 +1584,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 |---|---|---|
 | Q-N1 | Do you accept the engine importing only the 25-module closure in section 4.1, with no risk or capability? Will you treat the contract-tested names (section 4.5) as an interface and flag breaking changes in PR descriptions? Is test-only use of `risk` as an oracle acceptable under INTERNAL_ONLY? | Phase 0 |
 | Q-N2 | Is the pin by a network-free local clone (`clone --no-checkout --no-hardlinks` from the lab clone, `checkout --detach`, remote removed, read-only) OK? Or do you prefer `git archive`? Who bumps pins? | Phase 0 |
-| Q-N3 | **State root and the run marker.** Is `~/betangel-data/suite.noindex` acceptable? Following your A5 answer, the suite will not run at all during your runs. Will your run and ingest wrappers write a marker such as `~/.local/state/lab-runs/ACTIVE`, and wait for `~/.local/state/betangel-suite/run/engine.lock` to be free before touching sources or data? | Phase 0 |
+| Q-N3 | **State root and the run marker.** Is `~/betangel-data/suite.noindex` acceptable? Following your A5 answer, the suite will not run at all during your runs. Will your run and ingest wrappers write a marker such as `~/.local/state/lab-runs/ACTIVE`, and wait for `~/.local/state/betangel-suite/run/engine.lock` to be free before touching sources or data?<br>**Answered by Nuance: yes to both** (PR #4 review; mailbox, 2026-10-16 13:41Z).<br>- Root: `~/betangel-data/suite.noindex`, on three conditions (section 3.7): (1) Nuance never uses `~/betangel-data` or `suite.noindex` itself as a data or lab-state root; (2) before Phase 1a, the suite refuses a data root that equals, contains or lies inside `suite.noindex`, `lab-state` or `logs`, or lies inside `incoming/`, comparing by file identity (owed before Phase 1a); (3) the marker half is agreed first (it now is). The flag is on.<br>- Marker: `~/.local/state/lab-runs/ACTIVE`. Nuance's wrapper creates it with O_EXCL, waits up to 60 s for `engine.lock`, and refuses its own run if the lock is still held. Nuance agreed that the engine may hold `engine.lock` for about 35 s after the marker appears; Nuance measured the lock free only after 30.23-30.60 s (PR #4 review, item 15). | Answered |
 | Q-N4 | **PRO ingest.** When will you ingest and index it (a date), and what is the final data root (`historic-pro`?)? Is it one archive sha, with index v1 built as for BASIC? A header listing shows 12,208 market files at depth 6, all PRO, including 8 in 2016-May (in no contract split). Is there anything in the index the picker should surface? | Now |
 | Q-N5 | **Paper semantics.** Is direct `PaperExchange` use with a suite `OrderJournal(path, mode="paper", clock=SimClock)` fine, given Yu's R-1? Intent source `paper_replay` with `customer_strategy_ref` `suite-click` (and `suite-test` in synthetic tests), with click provenance in `note` events, until U-9? Is withdrawing a pending order as SUBMITTING → REFUSED (`operator_withdrawn_before_activation`) acceptable? | Phase 0 |
 | Q-N6 | **Quiet-market staleness.** Paper V10 and `_activation_refusal` measure age from the market's last change. Real data shows it is rare near the off. Do you want U-8 at all? (Low priority; the relaxation mode is cut.) | Later |

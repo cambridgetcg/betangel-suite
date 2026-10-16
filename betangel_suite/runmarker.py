@@ -1,8 +1,8 @@
 """The run marker: no suite engine while Nuance runs a real backtest or the PRO ingest (DESIGN.md 6.8, I-17).
 
-The marker is a file Nuance's run wrapper creates, outside ~/betangel-data. The proposed path is
-~/.local/state/lab-runs/ACTIVE (pending Nuance's answer to Q-N3). The config key run_marker accepts only
-that path, so no config edit can point the check at a file that never exists.
+The marker is a file Nuance's run wrapper creates, outside ~/betangel-data, at ~/.local/state/lab-runs/ACTIVE
+(agreed with Nuance, Q-N3). The config key run_marker accepts only that path, so no config edit can point
+the check at a file that never exists. Lab-Claude never creates or removes the marker.
 
 Fail closed: any directory entry at the marker path counts as present (a dangling symlink included), and
 so does a marker that cannot be checked: an unreadable or unsearchable marker directory, a marker
