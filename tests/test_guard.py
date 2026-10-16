@@ -882,6 +882,25 @@ attempt("write_outside", lambda: write(os.path.join(home, "outside.txt")))
             self.assertEqual(results[name], "write_outside_roots", name)
         self.assertEqual(os.listdir(roots.data_home(home)), ["suite.noindex"])
 
+    def test_only_engine_mode_writes_the_agreed_suite_root(self):
+        # The test runner runs with the real HOME, so with the flag on it must still never reach a real
+        # ~/betangel-data/suite.noindex; vendor has no use for it either.
+        for mode in ("test", "vendor"):
+            home = make_home(self)
+            os.makedirs(roots.data_home(home), mode=0o700)
+            results = checks(self, home, mode=mode, setup=self.SETUP + "roots.STATE_ROOT_AGREED = True\n", body="""
+suite = roots.suite_root()
+def write(path):
+    with open(path, "w") as handle:
+        handle.write("x")
+attempt("mkdir_suite_root", lambda: os.mkdir(suite, 0o700))
+attempt("write_suite_root", lambda: write(os.path.join(suite, "x")))
+attempt("write_state", lambda: write(os.path.join(state, "ok.txt")))
+""")
+            self.assertEqual(results, {"mkdir_suite_root": "write_outside_roots",
+                                       "write_suite_root": "write_outside_roots", "write_state": "ok"}, mode)
+            self.assertEqual(os.listdir(roots.data_home(home)), [], mode)
+
 
 if __name__ == "__main__":
     unittest.main()
