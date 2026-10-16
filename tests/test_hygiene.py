@@ -589,6 +589,30 @@ class ContentRuleTests(_RepoCase):
     def test_secret_assignment(self):
         self.plant("pkg/m.py", SECRET_LINE + "\n", TOKEN_BODY[:20], code="secret_value")
 
+    def test_secret_values_after_a_colon_or_a_space(self):
+        # Round-4 review: "password: <value>", "api_key: <value>", "app key: <value>", "ssoid <value>" and "session
+        # token is <value>" passed, in a YAML file and in a commit message (commit-msg and pre-push scan those now).
+        value = TOKEN_BODY[:20]
+        lines = (_j("pass", "word: ", value), _j("api", "_key: ", value), _j("app", " key: ", value),
+                 _j("sso", "id ", TOKEN_BODY), _j("session", " token is ", TOKEN_BODY, "="))
+        for index, line in enumerate(lines):
+            with self.subTest(case=index):
+                self.setUp()
+                self.plant("conf/settings.yaml", "betfair:\n  " + line + "\n", value, code="secret_value")
+                self.write(".git/MSG", "synthetic subject\n\n" + line + "\n")
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.codes(out), {"secret_value"})
+                self.assertNotIn(value, out)
+
+    def test_words_after_a_secret_name_stay_clean(self):
+        # The same forms with type names, placeholders and plain words: _looks_secret keeps them out.
+        self.write("pkg/types.py", "def check(token: str, password: SomeTypeName) -> None:\n    pass\n")
+        self.write("conf/example.yaml", _j("pass", "word: changeme\n", "api", "_key: ${APP_KEY}\n",
+                                           "session", " token is valid\n", "sso", "id synthetic-", TOKEN_BODY, "\n"))
+        self.add("pkg/types.py", "conf/example.yaml")
+        self.assert_clean()
+
     def test_known_token_prefix(self):
         self.plant("pkg/n.txt", f"token: {GH_TOKEN}\n", GH_TOKEN, code="known_token")
 

@@ -272,6 +272,14 @@ _SECRET_BARE = re.compile(
     r"(?i)(?:^|[\s;])(?:export\s+)?[A-Za-z0-9_]*(?:api_?key|app_?key|secret|password|passwd|token|ssoid)"
     r"\s*=\s*([A-Za-z0-9_.~+/-]{16,}=*)\s*$")
 _SECRET_HEADER = re.compile(r"(?i)\bx-(?:authentication|application)\s*:\s*([A-Za-z0-9_.~+/=-]{12,})")
+# The unquoted forms of YAML files, notes and commit messages (round-4 review): "password: <value>", "api_key: <value>",
+# "session token is <value>", and, for the names that are secrets on their own, a bare space: "ssoid <value>",
+# "app key <value>". _looks_secret still filters every value.
+_SECRET_LOOSE = re.compile(
+    r"(?i)(?:^|[^A-Za-z0-9])(?:[A-Za-z0-9_-]*(?:(?:api|app|application)[ _-]?key|secret|password|passwd|passphrase"
+    r"|token|ssoid|session[ _-]?(?:id|token))[\"'`]?(?:\s*[:=]|\s+is)\s*"
+    r"|(?:ssoid|session[ _-]?token|(?:api|app|application)[ _-]?key)\s+)"
+    r"[\"'`]?([A-Za-z0-9_.~+/-]{16,}=*)(?=$|[\s\"'`,;)\]}])")
 _KNOWN_TOKEN = re.compile(
     r"\b(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|(?:AKIA|ASIA)[0-9A-Z]{16}"
     r"|xox[abposr]-[A-Za-z0-9-]{10,}|sk-(?:ant-)?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}"
@@ -379,7 +387,7 @@ def _line_codes(line: str) -> list:
     if _any_secret(_BEARER, line):
         codes.append("bearer_token")
     if (_any_secret(_SECRET_QUOTED, line) or _any_secret(_SECRET_BARE, line)
-            or _any_secret(_SECRET_HEADER, line)):
+            or _any_secret(_SECRET_HEADER, line) or _any_secret(_SECRET_LOOSE, line)):
         codes.append("secret_value")
     if any(any(c.isdigit() for c in m.group(1)) for m in _KNOWN_TOKEN.finditer(line)):
         codes.append("known_token")
