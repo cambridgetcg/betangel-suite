@@ -447,9 +447,11 @@ function boot() {
 
   // Pause unless watched (DESIGN.md 8.6, I-19): while the page is hidden, a running clock asks the engine to
   // pause, on hiding and again on any later message that shows it running (a Play accepted just before the
-  // page was hidden, or a pause that did not get through). One request at a time; a tab answered
-  // not_controller turns read-only (DESIGN.md 9.2 item 8) and stops asking until it is shown again, and a
-  // read-only tab never asks. Called from onMessage, not render: a hidden page gets no animation frames.
+  // page was hidden, or a pause that did not get through). One request at a time. A not_controller answer
+  // turns the tab read-only (applyRole(false); DESIGN.md 9.2 item 8), and a read-only tab never asks, however
+  // often it is shown and hidden. Only becoming the controller again, by an accepted claim_control or a session
+  // query answering controller: true, lets it ask again (after a refusal while hidden, from its next hiding).
+  // Called from onMessage, not render: a hidden page gets no animation frames.
   let hiddenPause = 'idle';                     // idle, sending or refused
   function pauseIfHidden() {
     if (document.visibilityState !== 'hidden') {

@@ -20,10 +20,12 @@ What the hook refuses, in every mode and phase:
        inside a write root and, with its links resolved, inside that root's real path);
   I-3  socket connect, sendto and sendmsg, and every name or address lookup; the one exception is a connect
        to an absolute, normalised Unix socket path in the run directory permitted before seal() with
-       permit_unix_connect (the control socket, which stop and open use to reach a running engine;
-       DESIGN.md 9.1), matched exactly while the run directory still resolves where it did at arm() and the
-       socket path is not itself a link (connect follows one); a path with a NUL in it (the kernel ends the
-       socket name at the first NUL) is never permitted. TCP connects and every other address stay refused;
+       permit_unix_connect (the control socket, which stop and the takeovers by open and ssh-session use to
+       reach a running engine, and which an attached ssh-session keeps using after its seal(), with the permit
+       it got before; DESIGN.md 9.1), matched exactly while the run directory still resolves where it did at
+       arm() and the socket path is not itself a link (connect follows one); a path with a NUL in it (the
+       kernel ends the socket name at the first NUL) is never permitted. TCP connects and every other address
+       stay refused;
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
        run directory still resolves where it did at arm() and the socket path is not itself a link (bind
@@ -302,10 +304,13 @@ def permit_unix_socket(path):
 def permit_unix_connect(path):
     """Allow connecting to the Unix socket at path: normalised, directly in the run directory. Only before seal().
 
-    This is how stop and open reach a running engine's control socket (DESIGN.md 9.1); the engine itself never
-    asks for it. A relative path is never permitted, and nothing but socket.connect on an AF_UNIX socket uses it.
-    Nor is a path with a NUL in it: the kernel ends sun_path at the first NUL, so the connect would reach a
-    different name from the one permitted, and os.path.islink cannot look at such a path (it says False).
+    This is how stop and the takeovers by open and ssh-session reach a running engine's control socket (DESIGN.md
+    9.1, api/control.request). A permit outlives seal(): an attached ssh-session seals after its takeover and its
+    viewer keeps connecting (codes, heartbeats, away) with the permit it got before. The engine itself never asks
+    for it: an ssh-session that hosts the engine reaches it in-process. Nothing but socket.connect on an AF_UNIX
+    socket uses it. A relative path is never permitted, and nor is a path with a NUL in it: the kernel ends
+    sun_path at the first NUL, so the connect would reach a different name from the one permitted, and
+    os.path.islink cannot look at such a path (it says False).
     """
     with _LOCK:
         state = _require_unsealed()
