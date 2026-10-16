@@ -1067,6 +1067,48 @@ class RootPlacementTests(unittest.TestCase):
                          {"arm": "ok", "mkdir_state": "ok", "open:suite": "state_root_not_agreed",
                           "sqlite:suite": "state_root_not_agreed"})
 
+    def test_no_link_or_rename_takes_the_place_of_a_root_or_tmpdir(self):
+        # The guard allowed os.symlink(historic-pro, suite.noindex): a write in the roots, as text, that steers the
+        # next process. A link, hard link or rename may not put a name where a root or TMPDIR is, nor move one away.
+        # Links elsewhere in the roots stay allowed (the own-link design of test_dot_dot_and_trailing_slash...).
+        home = make_home(self)
+        historic = self.data_dir(home, "historic-pro")
+        setup = "roots.STATE_ROOT_AGREED = True\n"
+        results = checks(self, home, setup=setup, body="""
+home = os.environ["HOME"]
+state, suite, tmp = roots.state_dir(), roots.suite_root(), os.environ["TMPDIR"]
+historic = os.path.join(roots.data_home(), "historic-pro")
+moved = os.path.join(state, "moved")
+with open(os.path.join(state, "file"), "w") as handle:
+    handle.write("synthetic")
+attempt("symlink_onto_suite_root", lambda: os.symlink(historic, suite))
+attempt("staged_link", lambda: os.symlink(historic, os.path.join(state, "staged")))
+attempt("rename_link_onto_suite_root", lambda: os.rename(os.path.join(state, "staged"), suite))
+attempt("replace_link_onto_suite_root", lambda: os.replace(os.path.join(state, "staged"), suite))
+attempt("hard_link_onto_suite_root", lambda: os.link(os.path.join(state, "file"), suite))
+attempt("symlink_onto_tmpdir", lambda: os.symlink(historic, tmp))
+attempt("rename_tmpdir_away", lambda: os.rename(tmp, moved))
+attempt("rename_tmpdir_trailing_slash", lambda: os.rename(tmp + "/", moved))
+attempt("rename_tmpdir_other_case", lambda: os.rename(os.path.join(state, "TMP"), moved))
+attempt("mkdir_suite_root", lambda: os.mkdir(suite, 0o700))
+attempt("rename_state_root_away", lambda: os.rename(state, os.path.join(suite, "state")))
+attempt("rename_suite_root_away", lambda: os.rename(suite, os.path.join(state, "suite")))
+attempt("own_link", lambda: os.symlink(historic, os.path.join(state, "own")))
+attempt("rename_own_link", lambda: os.rename(os.path.join(state, "own"), os.path.join(state, "own2")))
+attempt("rename_inside_tmpdir", lambda: os.rename(os.path.join(state, "file"), os.path.join(tmp, "file")))
+results["suite_is_link"] = os.path.islink(suite)
+results["tmp_is_dir"] = os.path.isdir(tmp) and not os.path.islink(tmp)
+""")
+        for name in ("symlink_onto_suite_root", "rename_link_onto_suite_root", "replace_link_onto_suite_root",
+                     "hard_link_onto_suite_root", "symlink_onto_tmpdir", "rename_tmpdir_away",
+                     "rename_tmpdir_trailing_slash", "rename_tmpdir_other_case", "rename_state_root_away",
+                     "rename_suite_root_away"):
+            self.assertEqual(results[name], "root_replace_refused", name)
+        for name in ("staged_link", "mkdir_suite_root", "own_link", "rename_own_link", "rename_inside_tmpdir"):
+            self.assertEqual(results[name], "ok", name)
+        self.assertEqual((results["suite_is_link"], results["tmp_is_dir"]), (False, True))
+        self.assertEqual(os.listdir(historic), [])
+
     def test_bin_suite_refuses_before_creating_anything(self):
         # The evidence's own commands: bin/suite test made lab-state/betangel-suite/tmp; an engine command would
         # have used historic-pro/tmp as its TMPDIR.

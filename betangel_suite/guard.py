@@ -39,7 +39,10 @@ What the hook refuses, in every mode and phase:
        That check trusts each root's real path, so arm() first refuses any write root, and TMPDIR, that
        the file system puts in, around or onto ~/betangel-data (roots.check_placement, stat calls only):
        root_overlaps_data_home, or suite_root_misplaced for an engine suite root that is not a real
-       directory, or missing, at exactly realpath(~/betangel-data)/suite.noindex.
+       directory, or missing, at exactly realpath(~/betangel-data)/suite.noindex. And the hook refuses a
+       symlink, hard link or rename that puts a name where a root or TMPDIR really is, or moves one away
+       (root_replace_refused): os.symlink(<a data root>, suite.noindex) would otherwise pass as a write in
+       the roots and steer the next process. Links elsewhere in the roots stay allowed.
        CPython raises no audit event for os.mkfifo and os.mknod, so arm() replaces them (in os and posix)
        with wrappers that raise one ("os.mkfifo", "os.mknod") before calling the original.
        The sqlite3.connect event covers only the main database file. ATTACH DATABASE and VACUUM INTO create
@@ -110,21 +113,22 @@ _NETWORK = {
 _SPAWN = frozenset({"subprocess.Popen", "os.posix_spawn", "os.system", "os.exec", "os.spawn", "os.fork",
                     "os.forkpty"})
 _LIBRARY_LOADS = frozenset({"ctypes.dlopen", "sqlite3.enable_load_extension", "sqlite3.load_extension"})
-# event -> ((index of a path argument, index of its dir_fd argument or None, follows a final symlink), ...)
+# event -> ((index of a path argument, index of its dir_fd argument or None, follows a final symlink,
+#            puts a name in place or moves one away: never a root's or TMPDIR's), ...)
 _MUTATIONS = {
-    "os.mkdir": ((0, 2, False),),
-    "os.rmdir": ((0, 1, False),),
-    "os.remove": ((0, 1, False),),
-    "os.rename": ((0, 2, False), (1, 3, False)),
-    "os.link": ((0, 2, True), (1, 3, False)),
-    "os.symlink": ((1, 2, False),),
-    "os.truncate": ((0, None, True),),
-    "os.chmod": ((0, 2, True),),
-    "os.chown": ((0, 3, True),),
-    "os.chflags": ((0, None, True),),
-    "os.utime": ((0, 3, True),),
-    "os.mkfifo": ((0, 2, False),),          # raised by the wrapper arm() installs
-    "os.mknod": ((0, 3, False),),           # likewise
+    "os.mkdir": ((0, 2, False, False),),
+    "os.rmdir": ((0, 1, False, False),),
+    "os.remove": ((0, 1, False, False),),
+    "os.rename": ((0, 2, False, True), (1, 3, False, True)),
+    "os.link": ((0, 2, True, False), (1, 3, False, True)),
+    "os.symlink": ((1, 2, False, True),),
+    "os.truncate": ((0, None, True, False),),
+    "os.chmod": ((0, 2, True, False),),
+    "os.chown": ((0, 3, True, False),),
+    "os.chflags": ((0, None, True, False),),
+    "os.utime": ((0, 3, True, False),),
+    "os.mkfifo": ((0, 2, False, False),),   # raised by the wrapper arm() installs
+    "os.mknod": ((0, 3, False, False),),    # likewise
 }
 _WATCHED = frozenset(set(_NETWORK) | _SPAWN | set(_MUTATIONS) | _LIBRARY_LOADS
                      | {"socket.bind", "os.putenv", "os.unsetenv", "open", "sqlite3.connect"})
@@ -158,6 +162,10 @@ class _State:
         self.roots = tuple(found)
         self.real_roots = tuple(os.path.realpath(root) for root in found)
         self.tmp_root = tmp_root
+        # Where each root and TMPDIR really are (casefolded: the lab's APFS volume folds case). No name may be
+        # put there, and none moved away, so the placement arm() checked holds for the life of the process.
+        self.slots = frozenset(real.casefold() for real in self.real_roots + (
+            (os.path.realpath(tmp_root),) if tmp_root else ()))
         self.agreed = roots.STATE_ROOT_AGREED
         self.data_home = roots.data_home(home).casefold()
         self.run_dir = roots.run_dir(home)
@@ -380,8 +388,8 @@ def _check(state, event, args):
     elif event == "sqlite3.connect":
         _check_sqlite(state, args[0])
     else:
-        for path_index, fd_index, follow in _MUTATIONS[event]:
-            _check_write(state, args[path_index], -1 if fd_index is None else args[fd_index], follow)
+        for path_index, fd_index, follow, slot in _MUTATIONS[event]:
+            _check_write(state, args[path_index], -1 if fd_index is None else args[fd_index], follow, slot)
 
 
 def _check_bind(state, sock, address):
@@ -544,7 +552,7 @@ def _check_sqlite(state, database):
     _check_write(state, text, -1, True)
 
 
-def _check_write(state, path, dir_fd, follow):
+def _check_write(state, path, dir_fd, follow, slot=False):
     if isinstance(path, int):
         return                                         # an open descriptor, checked when it was opened
     raw = os.fsdecode(os.fspath(path))
@@ -568,6 +576,10 @@ def _check_write(state, path, dir_fd, follow):
             else:
                 resolved = os.path.join(os.path.realpath(head), tail)
             if roots.within(resolved, real):
+                if slot and resolved.casefold() in state.slots:
+                    # A link, or a name renamed into place, where a root or TMPDIR is (os.symlink(historic-pro,
+                    # suite.noindex), say), or a root or TMPDIR moved away: the next process would trust it.
+                    raise GuardRefusal("root_replace_refused")
                 return
             break
     raise GuardRefusal("write_outside_roots")
