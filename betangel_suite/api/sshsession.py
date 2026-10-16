@@ -22,17 +22,20 @@ LocalForward name: with another config port it refuses viewer_port_mismatch befo
 running on another port refuses its attach_viewer the same way, before the takeover.
 
 Either way: each takeover pauses the clock, invalidates every earlier code and token and issues a fresh code.
-stdin EOF, SIGHUP or a failed stdout write makes the viewer away: the engine pauses and keeps the session for
-watch_grace_s; a new ssh-session or open within it takes over; after it, with no tab connected, the engine
-ends the session as abandoned. Enter presses are coalesced (one code per poll however many arrive), and
-input is read in bounded pieces and never echoed or kept.
+stdin EOF, SIGHUP or a failed or stalled stdout write makes the viewer away: the engine pauses and keeps the
+session for watch_grace_s; a new ssh-session or open within it takes over; after it, with no tab connected, the
+engine ends the session as abandoned. A write is stalled when stdout takes nothing for WRITE_TIMEOUT_S: an SSH
+channel still open that nobody reads must not block the engine's own loop, and with it the lifetime checks, a
+stop and the lock release. Enter presses are coalesced (one code per poll however many arrive), and input is read
+in bounded pieces and never echoed or kept.
 
-stdin, stdout, the clock, the sleep and the heartbeat period are injectable, so tests drive all of this in
-process (Viewer and Terminal with fake links and clocks) and in engine-mode children with tiny values, never
-through bin/suite against the real HOME. Standard library only.
+stdin, stdout, the clock, the sleep, the heartbeat period and the write timeout are injectable, so tests drive all
+of this in process (Viewer and Terminal with fake links and clocks) and in engine-mode children with tiny values,
+never through bin/suite against the real HOME. Standard library only.
 """
 
 import os
+import select
 import signal
 import sys
 import threading
@@ -45,6 +48,7 @@ from . import control
 
 VIEWER_PORT = 8765                  # the viewer key's permitopen and the Air's LocalForward (DESIGN.md 8.6)
 HEARTBEAT_S = 15.0
+WRITE_TIMEOUT_S = 5.0               # a stdout that takes no line for this long counts as a failed write
 POLL_S = 0.25
 MAX_INPUT_BYTES = 1024
 ACTIVE, AWAY, SUPERSEDED, GONE = "active", "away", "superseded", "engine_gone"
@@ -70,10 +74,11 @@ class Terminal:
     stdin is a binary or text stream with readline(limit); None counts as EOF at once. stdout is a text stream.
     """
 
-    def __init__(self, stdin, stdout, *, on_fail=None):
+    def __init__(self, stdin, stdout, *, on_fail=None, write_timeout_s=WRITE_TIMEOUT_S):
         self._stdin = stdin
         self._out = stdout
         self._on_fail = on_fail
+        self.write_timeout_s = write_timeout_s
         self._lock = threading.Lock()
         self._presses = 0
         self._eof = stdin is None
@@ -107,10 +112,13 @@ class Terminal:
             return presses, self._eof or self.hangup
 
     def write(self, text):
-        """Write one line and flush; False (and failed from then on) when the write fails."""
+        """Write one line and flush; False (and failed from then on) when the write fails, or when stdout takes
+        nothing for write_timeout_s."""
         if self.failed:
             return False
         try:
+            if not self._writable():
+                raise TimeoutError("stdout_stalled")
             self._out.write(text)
             self._out.flush()
             return True
@@ -119,6 +127,17 @@ class Terminal:
             if self._on_fail is not None:
                 self._on_fail()
             return False
+
+    def _writable(self):
+        """Whether stdout takes a line within write_timeout_s. A line is shorter than PIPE_BUF and than a socket's
+        low-water mark, so once select() says writable, writing it cannot block. A stream with no descriptor (a
+        test's StringIO) counts as writable. Never O_NONBLOCK on fd 1: a socketpair from sshd shares one file
+        description between stdin and stdout, and FdReader's blocking reads would then fail at once."""
+        try:
+            fd = self._out.fileno()
+        except (OSError, ValueError, AttributeError):
+            return True
+        return bool(select.select([], [fd], [], self.write_timeout_s)[1])
 
 
 class Viewer:
@@ -267,8 +286,8 @@ class Session:
     """What server.run needs for ssh-session: the viewer in the engine's own process, or attached to another."""
 
     def __init__(self, stdin, stdout, *, clock=time.monotonic, sleep=time.sleep, heartbeat_s=HEARTBEAT_S,
-                 poll_s=POLL_S, home_dir=None, on_fail=None, port=0):
-        self.terminal = Terminal(stdin, stdout, on_fail=on_fail)
+                 poll_s=POLL_S, home_dir=None, on_fail=None, port=0, write_timeout_s=WRITE_TIMEOUT_S):
+        self.terminal = Terminal(stdin, stdout, on_fail=on_fail, write_timeout_s=write_timeout_s)
         self.port = port                        # the port an attached engine must serve (ControlLink)
         self._clock = clock
         self._sleep = sleep
@@ -328,14 +347,15 @@ def main(cfg, *, port=None, stdin=None, stdout=None, home_dir=None, **options):
     """bin/suite ssh-session: the engine here, or attached to the running one. Returns the exit status.
 
     port None is the forced command: the config port, which must be VIEWER_PORT (viewer_port_mismatch, before any
-    engine starts). options go to Session (clock, sleep, heartbeat_s, poll_s) or to server.run (the test seams).
+    engine starts). options go to Session (clock, sleep, heartbeat_s, poll_s, write_timeout_s) or to server.run
+    (the test seams).
     """
     if port is None:
         if cfg["port"] != VIEWER_PORT:
             raise SuiteError("viewer_port_mismatch")
         port = VIEWER_PORT
     from . import server            # here, not at the top: server.run takes a Session, it never imports this module
-    session_keys = ("clock", "sleep", "heartbeat_s", "poll_s")
+    session_keys = ("clock", "sleep", "heartbeat_s", "poll_s", "write_timeout_s")
     session = Session(_stdin() if stdin is None else stdin, sys.stdout if stdout is None else stdout,
                       home_dir=home_dir, on_fail=_silence_stdout if stdout is None else None, port=port,
                       **{key: options.pop(key) for key in session_keys if key in options})

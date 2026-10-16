@@ -2,14 +2,15 @@
 (DESIGN.md 8.6 items 1 and 2, 9.2 item 8, I-16, I-19).
 
 Everything here runs in the test runner's own process with fake clocks, fake links, fake engines and in-memory
-stdin and stdout: no socket, no subprocess, no wait longer than a few milliseconds. The real wiring (engine-mode
-children, the control socket, bin/suite) is in tests/test_session_process.py.
+stdin and stdout (or a local pipe, filled up): no socket, no subprocess, no wait longer than a fraction of a
+second. The real wiring (engine-mode children, the control socket, bin/suite) is in tests/test_session_process.py.
 
 Bootstrap codes printed by the viewer stay in the in-memory stdout of each test; assertions compare redacted
 text (shape()) or regex matches, so a failure message never carries a code.
 """
 
 import io
+import os
 import re
 import threading
 import time
@@ -279,6 +280,61 @@ class ViewerTests(unittest.TestCase):
         self.assertEqual(viewer.step(), sshsession.AWAY)
         self.assertTrue(self.terminal.failed)
         self.assertEqual(self.link.calls, ["attach", ("away", 3)])
+
+    @staticmethod
+    def fill(fd):
+        """Write to fd until a write would block: an SSH channel that nobody reads any more."""
+        os.set_blocking(fd, False)
+        for size in (4096, 1):
+            try:
+                while True:
+                    os.write(fd, b"x" * size)
+            except BlockingIOError:
+                pass
+        os.set_blocking(fd, True)
+
+    def pipe(self):
+        """(the read end, non-blocking; a text stdout on the write end)."""
+        read_end, write_end = os.pipe()
+        self.addCleanup(os.close, read_end)
+        self.addCleanup(os.close, write_end)
+        os.set_blocking(read_end, False)
+        return read_end, os.fdopen(write_end, "w", closefd=False)
+
+    def in_thread(self, read_end, call):
+        """call() on a thread, given 3 s; then the pipe is drained, so that a write still blocked there finishes."""
+        results = []
+        thread = threading.Thread(target=lambda: results.append(call()), daemon=True)
+        thread.start()
+        thread.join(3.0)
+        blocked = thread.is_alive()
+        try:
+            while os.read(read_end, 65536):
+                pass
+        except BlockingIOError:
+            pass
+        thread.join(3.0)
+        self.assertFalse(blocked, "the write waited for a reader that never came")
+        return results[0]
+
+    def test_a_stdout_that_stops_draining_counts_as_a_failed_write(self):
+        # A blocking write would hold server.run's loop: no lifetime check, stop or lock release (DESIGN.md 6.8).
+        read_end, out = self.pipe()
+        self.fill(out.fileno())
+        terminal = sshsession.Terminal(None, out)
+        terminal.write_timeout_s = 0.2
+        self.assertIs(self.in_thread(read_end, lambda: terminal.write(sshsession.heartbeat_line(15))), False)
+        self.assertTrue(terminal.failed)
+        read_end, out = self.pipe()                              # a viewer whose heartbeat stalls goes away
+        clock, link = Clock(), Link()
+        terminal = sshsession.Terminal(Stdin(), out)
+        terminal.write_timeout_s = 0.2
+        viewer = sshsession.Viewer(link, terminal, clock=clock, heartbeat_s=1.0)
+        self.assertEqual(viewer.attach(), sshsession.ACTIVE)
+        self.fill(out.fileno())
+        clock.advance(1)
+        self.assertEqual(self.in_thread(read_end, viewer.step), sshsession.AWAY)
+        self.assertEqual(link.calls, ["attach", ("away", 3)])
 
     def test_a_hangup_goes_away(self):
         viewer = self.make()

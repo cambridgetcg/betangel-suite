@@ -4,9 +4,9 @@
 Every engine runs synthetic-only on an ephemeral 127.0.0.1 port under a temporary HOME (tests/test_http_support.py),
 with tiny heartbeat, grace and maximum times passed to the in-process entry points (sshsession.main, server.run),
 never real 10-minute waits. ssh-session children get a stdin pipe this test holds and write their stdout to a 0600
-file in their temporary HOME (or to a pipe this test reads, for the failed-write case); the bootstrap codes they
-print stay in those files and pipes and in this process's memory. Assertions compare redacted text (shape()), so
-no failure message carries a code; client children never print a code or a token.
+file in their temporary HOME (or to a pipe this test reads, for the failed and stalled write cases); the bootstrap
+codes they print stay in those files and pipes and in this process's memory. Assertions compare redacted text
+(shape()), so no failure message carries a code; client children never print a code or a token.
 
 Nothing here runs /usr/bin/open: the open children replace server.system_opener with one that records a call and
 exits, and run with --print-url or an injected opener. bin/suite ssh-session runs only with SSH_CONNECTION set by
@@ -38,6 +38,15 @@ from betangel_suite.api.lifetime import Lifetime
 def main():
     return sshsession.main(cfg, port=0, heartbeat_s=0.3, poll_s=0.05,
                            lifetime=Lifetime(grace_s=%r, max_session_s=120, viewer_timeout_s=30))
+"""
+
+# An ssh-session child whose stdout write gives up after 0.2 s (5 s shipped); its first heartbeat is 1 s after the URL.
+SESSION_STALL = """
+from betangel_suite.api import sshsession
+from betangel_suite.api.lifetime import Lifetime
+def main():
+    return sshsession.main(cfg, port=0, heartbeat_s=1.0, poll_s=0.05, write_timeout_s=0.2,
+                           lifetime=Lifetime(grace_s=1, max_session_s=120, viewer_timeout_s=30))
 """
 
 # A serve child with a short lifetime.
@@ -135,9 +144,9 @@ def wait_path(path, timeout=30.0):
 
 class PipeChild:
     """An engine-mode python child set up like support.run_child, with a stdin pipe this test holds, stdout to a
-    0600 file in its HOME (or a pipe), stderr to a file. Always stopped in cleanup."""
+    0600 file in its HOME (or a pipe, or the stdout_fd given), stderr to a file. Always stopped in cleanup."""
 
-    def __init__(self, case, home, body, *, name, stdout_pipe=False, argv=None, env=None):
+    def __init__(self, case, home, body, *, name, stdout_pipe=False, stdout_fd=None, argv=None, env=None):
         self.home = home
         self.out_path = os.path.join(home, name + ".out")
         self.err_path = os.path.join(home, name + ".err")
@@ -145,8 +154,9 @@ class PipeChild:
         with open(self.out_path, "w") as out, open(self.err_path, "w") as err:
             os.chmod(self.out_path, 0o600)
             self.process = subprocess.Popen(argv, env=child_env(home) if env is None else env, cwd=home,
-                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE if stdout_pipe else out,
-                                            stderr=err)
+                                            stdin=subprocess.PIPE, stderr=err,
+                                            stdout=subprocess.PIPE if stdout_pipe else out if stdout_fd is None
+                                            else stdout_fd)
         self._buffer = b""
         case.addCleanup(self.kill)
 
@@ -324,6 +334,37 @@ results["controller"] = query(token)[1]["controller"]
         assert_code_lines(self, first.stderr(), {"http:401:bad_code", "http:401:unauthorized"})   # I-16
         self.assertEqual(attached.stderr(), "")
         self.assertFalse(os.path.lexists(support.control_path(home)))
+
+    def test_a_stdout_that_stops_draining_still_ends_the_session_and_frees_the_lock(self):
+        # The SSH channel stays open but nobody reads it. A blocking write would hold server.run's loop for good:
+        # no lifetime check, stop or lock release. The bounded write makes the viewer away instead, so the grace
+        # runs out (abandoned) and the process exits. The test holds the pipe's ends, and fills it up.
+        from betangel_suite.api import control
+        home = support.short_home(self)
+        read_end, write_end = os.pipe()
+        child = PipeChild(self, home, SESSION_STALL, name="ssh-stall", stdout_fd=write_end)
+        self.addCleanup(os.close, write_end)
+        self.addCleanup(os.close, read_end)            # first: a child still blocked there fails its write and ends
+        line = b""
+        deadline = time.monotonic() + 30
+        while not line.endswith(b"\n") and time.monotonic() < deadline:
+            if select.select([read_end], [], [], 1.0)[0]:
+                line += os.read(read_end, 1)
+        self.assertIsNotNone(URL_RE.fullmatch(line.decode("ascii")), "the first line is the URL")
+        # O_NONBLOCK is set on the pipe's one write description, the child's fd 1 too: only for the moment the fill
+        # takes, well before the child's first heartbeat, so that its own write meets a full pipe, not EAGAIN.
+        os.set_blocking(write_end, False)
+        for size in (4096, 1):
+            try:
+                while True:
+                    os.write(write_end, b"x" * size)
+            except BlockingIOError:
+                pass
+        os.set_blocking(write_end, True)
+        self.assertEqual(child.wait_exit(15), 0, shape(child.stderr()))
+        self.assertEqual(child.stderr(), "")
+        self.assertFalse(os.path.lexists(support.control_path(home)))
+        self.assertFalse(control.engine_running(home))
 
 
 class SignalTests(unittest.TestCase):
