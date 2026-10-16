@@ -49,7 +49,7 @@ class ConnectPermitTests(unittest.TestCase):
     def test_only_permitted_unix_paths_may_be_connected(self):
         home = support.short_home(self, deps=False)
         results = checks(self, home, setup="os.makedirs(roots.run_dir(), mode=0o700)\n", body="""
-import socket
+import socket, sys
 run = roots.run_dir()
 good, other = os.path.join(run, "c.sock"), os.path.join(run, "o.sock")
 guard.permit_unix_socket(good)
@@ -71,6 +71,10 @@ attempt("permit_relative", lambda: guard.permit_unix_connect("c.sock"))
 attempt("permit_nested", lambda: guard.permit_unix_connect(os.path.join(run, "sub", "c.sock")))
 attempt("permit_dotdot", lambda: guard.permit_unix_connect(os.path.join(run, "..", "c.sock")))
 attempt("permit_bytes", lambda: guard.permit_unix_connect(os.fsencode(good)))
+# normpath would fold "alias/.." that the OS resolves through the link, and drops a final "/".
+os.symlink(os.environ["HOME"], os.path.join(run, "alias"))
+attempt("permit_noncanonical", lambda: guard.permit_unix_connect(os.path.join(run, "alias", "..", "o.sock")))
+attempt("permit_trailing_slash", lambda: guard.permit_unix_connect(other + "/"))
 guard.permit_unix_connect(good)
 attempt("permitted", lambda: connect(good))
 attempt("permitted_connect_ex", lambda: connect(good, ex=True))
@@ -81,17 +85,34 @@ def tcp_raw():
         sock.connect(("127.0.0.1", 9))
 attempt("tcp_raw", tcp_raw)
 attempt("datagram_sendto", lambda: socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM).sendto(b"x", good))
+# Audit-only from here (nothing is connected, so the path length does not matter): the permitted name reached
+# through "alias/..", which the OS resolves to the alias target's parent, a permitted name that is a link, and
+# a run directory replaced by a link.
+def audit_connect(address):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sys.audit("socket.connect", sock, address)
+attempt("dotdot_after_link", lambda: audit_connect(os.path.join(run, "alias", "..", "c.sock")))
+attempt("permitted_audit", lambda: audit_connect(good))
+linked = os.path.join(run, "l.sock")                # a link the OS would follow to a socket outside the run dir
+os.symlink(os.path.join(os.environ["HOME"], "x.sock"), linked)
+guard.permit_unix_connect(linked)
+attempt("socket_is_link", lambda: audit_connect(linked))
 guard.seal()
 attempt("permit_after_seal", lambda: guard.permit_unix_connect(other))
 attempt("permitted_after_seal", lambda: connect(good))
+os.rename(run, run + "-moved")
+os.symlink(os.path.join(os.environ["HOME"], "elsewhere"), run)
+attempt("run_dir_replaced", lambda: audit_connect(good))
 """)
         self.assertEqual(results["unpermitted_before"], "network_refused")
-        for name in ("permit_outside", "permit_relative", "permit_nested", "permit_dotdot", "permit_bytes"):
+        for name in ("permit_outside", "permit_relative", "permit_nested", "permit_dotdot", "permit_bytes",
+                     "permit_noncanonical", "permit_trailing_slash"):
             self.assertEqual(results[name], "connect_permit_invalid", name)
         # connect_ex raises the same "socket.connect" audit event as connect, so it follows the same permit.
-        for name in ("permitted", "permitted_connect_ex", "permitted_after_seal"):
+        for name in ("permitted", "permitted_connect_ex", "permitted_audit", "permitted_after_seal"):
             self.assertEqual(results[name], "ok", name)
-        for name in ("other_path", "tcp_raw", "datagram_sendto"):
+        for name in ("other_path", "tcp_raw", "datagram_sendto", "dotdot_after_link", "socket_is_link",
+                     "run_dir_replaced"):
             self.assertEqual(results[name], "network_refused", name)
         self.assertEqual(results["tcp_loopback"], "name_lookup_refused")
         self.assertEqual(results["permit_after_seal"], "guard_sealed")
@@ -235,6 +256,41 @@ results["client_without_engine"] = control.request("stop")
         self.assertEqual(results["lock_mode"], "0o600")
         self.assertFalse(results["running_after"])
         self.assertIsNone(results["client_without_engine"])
+
+    def test_stop_asks_again_while_the_lock_is_held_and_nothing_answers(self):
+        # server.run takes engine.lock before it binds control.sock (Astra's review of #4): a stop in between must
+        # never print not_running while that engine goes on to start. It asks again until its deadline.
+        home = support.short_home(self)
+        results = checks(self, home, setup="", body=SERVER + """
+import io, time
+lock = control.acquire_lock()
+out = io.StringIO()
+attempt("held", lambda: control.stop_main(out=out, wait_s=0.5))
+results["held_out"] = out.getvalue()
+results["held_running"] = control.engine_running()
+def stopping(command, args):
+    calls.append([command, args] if args else command)
+    os.close(lock)
+    return {"ok": True}
+late = []
+def bind_late():                            # the engine binds its socket 0.3 s after the stop started
+    time.sleep(0.3)
+    late.append(control.ControlServer(path, stopping))
+    late[0].start()
+thread = threading.Thread(target=bind_late)
+thread.start()
+out = io.StringIO()
+attempt("late", lambda: control.stop_main(out=out, wait_s=10))
+results["late_out"] = out.getvalue()
+thread.join()
+late[0].close()
+results["calls"] = calls
+results["running_after"] = control.engine_running()
+""")
+        self.assertEqual((results["held"], results["held_out"], results["held_running"]), ("control_failed", "", True))
+        self.assertEqual((results["late"], results["late_out"]), ("ok", "stopped\n"))
+        self.assertEqual(results["calls"], ["stop"])
+        self.assertFalse(results["running_after"])
 
     def test_peer_credentials_name_this_uid(self):
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)

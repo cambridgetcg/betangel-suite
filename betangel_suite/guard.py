@@ -15,13 +15,17 @@ What the hook refuses, in every mode and phase:
 
   I-2  changing BETANGEL_BETFAIR_FORBID_NETWORK (arm() refuses unless it is "1"), setting any other
        BETFAIR* or BETANGEL_BETFAIR_* variable (arm() refuses if one is set), or changing TMPDIR or
-       SQLITE_TMPDIR (arm() refuses unless both name the same directory inside the write roots);
+       SQLITE_TMPDIR (arm() refuses unless both name the same directory inside the write roots, which the OS
+       resolves, as given, to where its normalised text does, inside the roots' real paths);
   I-3  socket connect, sendto and sendmsg, and every name or address lookup; the one exception is a connect
-       to an absolute Unix socket path in the run directory permitted before seal() with
+       to an absolute, normalised Unix socket path in the run directory permitted before seal() with
        permit_unix_connect (the control socket, which stop and open use to reach a running engine;
-       DESIGN.md 9.1). TCP connects and every other address stay refused;
-  I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute
-       Unix socket path in the run directory permitted the same way (a relative path is never permitted);
+       DESIGN.md 9.1), matched exactly while the run directory still resolves where it did at arm() and the
+       socket path is not itself a link (connect, unlike bind, follows one). TCP connects and every other
+       address stay refused;
+  I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
+       normalised Unix socket path in the run directory permitted the same way, matched exactly while the
+       run directory still resolves where it did at arm() (a relative path is never permitted);
   I-5  ctypes.dlopen and SQLite extension loading always; os.system, os.exec*, os.spawn*, os.fork and
        os.forkpty always; subprocess.Popen and os.posix_spawn except as below;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
@@ -29,7 +33,8 @@ What the hook refuses, in every mode and phase:
        chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. While roots.STATE_ROOT_AGREED is
        False a write under ~/betangel-data is refused as state_root_not_agreed, judged on the path text
        alone. A relative path in a write open is refused too: the open event does not say which dir_fd it
-       is relative to (the other events do, and a dir_fd is resolved with F_GETPATH).
+       is relative to (the other events do, and a dir_fd is resolved with F_GETPATH). The roots check
+       resolves the path as given, as the OS does: "link/.." and a final "/" follow the link.
        CPython raises no audit event for os.mkfifo and os.mknod, so arm() replaces them (in os and posix)
        with wrappers that raise one ("os.mkfifo", "os.mknod") before calling the original.
        The sqlite3.connect event covers only the main database file. ATTACH DATABASE and VACUUM INTO create
@@ -201,6 +206,8 @@ class _State:
         self.agreed = roots.STATE_ROOT_AGREED
         self.data_home = roots.data_home(home).casefold()
         self.run_dir = roots.run_dir(home)
+        run_parent, run_name = os.path.split(self.run_dir)
+        self.real_run_dir = os.path.join(os.path.realpath(run_parent), run_name)     # where a real run/ resolves
         self.research = roots.research_clone(home)
         self.deps_root = roots.deps_root(home)
         self.interpreters = frozenset(TEST_INTERPRETERS + (sys.executable,))
@@ -232,8 +239,7 @@ def arm(mode):
             raise SuiteError("stray_environment")
         tmp = os.environ.get("TMPDIR", "")
         state = _State(mode, os.path.normpath(tmp) if os.path.isabs(tmp) else "")
-        if (not state.tmp_root or tmp != os.environ.get("SQLITE_TMPDIR")
-                or not any(roots.within(state.tmp_root, root) for root in state.roots)):
+        if not state.tmp_root or tmp != os.environ.get("SQLITE_TMPDIR") or not _tmp_root_ok(state, tmp):
             raise SuiteError("tmpdir_mismatch")
         _wrap_node_calls()
         _wrap_sqlite_connect()
@@ -277,27 +283,27 @@ def permit_loopback_port(port):
 
 
 def permit_unix_socket(path):
-    """Allow binding a Unix socket at path, which must lie directly in the run directory. Only before seal()."""
+    """Allow binding a Unix socket at path: normalised, directly in the run directory. Only before seal()."""
     with _LOCK:
         state = _require_unsealed()
-        if (not isinstance(path, str) or not os.path.isabs(path)
-                or os.path.dirname(os.path.normpath(path)) != state.run_dir):
+        if (not isinstance(path, str) or not os.path.isabs(path) or os.path.normpath(path) != path
+                or os.path.dirname(path) != state.run_dir):
             raise SuiteError("bind_permit_invalid")
-        state.unix_paths.add(os.path.normpath(path))
+        state.unix_paths.add(path)
 
 
 def permit_unix_connect(path):
-    """Allow connecting to the Unix socket at path, which must lie directly in the run directory. Only before seal().
+    """Allow connecting to the Unix socket at path: normalised, directly in the run directory. Only before seal().
 
     This is how stop and open reach a running engine's control socket (DESIGN.md 9.1); the engine itself never
     asks for it. A relative path is never permitted, and nothing but socket.connect on an AF_UNIX socket uses it.
     """
     with _LOCK:
         state = _require_unsealed()
-        if (not isinstance(path, str) or not os.path.isabs(path)
-                or os.path.dirname(os.path.normpath(path)) != state.run_dir):
+        if (not isinstance(path, str) or not os.path.isabs(path) or os.path.normpath(path) != path
+                or os.path.dirname(path) != state.run_dir):
             raise SuiteError("connect_permit_invalid")
-        state.unix_connects.add(os.path.normpath(path))
+        state.unix_connects.add(path)
 
 
 def permit_uisnap_binary(path):
@@ -336,6 +342,18 @@ def _require_unsealed():
 
 def _stray(key):
     return key != FORBID_NETWORK_ENV and key.upper().startswith(STRAY_PREFIXES)
+
+
+def _tmp_root_ok(state, tmp):
+    """TMPDIR lies in a write root as text and, as the OS resolves it, in that root's real path.
+
+    Python's tempfile uses the normalised text (abspath), but SQLite reads SQLITE_TMPDIR from C as given, and the
+    OS resolves "link/.." through the link: both must reach the same directory.
+    """
+    real = os.path.realpath(tmp)
+    return real == os.path.realpath(state.tmp_root) and any(
+        roots.within(state.tmp_root, root) and roots.within(real, real_root)
+        for root, real_root in zip(state.roots, state.real_roots))
 
 
 # --- calls that raise no audit event of their own --------------------------------------------------
@@ -436,7 +454,10 @@ def _check_bind(state, sock, address):
                 and address[0] == "127.0.0.1" and type(address[1]) is int and address[1] in state.ports):
             return
         if family == sockets.AF_UNIX and isinstance(address, (str, bytes)):
-            if os.path.normpath(os.fsdecode(address)) in state.unix_paths:
+            # The exact permitted text (normpath would fold "link/.." that the OS resolves through the link),
+            # in a run directory that still resolves where it did at arm() (not replaced by a link).
+            text = os.fsdecode(address)
+            if text in state.unix_paths and os.path.realpath(os.path.dirname(text)) == state.real_run_dir:
                 return
     raise GuardRefusal("bind_refused")
 
@@ -444,8 +465,14 @@ def _check_bind(state, sock, address):
 def _unix_connect_ok(state, sock, address):
     """True only for an AF_UNIX connect to a path permitted with permit_unix_connect."""
     sockets = sys.modules.get("socket")     # loaded by whoever made the socket; never imported here
-    return (sockets is not None and getattr(sock, "family", None) == sockets.AF_UNIX
-            and isinstance(address, (str, bytes)) and os.path.normpath(os.fsdecode(address)) in state.unix_connects)
+    if sockets is None or getattr(sock, "family", None) != sockets.AF_UNIX or not isinstance(address, (str, bytes)):
+        return False
+    # As for bind: the exact permitted text (normpath would fold "link/.." that the OS resolves through the
+    # link), in a run directory that still resolves where it did at arm() (not replaced by a link). Unlike
+    # bind, connect follows a final link, so the socket path must not be one.
+    text = os.fsdecode(address)
+    return (text in state.unix_connects and os.path.realpath(os.path.dirname(text)) == state.real_run_dir
+            and not os.path.islink(text))
 
 
 def _check_spawn(state, event, args):
@@ -695,10 +722,12 @@ def _check_env_change(event, args):
 
 def _check_sqlite(state, database):
     text = os.fsdecode(os.fspath(database))
-    if text in ("", ":memory:", "file::memory:") or text.startswith("file::memory:?"):
+    if text in ("", ":memory:"):
         return
     if text.startswith("file:"):
-        raise GuardRefusal("write_outside_roots")      # the suite opens no URI filenames
+        # The suite opens no URI filenames, memory ones included: the event does not say whether URIs are
+        # on, and without SQLITE_USE_URI, uri=False opens "file::memory:" as a file in the cwd.
+        raise GuardRefusal("write_outside_roots")
     _check_write(state, text, -1, True)
 
 
@@ -714,23 +743,26 @@ def _single_mkdir_ok(state, path, dir_fd):
 def _check_write(state, path, dir_fd, follow):
     if isinstance(path, int):
         return                                         # an open descriptor, checked when it was opened
-    text = os.fsdecode(os.fspath(path))
-    if text in _DEVICES:
+    raw = os.fsdecode(os.fspath(path))
+    if raw in _DEVICES:
         return
-    if not os.path.isabs(text):
+    if not os.path.isabs(raw):
         if dir_fd is None:
             raise GuardRefusal("write_outside_roots")  # relative to an unknown directory: refuse
         base = _fd_path(dir_fd) if dir_fd >= 0 else os.getcwd()
-        text = os.path.join(base, text)
-    text = os.path.normpath(text)
+        raw = os.path.join(base, raw)
+    text = os.path.normpath(raw)                       # for the text checks only: the OS resolves raw
     if not state.agreed and roots.within(text.casefold(), state.data_home):
         raise GuardRefusal("state_root_not_agreed")    # decided on the text: nothing there is touched
     for root, real in zip(state.roots, state.real_roots):
         if roots.within(text, root) or roots.within(text, real):
-            if follow:
-                resolved = os.path.realpath(text)
+            # normpath folds "link/.." and drops a final "/", both of which the OS resolves through the link;
+            # a final "", "." or ".." makes even a call that does not follow a final link follow it.
+            head, tail = os.path.split(raw)
+            if follow or tail in ("", ".", ".."):
+                resolved = os.path.realpath(raw)
             else:
-                resolved = os.path.join(os.path.realpath(os.path.dirname(text)), os.path.basename(text))
+                resolved = os.path.join(os.path.realpath(head), tail)
             if roots.within(resolved, real):
                 return
             break

@@ -360,7 +360,7 @@ const requests = [];
 function fetchImpl(path, init) {
   const headers = init.headers || {};
   const shape = { method: init.method, path: path, headers: Object.keys(headers).sort(), credentials: init.credentials,
-    cache: init.cache, redirect: init.redirect, referrerPolicy: init.referrerPolicy };
+    cache: init.cache, redirect: init.redirect, referrerPolicy: init.referrerPolicy, mode: init.mode };
   shape.bearer = headers.Authorization === undefined ? null : /^Bearer [A-Za-z0-9_-]{43}$/.test(headers.Authorization);
   if (typeof init.body === 'string') {
     const body = JSON.parse(init.body);
@@ -372,7 +372,9 @@ function fetchImpl(path, init) {
   requests.push(shape);
   const sent = { ...headers };
   if (init.method === 'POST') {
-    sent.Origin = base;
+    // as a browser sends it: fetch()'s default cors mode sends the page's origin; any other mode, with the page's
+    // no-referrer policy, sends Origin: null (Fetch, "append a request Origin header"), which the server refuses
+    sent.Origin = init.mode === undefined || init.mode === 'cors' ? base : 'null';
   }
   return fetch(base + path, { ...init, headers: sent });
 }

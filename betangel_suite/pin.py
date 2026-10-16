@@ -9,13 +9,15 @@ hashes the pinned files in ~/.local/share/betangel-suite/deps/betangel-research-
 refuses pin_mismatch on any difference, refuses a deps tree holding bytecode caches (Python would load a
 stale .pyc beside a matching .py) or anything Python would import in preference to a pinned .py (an
 extension module such as paper.cpython-313-darwin.so, a .pyc, or a package directory named like a pinned
-module), refuses any sys.path entry inside ~/betangel-research (the moving deploy
-clone), and only then APPENDS the deps directory to sys.path, so the standard library can never be
-shadowed. assert_origins() then checks that every loaded betangel_research module came from that directory.
+module), refuses a deps directory or any sys.path entry that lies in ~/betangel-research (the moving
+deploy clone) by name in any case or by identity, and only then APPENDS the deps directory to sys.path,
+so the standard library can never be shadowed. assert_origins() then checks that every loaded
+betangel_research module came from that directory.
 
 Standard library only.
 """
 
+import fcntl
 import hashlib
 import importlib.machinery
 import json
@@ -162,6 +164,8 @@ def activate(*, home_dir=None, pin_path=PIN_FILE):
         raise SuiteError("upstream_imported_early")
     pin = load(pin_path)
     deps = deps_dir(pin, home_dir)
+    if _in_research(deps, home_dir):
+        raise SuiteError("research_clone_on_path")      # an ancestor links there: before any file is read
     verify(pin, deps)
     refuse_research_on_path(home_dir)
     sys.path.append(deps)
@@ -171,15 +175,59 @@ def activate(*, home_dir=None, pin_path=PIN_FILE):
 
 def refuse_research_on_path(home_dir=None):
     """SuiteError(research_clone_on_path) if any sys.path entry lies in ~/betangel-research."""
-    research = roots.research_clone(home_dir)
-    forms = (research, os.path.realpath(research))
     for entry in sys.path:
-        if not isinstance(entry, str) or not entry:
-            continue
-        resolved = os.path.realpath(os.path.abspath(entry))
-        if any(roots.within(candidate, form) for candidate in (os.path.normpath(os.path.abspath(entry)), resolved)
-               for form in forms):
+        if isinstance(entry, str) and entry and _in_research(entry, home_dir):
             raise SuiteError("research_clone_on_path")
+
+
+def _in_research(entry, home_dir=None):
+    """True when entry lies in ~/betangel-research, however either path is spelled.
+
+    By text first, as written and resolved, casefolded: the lab's APFS volume folds case and U+017F (long s),
+    so /Users/x/BetAngel-Research is the same directory, and a path that does not exist is judged by name.
+    Then by identity, for spellings realpath leaves as they are (the /System/Volumes/Data firmlink prefix,
+    /.vol/<dev>/<ino>): the kernel's own path for what entry names has neither, nor any link, so its
+    directories are the real ancestors, and none may be the clone (compared by st_dev and st_ino; the clone
+    itself is only stat()ed, never opened).
+    """
+    research = roots.research_clone(home_dir)
+    forms = (research.casefold(), os.path.realpath(research).casefold())
+    absolute = os.path.abspath(entry)
+    if any(roots.within(candidate.casefold(), form)
+           for candidate in (os.path.normpath(absolute), os.path.realpath(absolute)) for form in forms):
+        return True
+    try:
+        clone = os.stat(research)
+    except OSError:
+        return False                                   # no clone, so nothing lies in it
+    path = _kernel_path(absolute)
+    while path is not None:
+        try:
+            if os.path.samestat(os.stat(path), clone):
+                return True
+        except OSError:
+            pass
+        parent = os.path.dirname(path)
+        path = parent if parent != path else None
+    return False
+
+
+def _kernel_path(path):
+    """The kernel's own path (macOS F_GETPATH) for the directory or regular file at path, or None."""
+    try:
+        mode = os.stat(path).st_mode
+        if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            return None                                # a FIFO or a device is not opened
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        buffer = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return os.fsdecode(buffer.split(b"\0", 1)[0])
 
 
 def assert_origins(deps):

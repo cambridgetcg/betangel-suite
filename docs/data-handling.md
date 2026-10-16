@@ -51,7 +51,9 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   market-id, event-id and member-path shapes outside the reserved namespace, runner-name tables
   and records, private-key and PEM headers, bearer tokens, secret-looking values, provider tokens
   and bootstrap-code URLs. It prints a rule code, a redacted path and a line number, never the
-  matched text. `--list-rules` lists the codes.
+  matched text. When the file may hold data, the whole path is withheld and an entry number
+  identifies it; only a suffix on the scanner's fixed list (its own file-type suffixes and common
+  code and text ones) is still shown. `--list-rules` lists the codes.
   - One narrow exemption, from the event-id rule only: a 7- or 8-digit help-centre article
     number in an https URL on the scanner's own host allowlist (`URL_HOST_ALLOWLIST`: four Claude
     and Anthropic help hosts, never a Betfair, Bet Angel or Timeform host), where the path starts

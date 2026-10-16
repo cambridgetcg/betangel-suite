@@ -311,6 +311,7 @@ test('bootstrap posts the code as JSON without a token and returns the token', a
   assert.equal(init.credentials, 'omit');
   assert.equal(init.cache, 'no-store');
   assert.equal(init.redirect, 'error');
+  assert.equal('mode' in init, false, 'the default cors mode: the browser sends the real Origin');
   assert.deepEqual(JSON.parse(init.body), { code: 'code-1' });
 });
 
@@ -346,6 +347,7 @@ test('commands carry a fresh nonce and the bearer token, and only enum names are
     assert.equal(call.url, '/api/v1/command');
     assert.equal(call.init.headers.Authorization, 'Bearer ' + TOKEN);
     assert.equal(call.init.headers['Content-Type'], 'application/json');
+    assert.equal('mode' in call.init, false);
   });
 });
 
@@ -430,6 +432,7 @@ test('the stream sends the bearer token, delivers lines, reconnects, and stops f
     assert.equal(call.init.headers.Authorization, 'Bearer ' + TOKEN);
     assert.equal(call.init.credentials, 'omit');
     assert.equal(call.init.cache, 'no-store');
+    assert.equal('mode' in call.init, false);
   }
   assert.deepEqual(log.messages.map((msg) => msg.t), ['frame', 'hb']);
   assert.equal(log.connects, 1);
