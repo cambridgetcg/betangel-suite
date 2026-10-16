@@ -420,6 +420,11 @@ sys.exit(run(["catalogue"]))
         self.assertGreaterEqual(result["waited_s"], 1.0)
         # One that waits longer is still waiting while the holder lives, and gets the lock once it has gone.
         waiting = self.wrapper(60.0)
+        # Its clock starts when it has made the marker, not when it was spawned: under load its start-up alone
+        # can take tens of ms, so count the 0.5 s from the marker (the first wrapper removed its own).
+        deadline = time.monotonic() + 60
+        while not os.path.exists(self.marker) and waiting.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
         time.sleep(0.5)
         self.assertIsNone(waiting.poll())
         self.assertIsNone(holder.poll())
