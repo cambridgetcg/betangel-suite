@@ -135,8 +135,21 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual(arm_outcome(self, home, child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp)),
                              "tmpdir_mismatch", tmp)
         # A final "/" or a doubled one changes nothing the OS resolves, so they are still accepted.
-        for tmp in (roots.tmp_dir("test", home) + "/", os.path.join(state + "/", "tmp")):
+        for tmp in (roots.tmp_dir("test", home) + "/", os.path.join(state + "//", "tmp")):
             self.assertEqual(arm_outcome(self, home, child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp)), "armed", tmp)
+
+    def test_refuses_a_tmpdir_with_a_dot_or_dotdot_component(self):
+        # normpath and the non-strict realpath both fold "missing/.." and "file/.." away, but the OS cannot
+        # resolve either (ENOENT, ENOTDIR), and SQLite would then fall back to /var/tmp or /tmp. No "." or ".."
+        # component is accepted, so TMPDIR differs from its normalised text only by a redundant or final "/".
+        home = make_home(self)
+        state = roots.state_dir(home)
+        with open(os.path.join(state, "afile"), "x", encoding="utf-8"):
+            pass
+        for tmp in (os.path.join(state, "missing", "..", "tmp"), os.path.join(state, "afile", "..", "tmp"),
+                    os.path.join(state, ".", "tmp"), roots.tmp_dir("test", home) + "/."):
+            self.assertEqual(arm_outcome(self, home, child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp)),
+                             "tmpdir_mismatch", tmp)
 
     def test_arm_checks_the_interpreter_version_itself(self):
         # guard.arm is the only version check when tests or a future entry point start without _launch.py.

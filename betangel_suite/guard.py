@@ -15,8 +15,9 @@ What the hook refuses, in every mode and phase:
 
   I-2  changing BETANGEL_BETFAIR_FORBID_NETWORK (arm() refuses unless it is "1"), setting any other
        BETFAIR* or BETANGEL_BETFAIR_* variable (arm() refuses if one is set), or changing TMPDIR or
-       SQLITE_TMPDIR (arm() refuses unless both name the same directory inside the write roots, which the OS
-       resolves, as given, to where its normalised text does, inside the roots' real paths);
+       SQLITE_TMPDIR (arm() refuses unless both are the same absolute text with no "." or ".." component, so
+       it differs from its normalised text at most by a redundant or final "/", and that normalised text lies
+       inside a write root and, with its links resolved, inside that root's real path);
   I-3  socket connect, sendto and sendmsg, and every name or address lookup;
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
@@ -252,11 +253,18 @@ def _stray(key):
 
 
 def _tmp_root_ok(state, tmp):
-    """TMPDIR lies in a write root as text and, as the OS resolves it, in that root's real path.
+    """TMPDIR has no "." or ".." component, and lies in a write root as text and, links resolved, in its real path.
 
-    Python's tempfile uses the normalised text (abspath), but SQLite reads SQLITE_TMPDIR from C as given, and the
-    OS resolves "link/.." through the link: both must reach the same directory.
+    Python's tempfile uses the normalised text (abspath), but SQLite reads SQLITE_TMPDIR from C as given. The OS
+    resolves "link/.." through the link and cannot resolve "missing/.." or "file/.." at all (SQLite then falls
+    back to /var/tmp or /tmp), while normpath and the non-strict realpath fold all three away. So no "." or ".."
+    component is accepted: TMPDIR may differ from its normalised text only by a redundant or final "/", and
+    realpath of both (which must agree) must lie inside the matching root's real path. Whether the directory
+    exists is not checked here: cli.main creates it (0700) before every handler but vendor's, which makes no
+    temporary files.
     """
+    if any(part in (os.curdir, os.pardir) for part in tmp.split(os.sep)):
+        return False
     real = os.path.realpath(tmp)
     return real == os.path.realpath(state.tmp_root) and any(
         roots.within(state.tmp_root, root) and roots.within(real, real_root)
