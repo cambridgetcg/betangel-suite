@@ -7,7 +7,7 @@
 | Author | lab-Claude (Claude Code session 03026dfa on the lab MacBook Pro) |
 | Reviewers | Nuance (the rule 1 wording; Q-N15), Astra (the two files, their tests, and PR #5 finding 1) |
 | Approver | Yu |
-| Base | Branch `phase0/viewing` (PR #5) at d9b129e, plus the commit that adds this file. The rule text comes from 0c1335b, e9b1646 and beeb1f4. |
+| Base | Branch `phase0/viewing` (PR #5) at d9b129e, plus the commit that adds this file. The rule text comes from 0c1335b, e9b1646 and beeb1f4. The self-test changes for Astra's two code questions are a53856a and b1d5082 (section 7). |
 | Process | Suite AGENTS.md rule 10; DESIGN.md section 14 (steps 3, 6 and 7 do not apply; see section 9) |
 | Request | Yu, 2026-10-16, asked by lab-Claude whether a rule 10 proposal file is also wanted for Q-Y19 option D, answered: "yes to formal proposal". |
 
@@ -176,27 +176,37 @@ It names no other host and holds no key or passphrase. It has no `Host *` or `Ma
 
 It is a POSIX `sh` script without the execute bit. Yu runs `sh air-viewer-selftest.sh`, optionally with `--keep-logs`. Any other argument refuses (`usage`).
 
-**Preflight.** It refuses (exit 2) before any login unless:
+**Preflight.** Before any login it runs `ssh -G` for six forms (a53856a). `ssh -G` reads the config and connects nowhere. The forms are:
+
+- the plain form, `ssh -G lab-suite`. That is Yu's daily `ssh lab-suite`, which has no `-o` options, so its authentication lines must come from the config;
+- the exact form of each of the five logins: the same `-o` options, forwards, and command or session type that the login then uses. One function builds these arguments for both `ssh -G` and the login. The `-L` ports, the marker and the socket path are fixed before the checks for that reason.
+
+It refuses (exit 2) before any login unless:
 
 - `ssh` and `nc` are on PATH (`no_ssh`, `no_nc`);
-- `ssh -G lab-suite` succeeds (`air_config_unreadable`). `ssh -G` reads the config and connects nowhere;
-- its output shows the block's host, user, address family, `IdentitiesOnly`, `AddKeysToAgent`, `ExitOnForwardFailure`, `StrictHostKeyChecking` and `LocalForward` values;
-- it shows the three authentication lines (`air_config_auth`) and the seven hardening lines (`ControlMaster`, `ControlPath`, `ControlPersist`, `IdentityAgent`, `ProxyCommand`, `ProxyJump`, `PermitLocalCommand`);
-- it shows exactly one identity, the viewer key (`air_config_identityfile`), and that key's file exists (`key_missing`);
-- nothing listens on the Air's port 8765 (`viewer_port_busy`).
+- `ssh -G` succeeds for every form (`air_config_unreadable`);
+- every form shows the block's host, user, address family, `IdentitiesOnly`, `AddKeysToAgent`, `ExitOnForwardFailure` and `StrictHostKeyChecking` values. `ExitOnForwardFailure` must be `no` in the form of probes 8-9, which pass it with `-o` so that both `-R` answers arrive;
+- every form shows the three authentication lines (`air_config_auth`) and the seven hardening lines (`ControlMaster`, `ControlPath`, `ControlPersist`, `IdentityAgent`, `ProxyCommand`, `ProxyJump`, `PermitLocalCommand`);
+- every form shows exactly one identity, the viewer key (`air_config_identityfile`), and that key's file exists (`key_missing`);
+- every form shows no forward but the Host's `LocalForward` and the probe's own (`air_config_localforward`, `air_config_remoteforward`, `air_config_dynamicforward`). For probe 7 (`-W`) that is none, because ssh drops the config's forwards for `-W`. OpenSSH 10.2's `ssh -G` prints probe 6's `-L` to a Unix socket a second time, as a `dynamicforward` line with the same listen address. That one line is accepted in the form of probes 3-6;
+- nothing listens on the Air's port 8765 (`viewer_port_busy`), and it can make its temporary directory (`workdir`).
 
-Every config check reads the plain form, `ssh -G lab-suite`. That is the form of Yu's daily `ssh lab-suite`. The probe logins use other forms (section 5.6). It does not check `UseKeychain`, `RequestTTY` or `ServerAliveInterval`.
+A refusal in a probe's form names that probe, and says to add `!originalhost lab-suite` to the `Match` line. It does not check `UseKeychain`, `RequestTTY`, `ServerAliveInterval`, `ForwardAgent` or `ForwardX11`. The viewer line's `restrict` refuses agent and X11 forwarding on the lab.
+
+Lab-Claude ran the per-form checks against real `ssh -G` output: OpenSSH 10.2 on the lab, scratch `-F` configs, and a scratch copy of the self-test with a wrapper that refused every login. The snippet alone passed all six forms. Each of these refused: a `Match sessiontype exec` block adding a key; a `Match sessiontype none` block adding a `LocalForward`, or `ClearAllForwardings no`; a `Match command` block adding a `RemoteForward`; a `Match` block above the snippet setting `ControlMaster`; a `Host *` block adding a `DynamicForward`. A `Match` block turning passwords on for exec sessions did not refuse, because the probe's `-o` options win.
 
 **Probes.** It makes five logins, all to `lab-suite`, and nine probes.
 
-- Every login passes `-o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no` (beeb1f4). The command line wins over every config block, so a `Match` block cannot bring back a password prompt for `-T`, `-N` or `-W`. These options fix the login method only, not the keys or forwards (section 5.6).
+- Every login passes `-o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no` (beeb1f4). The command line wins over every config block, so a `Match` block cannot bring back a password prompt for `-T`, `-N` or `-W`. These options fix the login method only. The preflight checks keys and forwards for each form.
 - Probes 3-9 open no session (`-N`, `-W`). Probes 1-2 send `echo <marker>`, which the forced command refuses. No probe starts an engine.
 - It uses `nc` only on the Air's own `127.0.0.1`: to check ports, and to send one fixed line into the probe forwards.
-- A probe counts as refused only with evidence from the `ssh -v` log (`authed()` and the probe's own check). The log must show all four of these:
-  - a "Server accepts key" line for the viewer key, or else a "Trying private key" line for it;
-  - no "Server accepts key" line for any other key;
+- A probe counts as refused only with evidence from the `ssh -v` log (`authed()` and the probe's own check). The log must show all of these (a53856a):
+  - a "Server accepts key" line for the viewer key;
+  - no "Will attempt key", "Offering public key" or "Server accepts key" line for any other key;
+  - no "Trying private key" line;
   - a successful login ("Authenticated to" or "Authentication succeeded");
   - the lab's refusal of that probe.
+- There is no "Trying private key" fallback any more. ssh logs that line only for a key whose public half it cannot read. It always has the viewer key's public half: from the `.pub` file, or else from the private key file, which keeps it unencrypted. So it offers the viewer key, and logs "Server accepts key" when the lab takes it. Lab-Claude checked this on the lab's OpenSSH 10.2 with a scratch passphrase-protected ed25519 key whose `.pub` was deleted: `ssh -v` logged "identity file ... type 2", a loaded key, with no passphrase typed. It ran through a `ProxyCommand` of `/usr/bin/true`, so no connection was made.
 - The verdict is PASS (exit 0) only if all nine were refused. FAIL (exit 1) tells Yu to run the undo on the lab at once. Otherwise it is INCONCLUSIVE (exit 3).
 - It writes only a temporary directory under `$TMPDIR`, and removes it at exit unless `--keep-logs` is given. The logs hold host, user and key path.
 
@@ -216,26 +226,28 @@ It does not use `sudo`, `/usr/bin/open` or a browser. It does not edit `~/.ssh/c
 ### 5.5 What this proposal leaves as it is
 
 - No Betfair credentials on the lab (DESIGN.md 2.3).
-- The Air's own agent key stays LAN-only and keeps `no-port-forwarding`. The snippet offers only the viewer key. The self-test counts a probe as unclear when the log shows another key accepted. Section 5.6 gives the limits of that check.
+- The Air's own agent key stays LAN-only and keeps `no-port-forwarding`. The snippet offers only the viewer key. The self-test refuses to start unless every login's form offers only that key, and counts a probe as unclear when its log names another key. Section 5.6 gives the limits of these checks.
 - AGENTS.md rules 2-10. Rule 6 still bars agents from `open`, `ssh-session` and `--print-url`.
 - The lab side of R-2: the viewer key line, the sshd drop-in, and their undo.
 
 ### 5.6 Limits
 
-These hold today, and this proposal does not change them.
+These hold at the PR #5 tip. This proposal does not change them. a53856a narrowed the ones about login forms, the `-o` options and keys (section 7).
 
 - Taking the files from GitHub at the SHA is an instruction to Yu. No code enforces it.
-- **The preflight reads only the plain form.** The probe logins use other forms: a command for probes 1-2 (`-T`, `-tt`), and no session for probes 3-9 (`-N`, `-W`). `ssh -G` can differ for them in two ways:
+- **The logins use other forms than `ssh lab-suite`.** The probe logins send a command for probes 1-2 (`-T`, `-tt`), and open no session for probes 3-9 (`-N`, `-W`). `ssh -G` can differ for them in two ways:
   - A `Match` block above the lab-suite block can set a single-value option first. Yu's daily `ssh lab-suite` relies on the block sitting at the top of `~/.ssh/config`.
   - `IdentityFile`, `LocalForward`, `RemoteForward` and `DynamicForward` add up across blocks. So a `Match sessiontype` or `Match command` block anywhere in `~/.ssh/config` can add a key or a forward to a probe login, wherever the lab-suite block sits.
   - Lab-Claude checked this with `ssh -G` on scratch configs (OpenSSH 10.2; it reads the config and connects nowhere). With the snippet first and a `Match sessiontype exec` block after it, `ssh -G -T lab-suite 'echo x'` listed two identities, while the plain form listed one.
-- **The `-o` options fix only the login method.** They do not fix keys or forwards.
-- **For keys, the evidence rule is the only backstop.** A probe with a "Server accepts key" line for another key counts as unclear. But the rule also accepts a "Trying private key" line for the viewer key, which shows only that ssh tried it. It looks for other keys only in "Server accepts key" lines. Section 10 asks Astra whether the code should close this.
+  - Since a53856a the preflight checks each login's own form (section 5.3), so both cases refuse before any login. It cannot see two things. `ssh -G` runs each `Match exec` command again, so a command that answers differently when the login runs is not caught. Nor is a change to `~/.ssh/config` after the preflight.
+- **The `-o` options fix only the login method.** They do not fix keys or forwards. The per-form preflight checks those.
+- **For keys, the evidence rule is the second check.** The per-form preflight is the first. The rule then needs "Server accepts key" for the viewer key. It counts a probe as unclear when a "Will attempt key", "Offering public key" or "Server accepts key" line names another key, or when any "Trying private key" line appears (section 5.3). It matches the key by its file name (`/id_ed25519_lab_suite` and a space), not by full path or fingerprint.
+- **The tests' `ssh` is a fake.** The fake `ssh -G` follows what lab-Claude saw from OpenSSH 10.2 on the lab. No test runs the Air's OpenSSH, which may print some forms differently. The first run on the Air is where that would show.
 - **One fixed lab address.** The files name the lab as `192.168.50.88`: `HostName` in the snippet, and `LAB_IP` in the self-test, which refuses any other host name (`air_config_hostname`). On 2026-10-16 the lab's Wi-Fi dropped, and it came back as `192.168.50.93` (Nuance's note 20261016T134105Z, item 6; the lab's `en0` shows the same).
   - While the lab is not at `.88`, `ssh lab-suite` goes to `.88`. `StrictHostKeyChecking yes` refuses any machine there whose host key is not the one `known_hosts` holds for that address. The self-test then sees no login, so it ends INCONCLUSIVE, never PASS.
   - Section 10 asks Yu how to settle the address before the viewer install.
 - The self-test confirms the key's limits only when it runs. Any lab process running as `user` could later widen the key by editing `authorized_keys`. Only the root-owned drop-in is out of its reach (DESIGN.md 8.6).
-- No code stops the self-test from being run somewhere other than the Air. Its preflight refuses unless `ssh -G lab-suite` shows the block.
+- No code stops the self-test from being run somewhere other than the Air. Its preflight refuses unless `ssh -G` shows the block for every form.
 
 ## 6. Evidence required
 
@@ -258,23 +270,36 @@ These tests in `tests/test_stage.py` cover the safeguards:
 | `StagedFilesTests.test_scripts_are_posix_sh_and_not_executable` | The self-test starts with `#!/bin/sh` and has no execute bit. |
 | `StagedFilesTests.test_design_texts_were_found` | The DESIGN.md blocks that the other tests compare with were found. |
 | `StagedFilesTests.test_readme_walks_through_every_step` | The stage README names both files and every step. |
-| `SelfTestScriptTests.test_scenarios` | Against a fake lab: a lab that refuses everything gives PASS (exit 0). One that allows too much gives FAIL (exit 1). No login, or a login where another key was accepted, gives INCONCLUSIVE (exit 3), never PASS. The work directory is removed. The fake `ssh` refuses any login without the three public-key-only `-o` options, so this test fails if `start_ssh` drops them. |
-| `SelfTestScriptTests.test_preflight_refusals` | These config faults refuse (exit 2) before probe 1: a wrong host, a second key, the agent, no `LocalForward`, port 8765 in use, an inherited `ControlMaster`, `ControlPersist` or `ControlPath`, an agent socket, a proxy command, a jump host, a local command, and four password cases (`air_config_auth`: OpenSSH's defaults, password on, keyboard-interactive on, other methods preferred). A bad argument (`usage`) and a missing key (`key_missing`) refuse too. |
+| `SelfTestScriptTests.test_scenarios` | Against a fake lab: a lab that refuses everything gives PASS (exit 0). One that allows too much gives FAIL (exit 1). No login, or a login where another key was accepted, gives INCONCLUSIVE (exit 3), never PASS. The work directory is removed. The fake `ssh` refuses any login without the three public-key-only `-o` options, so this test fails if `start_ssh` drops them. `ssh -G` ran for the plain form and then for each login's exact arguments, all before the first login. |
+| `SelfTestScriptTests.test_the_log_must_show_the_viewer_key_and_no_other` | The lab refuses everything, but the log shows the viewer key tried without an offer, another key tried after the viewer key was accepted, or another key offered first. Each gives INCONCLUSIVE (exit 3), never PASS. |
+| `SelfTestScriptTests.test_a_match_block_that_changes_one_form_is_refused` | Sixteen cases, each giving one probe's form only what a `Match` block could give it: another key, another forward, or a single-value option (host, `ControlMaster`, `IdentityAgent`, `ProxyCommand`). Each refuses (exit 2) before any login and names that probe. A control case, a `Match` block turning passwords on for probe 1's form, still gives PASS, because the probe's `-o` options win. The fake `ssh` answers `-G` per form for this. |
+| `SelfTestScriptTests.test_preflight_refusals` | These faults refuse (exit 2) before probe 1: no `ssh` or no `nc` on PATH, `ssh -G` failing, a wrong host or user, address family `any`, `IdentitiesOnly no`, `ExitOnForwardFailure no`, `StrictHostKeyChecking accept-new`, a second key, the agent, no `LocalForward`, a `RemoteForward` or a `DynamicForward` from a later `Host *` block, port 8765 in use, no temporary directory, an inherited `ControlMaster`, `ControlPersist` or `ControlPath`, an agent socket, a proxy command, a jump host, a local command, and four password cases (`air_config_auth`: OpenSSH's defaults, password on, keyboard-interactive on, other methods preferred). A bad argument (`usage`) and a missing key (`key_missing`) refuse too. |
 
 **What no test covers.**
 
-- These refusals have no test: `air_config_user`, `air_config_addressfamily`, `air_config_identitiesonly`, `air_config_exitonforwardfailure`, `air_config_stricthostkeychecking`, `no_ssh`, `no_nc`, `air_config_unreadable` and `workdir`. Deleting any one of those checks leaves every test green.
-- No test gives a probe login a key or a forward that the plain form lacks (section 5.6). The fake `ssh` answers `-G` the same way for every form.
-
-Section 10 asks Astra whether to add cases.
+- Every refusal code now has a test. b1d5082 added one for each of the nine checks this section used to list as untested: `no_ssh`, `no_nc`, `air_config_unreadable`, `air_config_user`, `air_config_addressfamily`, `air_config_identitiesonly`, `air_config_exitonforwardfailure`, `air_config_stricthostkeychecking` and `workdir`.
+- Two branches have none. `usage` is tested for a bad argument, not for a timeout that is not whole seconds. The `ExitOnForwardFailure no` check in the form of probes 8-9 is never refused, because the probe's own `-o` sets it and no config block can change it.
+- No test runs a real `ssh` (section 5.6).
 
 Before Yu's first use from the Air, R-2's own evidence still applies: the self-test prints `verdict: PASS (9 of 9 refused)` on the Air.
 
 ## 7. Tests that change
 
-None. This proposal changes text only. The tests in section 6 are already on `phase0/viewing`; e9b1646 and beeb1f4 added the public-key-only cases. The hygiene scanner's whole-checkout test reads this file, as it reads every file.
+The rule text in section 4 does not change. The tests in section 6 are on `phase0/viewing`; e9b1646 and beeb1f4 added the public-key-only cases. The hygiene scanner's whole-checkout test reads this file, as it reads every file.
 
-If Astra asks for the test cases in section 6, or for the per-form check in section 5.6, they come as separate reviewed commits on `phase0/viewing`. This section then names them.
+Astra's two code questions (section 10) are now implemented as separate commits on `phase0/viewing`, for Astra to review:
+
+| Commit | What it changes |
+|---|---|
+| a53856a | The per-form preflight and the evidence rule without the "Trying private key" fallback (section 5.3). The fake `ssh` answers `ssh -G` per form. New tests: `test_a_match_block_that_changes_one_form_is_refused` and `test_the_log_must_show_the_viewer_key_and_no_other`. `test_scenarios` checks the `ssh -G` calls, and `test_preflight_refusals` gains a `RemoteForward` and a `DynamicForward` case. DESIGN.md 8.6 and `tools/stage/README.md` describe the checks. |
+| b1d5082 | A refusal test for each of the nine checks that had none (section 6). |
+
+Fail-before. For each fix, lab-Claude put a scratch copy of the script in place with only that fix taken out, ran the new test and saw it fail, then put the fixed file back (cmp equal):
+
+- without the five per-form `ssh -G` checks, all 16 cases of the `Match` test ran on to a PASS instead of refusing ("(0, []) != (2, ['air_config_identityfile'])" and the like), and `test_scenarios` saw one `ssh -G` call instead of six;
+- without the `RemoteForward` or the `DynamicForward` check, its cases ran on to a PASS;
+- with the old evidence rule, the three new scenarios gave PASS instead of INCONCLUSIVE ("0 != 3");
+- without each of the nine checks, its case failed. `no_ssh` and `no_nc` refused later, as `air_config_unreadable`. `air_config_unreadable` refused as `air_config_hostname`. Without the `workdir` check the run went on and exited 1. The five config checks ran on to a PASS ("(0, []) != (2, [code])").
 
 ## 8. Rollback
 
@@ -334,5 +359,5 @@ Rule 10 also asks for Nuance's review. Section 10 asks for it, and so does the P
 | Who | Asked | Notes |
 |---|---|---|
 | Nuance | Review this proposal. In particular, the open half of Q-N15: do you agree with the rule 1 wording in section 4? | Yu answered Q-N15's other half on 2026-10-16: "yes to formal proposal". Nuance's first view (section 2.4) supports the wording "as long as nothing else widens". Lab-Claude asks Nuance to confirm or change it as the review. Lab-Claude also asks: should the rule say what "widening these two files" means? Lab-Claude's reading: any change that lets either file reach a machine other than the lab, another port or socket, use another key or login method, hold a secret, or run on the lab outside the test harness. Under that reading, moving the lab's one address (section 5.6) is not a widening, because it is the same machine with the same host key. |
-| Astra | Review this proposal with PR #5. Two code questions. (1) Should the self-test run its identity and forward checks on `ssh -G` with each probe's options (`-T` and `-tt` with a command, `-N` with the probe forwards, `-W`), require exactly one identity in each, and drop or tighten the "Trying private key" fallback (section 5.6)? (2) Should the untested refusals in section 6 get test cases? | It is written to answer PR #5 finding 1 (P1): "resolve Q-Y19 before merge through the applicable proposal/review process and Yu’s own written ruling, with consistent binding text". Does it, once Yu approves? |
+| Astra | Review this proposal with PR #5. Two code questions, asked in this proposal's first draft and now implemented for Astra to review (section 7). (1) Should the self-test run its identity and forward checks on `ssh -G` with each probe's options (`-T` and `-tt` with a command, `-N` with the probe forwards, `-W`), require exactly one identity in each, and drop or tighten the "Trying private key" fallback (section 5.6)? a53856a checks all six forms and drops the fallback, the stricter option; section 5.3 says why a correct setup still passes. Is dropping it right, and is anything missing from the per-form checks? (2) Should the untested refusals in section 6 get test cases? b1d5082 adds one for each of the nine. | It is written to answer PR #5 finding 1 (P1): "resolve Q-Y19 before merge through the applicable proposal/review process and Yu’s own written ruling, with consistent binding text". Does it, once Yu approves? |
 | Yu | (1) The lab's address, before the viewer install: reserve `192.168.50.88` for the lab on the router, with no file change, or move the two files, DESIGN.md 8.6 and the tests to the lab's new address (section 5.6)? Does moving that one lab address count as widening these two files? (2) After both reviews, approve the reviewed proposal in writing, or not. | Yu chose D ("Go for D"). Asked by lab-Claude, Yu answered "yes to formal proposal". Approval of the proposal itself comes after review. The router is Yu's; lab-Claude changes no network settings. Question 1 is best answered with question 2. |
