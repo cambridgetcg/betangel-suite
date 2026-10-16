@@ -18,7 +18,8 @@ and losing the watcher pauses with reason not_watched. The replay stops at the l
 
 Frames (section 6.5, the Phase 0b subset) are built at most frame_hz times a second and only when
 something changed. Every number in a frame is an integer: prices in hundredths and sizes in pence through
-rx.ticks, traded volume in pence on the repo's PRO basis (divided by 2, paper.py:1016). A runner whose tv is
+rx.ticks, traded volume in pence on the repo's PRO basis (divided by 2; TV_DIVISOR says why, and that the
+halving is unverified for tv). A runner whose tv is
 unknown has tv_p null, never 0: the cache resets tv to None on every image (book.py:111, :239-240), and BASIC
 data has no tv at all (upstream docs/data-audit.md:38). Each frame takes tv from the snapshot afresh, so no tv
 is carried across an image (data-audit.md:40).
@@ -49,7 +50,12 @@ DEFAULT_SPEED_X100 = 100
 TICK_S = 0.025                      # the actor wakes at least every 25 ms (section 3.2: 20-50 ms)
 MARKER_GRACE_S = 30                 # section 6.8
 LADDER_DEPTH = 3                    # best 3 back and lay in the Phase 0b frame
-TV_DIVISOR = 2                      # PRO historical basis (paper.py traded_volume_divisor)
+# Traded volume (tv_p) is the runner's tv divided by 2. Upstream docs/betfair-facts.md F60: PRO historical data
+# counts traded volume as backer's stake x 2, and Betfair says API totalMatched uses a different calculation.
+# F60 gives the x2 basis for the traded ladder (trd); that it holds for tv is unverified, and upstream passes tv
+# through raw (book.py:491). Synthetic tv is always the sum of trd, so no synthetic test can catch a wrong basis.
+# A constant on purpose: paper's traded_volume_divisor is a fill-model parameter, not a display basis.
+TV_DIVISOR = 2
 COMMAND_TIMEOUT_S = 5.0
 SEED_MAX = 2 ** 31 - 1
 PAUSE_REASONS = ("ready", "user", "stop", "not_watched", "run_marker", "end_of_market", "takeover", "control")

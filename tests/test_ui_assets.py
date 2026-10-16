@@ -312,7 +312,9 @@ class PageTests(unittest.TestCase):
             self.assertNotIn(word, lowered)
 
     def test_the_phase_0b_screen_holds_its_fixed_parts(self):
-        for text in ("SYNTHETIC DATA", "Traded volume: PRO basis", "IN-PLAY", "STOP (paper)"):
+        # The tv halving is unverified (F60; Nuance's PR #4 review, item 3), and the label says so.
+        for text in ("SYNTHETIC DATA", "Traded volume: PRO basis", "unverified for this total", "IN-PLAY",
+                     "STOP (paper)"):
             self.assertIn(text, self.html)
         speeds = re.findall(r'data-speed="([0-9]+)"', self.html)
         self.assertEqual(speeds, ["100", "200", "500", "1000"])

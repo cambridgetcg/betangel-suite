@@ -741,6 +741,10 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
   - every runner: status, LTP, total matched, best 3 back and lay with sizes, WOM, back and lay book %, and projected SP from the tap;
   - ladders only for the subscribed runners: a ±40-tick window of back, lay and traded size, our orders by price with queue-ahead, and what paper has already taken at each level (`export_state()["taken"]`).
 - **Traded volume** is shown on the repo's PRO basis (÷2; paper.py:1016) and labelled as such.
+  - The basis is upstream's F60 (docs/betfair-facts.md): PRO historical data counts traded volume as backer's stake x 2, and Betfair says API `totalMatched` uses a different calculation.
+  - F60 gives the x2 basis for the traded ladder (`trd`). **That the halving is right for the runner total (`tv`) is unverified**: upstream passes `tv` through raw (book.py:491), and synthetic `tv` always equals the sum of `trd`, so no synthetic test can catch a wrong basis (Nuance's PR #4 review, item 3). The UI label says so.
+  - The divisor is a constant in `engine.py` (`TV_DIVISOR`), not paper's `traded_volume_divisor`, which is a fill-model parameter.
+  - **Owed at the first PRO ingest:** a counts-only comparison of `tv` against the sum of the traded ladder.
 - **Encoding.** One JSON object per frame, 5-20 KB (*estimate*), so 200 KB/s or less at 10 Hz. Delivered as NDJSON over a streaming `fetch()` (section 8.5).
 
 ### 6.6 SP and definition tap (display only)
