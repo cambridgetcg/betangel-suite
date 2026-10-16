@@ -19,8 +19,9 @@ The launcher arms the guard in mode uisnap (guard.py) and checks the run marker 
    argv the uisnap mode allows after seal(), and only while the file is unchanged; no arguments), write one JSON line
    {"url", "seed", "timeout_s"} to its stdin and close it, read its JSON-lines records under a hard deadline
    (the binary has its own, shorter one), write each PNG and a sanitised report.json through the writer helper
-   (0600, never overwriting), then stop the engine. If the engine stops first (a stop request, a run marker or an
-   actor failure), the binary is stopped at once (engine_stopping; a run marker still ends run_marker_present).
+   (0600, never overwriting), then stop the engine. If the engine stops first, the binary is stopped at once. A
+   stop request then ends as engine_stopping; a run marker ends as refused:run_marker_present and an actor
+   failure as refused:engine_failed, both raised by server.run before step 4's summary line prints.
 4. Print codes, counts and paths only:
 
        uisnap ok seed=<n> build=<built|cached> pngs=<n> page_errors=<n|none> runtime_s=<s>

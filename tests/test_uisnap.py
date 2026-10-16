@@ -803,6 +803,7 @@ class CommandTests(unittest.TestCase):
         started = time.monotonic()
         home, result = self.run_command("marker", timeout_s=60, grace_s=5, marker_grace_s=0.5)
         self.assertEqual((result.returncode, result.stderr), (2, "refused:run_marker_present\n"))
+        self.assertEqual(result.stdout, "", "server.run refuses before the summary line")
         self.assertLess(time.monotonic() - started, 20)
         self.assert_codes_only(result)
         with self.assertRaises(ProcessLookupError):
