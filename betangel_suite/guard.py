@@ -19,8 +19,9 @@ What the hook refuses, in every mode and phase:
   I-3  socket connect, sendto and sendmsg, and every name or address lookup; the one exception is a connect
        to an absolute, normalised Unix socket path in the run directory permitted before seal() with
        permit_unix_connect (the control socket, which stop and open use to reach a running engine;
-       DESIGN.md 9.1), matched exactly while the run directory still resolves where it did at arm().
-       TCP connects and every other address stay refused;
+       DESIGN.md 9.1), matched exactly while the run directory still resolves where it did at arm() and the
+       socket path is not itself a link (connect, unlike bind, follows one). TCP connects and every other
+       address stay refused;
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
        run directory still resolves where it did at arm() (a relative path is never permitted);
@@ -380,9 +381,11 @@ def _unix_connect_ok(state, sock, address):
     if sockets is None or getattr(sock, "family", None) != sockets.AF_UNIX or not isinstance(address, (str, bytes)):
         return False
     # As for bind: the exact permitted text (normpath would fold "link/.." that the OS resolves through the
-    # link), in a run directory that still resolves where it did at arm() (not replaced by a link).
+    # link), in a run directory that still resolves where it did at arm() (not replaced by a link). Unlike
+    # bind, connect follows a final link, so the socket path must not be one.
     text = os.fsdecode(address)
-    return text in state.unix_connects and os.path.realpath(os.path.dirname(text)) == state.real_run_dir
+    return (text in state.unix_connects and os.path.realpath(os.path.dirname(text)) == state.real_run_dir
+            and not os.path.islink(text))
 
 
 def _check_spawn(state, event, args):

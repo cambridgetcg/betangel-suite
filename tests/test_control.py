@@ -84,12 +84,17 @@ def tcp_raw():
 attempt("tcp_raw", tcp_raw)
 attempt("datagram_sendto", lambda: socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM).sendto(b"x", good))
 # Audit-only from here (nothing is connected, so the path length does not matter): the permitted name reached
-# through "alias/..", which the OS resolves to the alias target's parent, and a run directory replaced by a link.
+# through "alias/..", which the OS resolves to the alias target's parent, a permitted name that is a link, and
+# a run directory replaced by a link.
 def audit_connect(address):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sys.audit("socket.connect", sock, address)
 attempt("dotdot_after_link", lambda: audit_connect(os.path.join(run, "alias", "..", "c.sock")))
 attempt("permitted_audit", lambda: audit_connect(good))
+linked = os.path.join(run, "l.sock")                # a link the OS would follow to a socket outside the run dir
+os.symlink(os.path.join(os.environ["HOME"], "x.sock"), linked)
+guard.permit_unix_connect(linked)
+attempt("socket_is_link", lambda: audit_connect(linked))
 guard.seal()
 attempt("permit_after_seal", lambda: guard.permit_unix_connect(other))
 attempt("permitted_after_seal", lambda: connect(good))
@@ -104,7 +109,8 @@ attempt("run_dir_replaced", lambda: audit_connect(good))
         # connect_ex raises the same "socket.connect" audit event as connect, so it follows the same permit.
         for name in ("permitted", "permitted_connect_ex", "permitted_audit", "permitted_after_seal"):
             self.assertEqual(results[name], "ok", name)
-        for name in ("other_path", "tcp_raw", "datagram_sendto", "dotdot_after_link", "run_dir_replaced"):
+        for name in ("other_path", "tcp_raw", "datagram_sendto", "dotdot_after_link", "socket_is_link",
+                     "run_dir_replaced"):
             self.assertEqual(results[name], "network_refused", name)
         self.assertEqual(results["tcp_loopback"], "name_lookup_refused")
         self.assertEqual(results["permit_after_seal"], "guard_sealed")
