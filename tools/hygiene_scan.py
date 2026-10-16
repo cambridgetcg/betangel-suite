@@ -5,8 +5,11 @@ any finding it exits 1 and prints only a rule code, a redacted path, a line
 number and an entry number. It never prints the text that matched. When the
 file may hold data (a data-file, runner, identifier or data-path finding)
 the whole path is withheld, and the entry number, the file's position in the
-scan, identifies it. A withheld path shows its suffix only when the suffix is
-on a fixed list (SHOWN_SUFFIXES), never a word that may come from the name.
+scan, identifies it. A withheld path shows its final suffix only when it is
+exactly one of a short list of file-type abbreviations (SHOWN_SUFFIXES),
+each picked because it is not an English word; any other suffix, which may
+be a word of the name, is dropped. A name that itself ends in one of those
+abbreviations still shows it.
 
 Run it with the fixed interpreter, standard library only:
 
@@ -678,12 +681,19 @@ def _default_root() -> str:
 
 _HEX_RUN = re.compile(r"[0-9a-fA-F]{16,}")
 _DIGIT_RUN = re.compile(r"[0-9]{5,}")
-# The only suffixes a withheld path still shows: the scanner's own suffix sets plus common code and
-# text suffixes. Any other suffix may be a word of the name (a runner's, say), so it is dropped.
-# Compared exactly: a case variant shows no suffix.
-SHOWN_SUFFIXES = (ARCHIVE_EXT | SQLITE_EXT | JSONL_EXT | DATA_EXT | KEY_EXT | IMAGE_EXT | AUDIO_EXT
-                  | {".sqlite", ".py", ".md", ".txt", ".json", ".sh", ".js", ".mjs", ".css", ".html",
-                     ".toml", ".yml", ".yaml", ".cfg", ".ini", ".swift"})
+# The only suffixes a withheld path still shows, compared exactly (a case variant shows none). This is a
+# short literal list, not the scanner's detection sets: those hold English words (.key, .zip, .tar,
+# .gif, .tiff, .pickle, .arrow, .feather, .parquet, ...), and any suffix may be a word of the name (a
+# runner's, say). Each kept one is a file-type abbreviation that is not an English word and is unlikely
+# in a runner's name; that lowers the chance of printing a word of the name, it cannot rule it out.
+SHOWN_SUFFIXES = frozenset({
+    ".py", ".md", ".txt", ".json", ".js", ".mjs", ".html", ".css",  # source, docs and text
+    ".csv", ".tsv", ".jsonl", ".ndjson", ".xlsx", ".pkl",           # data exports
+    ".sqlite", ".sqlite3", ".db",                                   # SQLite
+    ".bz2", ".gz", ".tgz", ".xz", ".zst", ".7z",                    # archives (.bz2: licensed data)
+    ".pem", ".p12",                                                 # keys and certificates
+    ".png", ".jpg", ".jpeg",                                        # images
+})
 
 
 def _shown_path(rel: str, withhold_name: bool) -> str:
