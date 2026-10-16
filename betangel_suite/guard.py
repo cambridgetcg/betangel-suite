@@ -22,7 +22,8 @@ What the hook refuses, in every mode and phase:
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
        run directory still resolves where it did at arm() and the socket path is not itself a link (bind
-       follows a dangling one and creates the socket at its target); a relative path is never permitted;
+       follows a dangling one and creates the socket at its target); a relative path, or one with a NUL in
+       it (the kernel ends the socket name at the first NUL), is never permitted;
   I-5  ctypes.dlopen and SQLite extension loading always; os.system, os.exec*, os.spawn*, os.fork and
        os.forkpty always; subprocess.Popen and os.posix_spawn except as below;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
@@ -226,11 +227,15 @@ def permit_loopback_port(port):
 
 
 def permit_unix_socket(path):
-    """Allow binding a Unix socket at path: normalised, directly in the run directory. Only before seal()."""
+    """Allow binding a Unix socket at path: normalised, directly in the run directory. Only before seal().
+
+    A path with a NUL in it is refused: the kernel ends sun_path at the first NUL, so the bind would create a
+    different name from the one permitted, and os.path.islink cannot look at such a path (it says False).
+    """
     with _LOCK:
         state = _require_unsealed()
-        if (not isinstance(path, str) or not os.path.isabs(path) or os.path.normpath(path) != path
-                or os.path.dirname(path) != state.run_dir):
+        if (not isinstance(path, str) or "\0" in path or not os.path.isabs(path)
+                or os.path.normpath(path) != path or os.path.dirname(path) != state.run_dir):
             raise SuiteError("bind_permit_invalid")
         state.unix_paths.add(path)
 
@@ -369,10 +374,12 @@ def _check_bind(state, sock, address):
             # The exact permitted text (normpath would fold "link/.." that the OS resolves through the link),
             # in a run directory that still resolves where it did at arm() (not replaced by a link), and not
             # itself a link: bind follows a final dangling link and creates the socket at its target, outside
-            # the run directory, with no write event. (Any other existing name fails with EADDRINUSE.)
+            # the run directory, with no write event. (Any other existing name fails with EADDRINUSE.) No NUL
+            # either, whatever was permitted: the kernel ends the name at the first one, and islink cannot see
+            # the name before it.
             text = os.fsdecode(address)
-            if (text in state.unix_paths and os.path.realpath(os.path.dirname(text)) == state.real_run_dir
-                    and not os.path.islink(text)):
+            if ("\0" not in text and text in state.unix_paths
+                    and os.path.realpath(os.path.dirname(text)) == state.real_run_dir and not os.path.islink(text)):
                 return
     raise GuardRefusal("bind_refused")
 
