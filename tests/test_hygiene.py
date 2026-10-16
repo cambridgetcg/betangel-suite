@@ -562,6 +562,46 @@ class ContentRuleTests(_RepoCase):
                 self.assertNotIn(MARKET_2015, out)
 
 
+class LineShapeTests(_RepoCase):
+    """Tables and ids are found whatever ends a line, however long a row is, and with invisible format
+    characters inside (Nuance's #2 review, item 21)."""
+
+    ROWS = tuple(f"| {n} | {3 + i}.4 | {3 + i}.45 |" for i, n in enumerate(RUNNER_NAMES))
+
+    def test_rows_ended_by_cr_nel_ls_or_ps(self):
+        for label, sep in (("CR", "\r"), ("NEL", "\x85"), ("LS", " "), ("PS", " ")):
+            with self.subTest(sep=label):
+                self.setUp()
+                self.plant("docs/t.md", sep.join(self.ROWS) + sep, *RUNNER_NAMES, code="runner_table")
+
+    def test_rows_longer_than_400_characters(self):
+        rows = [_j(n, ",", ",".join(f"{3 + i}.{k % 10}" for k in range(120))) for i, n in enumerate(RUNNER_NAMES)]
+        self.assertTrue(all(len(row) > 400 for row in rows))
+        self.plant("docs/t.csv.txt", "\n".join(rows) + "\n", *RUNNER_NAMES, code="runner_table")
+
+    def test_a_bom_before_the_first_row(self):
+        self.plant("docs/t.md", "﻿" + "\n".join(self.ROWS) + "\n", *RUNNER_NAMES, code="runner_table")
+
+    def test_format_characters_inside_names(self):
+        marks = ("​", "­", "⁠")  # zero-width space, soft hyphen, word joiner
+        rows = [row.replace(n, n[:2] + mark + n[2:]) for row, n, mark in zip(self.ROWS, RUNNER_NAMES, marks)]
+        self.plant("docs/t.md", "\n".join(rows) + "\n", *RUNNER_NAMES, code="runner_table")
+
+    def test_format_character_inside_a_market_id(self):
+        hidden = MARKET_2015[:5] + "​" + MARKET_2015[5:]
+        self.plant("pkg/u.py", f"m = '{hidden}'\n", MARKET_2015, hidden, code="market_id")
+
+    def test_line_numbers_count_newlines_only(self):
+        self.write("docs/v.md", f"one\rtwo\nthree\x0bfour\nm = '{MARKET_2015}'\n")
+        self.add("docs/v.md")
+        for mode in ("--staged", None):
+            with self.subTest(mode=mode or "tree"):
+                rc, out = self.scan(*([mode] if mode else []))
+                # Index entries: README.md, docs/v.md, pkg/module.py.
+                self.assertIn("FAIL market_id <path withheld>:3 (entry 2)", out)
+                self.assertNotIn(MARKET_2015, out)
+
+
 class BinaryAnywhereTests(_RepoCase):
     """Binary data is caught wherever it sits in a file, with or without a NUL (Nuance's #2 review, item 5)."""
 

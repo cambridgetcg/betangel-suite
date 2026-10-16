@@ -8,7 +8,10 @@ any finding it exits 1 and prints one line per finding:
 "<path withheld>" is literal and the same for every finding: the scanner
 never prints a path or any part of one (no directory, name or suffix), and
 never the text that matched. Line 0 means the finding is about the entry
-itself (its name, type, size or link target), not one of its lines. After
+itself (its name, type, size or link target), not one of its lines. Line
+numbers count "\\n" line ends, as git and sed do; the rules also split a
+line at CR, NEL, LS and the other str.splitlines() boundaries, and ignore
+format characters (Unicode category Cf: a BOM, zero-width spaces). After
 ten lines for one entry and rule, one more line counts the rest:
 
     FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)
@@ -73,6 +76,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import unicodedata
 
 EXIT_CLEAN, EXIT_FINDINGS, EXIT_REFUSED = 0, 1, 2
 
@@ -84,7 +88,7 @@ MAX_FILE_BYTES = 512 * 1024
 SIZE_ALLOWLIST = {"docs/DESIGN.md": 2 * 1024 * 1024}
 SNIFF_BYTES = 8192  # magic bytes are read here, and only this much of an oversize file is read
 MAX_REPORTED_LINES = 10  # per file and rule; the rest are counted
-MAX_TABLE_LINE = 400  # longer lines are never table rows
+MAX_TABLE_LINE = 400  # a table row is matched on its first 400 characters
 
 RULES = {
     "archive_member": "archive or compressed file (.bz2 .tar .gz .zip .xz ..., or by magic bytes)",
@@ -356,10 +360,12 @@ def _line_codes(line: str) -> list:
 
 
 def _table_row_name(line: str):
-    """Return the runner-like name if the line looks like a name-and-prices row."""
-    if len(line) > MAX_TABLE_LINE:
-        return None
-    m = _ROW.match(line)
+    """Return the runner-like name if the line looks like a name-and-prices row.
+
+    Only the first MAX_TABLE_LINE characters after the indent are matched, so a long row (many
+    price columns, or padding) still counts, and the match stays bounded.
+    """
+    m = _ROW.match(line.lstrip()[:MAX_TABLE_LINE])
     if not m:
         return None
     name = m.group("name")
@@ -377,25 +383,46 @@ def _table_row_name(line: str):
     return name if prices >= 2 and words <= 1 else None
 
 
-def _text_findings(text: str) -> list:
-    """Return (line, code) pairs for one decoded text file."""
-    found = []
-    rows = []
+def _without_format_chars(line: str) -> str:
+    """Drop Unicode format characters (category Cf): a BOM, zero-width spaces and joiners, soft hyphens."""
+    if line.isascii():
+        return line
+    return "".join(c for c in line if unicodedata.category(c) != "Cf")
+
+
+def _lines(text: str):
+    """Yield (line number, line) with format characters removed, for the line rules.
+
+    Line numbers count "\\n", as git, sed and editors do. A line that holds another line
+    boundary (CR alone, NEL, LS, PS, VT, FF, FS, GS, RS: str.splitlines()) is split there
+    too, and each part keeps the number of its "\\n" line.
+    """
     for number, line in enumerate(text.split("\n"), 1):
         if line.endswith("\r"):
             line = line[:-1]
+        for part in line.splitlines() or [""]:
+            yield number, _without_format_chars(part)
+
+
+def _text_findings(text: str) -> list:
+    """Return (line, code) pairs for one decoded text file."""
+    found = []
+    rows = []  # (position among the split lines, line number, name)
+    for position, (number, line) in enumerate(_lines(text)):
         for code in _line_codes(line):
             found.append((number, code))
         name = _table_row_name(line)
         if name is not None:
-            rows.append((number, name))
+            rows.append((position, number, name))
     i = 0
     while i < len(rows):
         first = rows[i][0]
-        window = [r for r in rows[i:] if r[0] <= first + 7]
-        if len({name for _, name in window}) >= 3:
-            found.append((first, "runner_table"))
-            i += len(window)
+        end = i
+        while end < len(rows) and rows[end][0] <= first + 7:
+            end += 1
+        if len({name for _, _, name in rows[i:end]}) >= 3:
+            found.append((rows[i][1], "runner_table"))
+            i = end
         else:
             i += 1
     return found
