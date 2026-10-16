@@ -306,7 +306,7 @@ The pin is a **read-only, network-free local clone**:
    
    `receipts.code_hashes` covers only the package root and `betfair/*.py` (receipts.py:121-125), which is why the suite hashes `backtest/*.py` itself.
 5. **Pin bumps.** A bump is a suite PR. It lists the diff of allowlisted files and runs:
-   - the contract test (section 4.5);
+   - the contract test (section 4.5). A bump merges only if it passes at the new pin (Q-N1);
    - the upstream offline suite at the new commit, from the deps clone: `PATH=/opt/homebrew/bin:$PATH BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 python3.13 -B -m unittest discover -s tests`, never during an announced Nuance run;
    - the suite's own tests.
    
@@ -552,7 +552,13 @@ The suite mirrors, and does not import, the following:
 | `MarketBookCache` being deep-copyable, for checkpoints | — |
 | The `PaperExchange` state format | paper.py:58, :194-230 |
 
-**The contract test.** Nuance agreed it, narrowed (Q-N1, PR #4 review): it does not exist yet, and Nuance found that seven injected breaks passed all tests. `tests/test_upstream_contract.py` lands on phase0/http. Every pin bump is gated on it, and it covers Phase 0's names first (`replay_market_time`, `parse_utc_ns`, `ticks.*`). In full, it fails loudly on a pin bump if any of these drift:
+**The contract test.** Nuance agreed it, narrowed (Q-N1, PR #4 review), after finding that seven injected breaks passed all tests. It is `tests/test_upstream_contract.py`, and **every pin bump is gated on it**: a bump merges only if it passes at the new pin (section 3.5 item 5). It reaches upstream only through `rx`.
+
+- **Phase 0's names first.** `book.replay_market_time`, `receipts.parse_utc_ns` and the `ticks` names the suite uses (`LADDER_CLASSIC`, `to_hundredths`, `to_pence`, `is_on_ladder`, `tick_index`, `snap`): their signatures, and their behaviour on small synthetic inputs. The ladder is compared with Betfair's CLASSIC increments, typed in the test.
+- **The other names Phase 0 code calls.** `MarketBookCache`, `strict_json_loads`, `secret.register`, `check_data_root`, `guard_path` and `PathDenied`: their signatures, and the result shapes the suite reads.
+- **Coverage.** The test fails when suite code uses an `rx` name it does not list, so each new upstream name brings its contract with it.
+
+As later phases use them, it grows to fail loudly on a pin bump if any of these drift:
 
 - `PARAM_KEYS`, `ORDER_FILE_KEYS`, `STATE_KEYS` (paper.py:58-61);
 - `INTENT_PAYLOAD_KEYS` and `INTENT_SOURCES` (journal.py:95-97), and `KINDS` (journal.py:80);

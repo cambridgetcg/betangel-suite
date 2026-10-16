@@ -137,7 +137,8 @@ reviewed PR changes them.
 - **C. Pin.** betangel-research `76f71dc94588a50f0df56dde2c3fabcf6e102f88`. The deps clone is at
   `~/.local/share/betangel-suite/deps/betangel-research-76f71dc94588/`, made by
   `tools/vendor_research.py` exactly as DESIGN.md 3.5 describes. Nuance answered Q-N2: keep this
-  pin, and bump only when a closure module the suite needs, or the month roles, change.
+  pin, and bump only when a closure module the suite needs, or the month roles, change. Every bump
+  is gated on the contract test, `tests/test_upstream_contract.py` (Q-N1; DESIGN.md 4.5).
 - **D. Synthetic only.** Phase 0b built the loopback HTTP server and `serve`, `open` and `stop`;
   the engine replays synthetic markets only and refuses every configured data root
   (`synthetic_only`). No data-root reading, no paper trading, and no release copies or
