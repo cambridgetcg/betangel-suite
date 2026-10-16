@@ -209,17 +209,17 @@ def _directory(path):
     return info if stat.S_ISDIR(info.st_mode) else None
 
 
-def _lineage(path):
+def _lineage(path, code="root_overlaps_data_home"):
     """The (st_dev, st_ino) of the nearest existing directory at or above path (by text) and of every directory
     above that one, as the kernel resolves ".." (so through a firmlink or /.vol spelling too). If ".." cannot be
     looked up (no search permission, a name too long), the step falls back to the text parent, which is the same
-    directory for a path realpath has resolved. SuiteError(root_overlaps_data_home) when nothing can be judged.
+    directory for a path realpath has resolved. SuiteError(code) when nothing can be judged.
     """
     current, info = path, _directory(path)
     while info is None:
         parent = os.path.dirname(current)
         if parent == current:
-            raise SuiteError("root_overlaps_data_home")
+            raise SuiteError(code)
         current, info = parent, _directory(parent)
     found = set()
     for _ in range(_MAX_ANCESTORS):
@@ -230,11 +230,36 @@ def _lineage(path):
             above_path = os.path.dirname(os.path.normpath(current))
             above = _directory(above_path)
             if above is None:
-                raise SuiteError("root_overlaps_data_home")
+                raise SuiteError(code)
         if (above.st_dev, above.st_ino) == (info.st_dev, info.st_ino):
             return found
         current, info = above_path, above
-    raise SuiteError("root_overlaps_data_home")
+    raise SuiteError(code)
+
+
+def lies_in(path, directory, code):
+    """True when path is directory or lies below it, however either is spelt; SuiteError(code) when that cannot be
+    judged. For the deploy clone: vendor's deps root, pin directory and checkout, and the guard's partial clone path
+    (Nuance's PR #2 review, item 2).
+
+    Stat calls only (realpath's lstat and readlink, os.stat): nothing is opened, so the clone is never read.
+    First the text: path as written and with its links resolved, against directory as written and resolved,
+    casefolded (the lab's APFS volume folds case and U+017F). Then identity, for spellings realpath leaves as they
+    are (the /System/Volumes/Data firmlink prefix): directory's (st_dev, st_ino) must not be that of the nearest
+    existing directory at or above path, or at or above path's resolved text, nor of any directory above those
+    (_lineage, which follows ".." as the kernel resolves it, through a link on any ancestor). So a path that does
+    not exist yet, such as a deps directory under a ~/.local/share that links into the clone, is judged at its
+    nearest existing ancestor, and a dangling link into the clone by its resolved text. A directory that does not
+    exist has no identity, and nothing lies in it but by text.
+    """
+    real = os.path.realpath(path)
+    forms = (directory.casefold(), os.path.realpath(directory).casefold())
+    if any(within(mine.casefold(), form) for mine in (os.path.normpath(path), real) for form in forms):
+        return True
+    target = _identity(directory)
+    if target is None:
+        return False
+    return any(target in _lineage(candidate, code) for candidate in (path, real))
 
 
 # --- the writer helper ---------------------------------------------------------------------------

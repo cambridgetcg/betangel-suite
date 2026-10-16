@@ -22,7 +22,10 @@ Every git call has protocol.allow=never (only the local file transport is allowe
 or system git config, and runs with the network switch on, in exactly the environment guard.VENDOR_GIT_ENV
 plus HOME. The guard, armed in vendor mode, allows exactly these git argvs with that environment (and none
 after them) and writes only under ~/.local/share/betangel-suite, this checkout's pin/ and the state root.
-Nothing is ever written into ~/betangel-research. A failure after the clone leaves the .partial
+Nothing is ever written into ~/betangel-research: before any git call or mkdir, and again just before the
+clone, vendor refuses (research_clone_on_path) a deps root, pin directory or checkout that lies in the clone
+by name or by identity (roots.lies_in), and the guard refuses a partial clone path that does.
+A failure after the clone leaves the .partial
 directory for inspection; remove it by hand before running again (partial_exists).
 Output is codes and counts only. Standard library only; never imports betangel_research.
 """
@@ -50,6 +53,11 @@ def main(argv):
     dest = os.path.join(deps_root, "betangel-research-" + sha[:12])
     partial = dest + ".partial"
 
+    # Before any git call or mkdir: nothing this tool writes may land in the deploy clone (Nuance's PR #2 review,
+    # item 2). git writes from a child the guard cannot see, and a link on an ancestor (~/.local/share linked
+    # into the clone, say) passes every text check, so each target is judged by identity, at its nearest
+    # existing ancestor when it does not exist yet. guard.REPO_ROOT holds pin/, the default pin directory.
+    _refuse_research((deps_root, os.path.dirname(pin_file), guard.REPO_ROOT), research, SuiteError)
     if _git(home, "-C", research, "cat-file", "-e", sha + "^{commit}") != 0:
         raise SuiteError("commit_not_present")
     on_main = _git(home, "-C", research, "merge-base", "--is-ancestor", sha, guard.VENDOR_MAIN_REF)
@@ -63,6 +71,7 @@ def main(argv):
         tree = dest                                   # already vendored: check it again, clone nothing
     else:
         _make_private_dirs(deps_root, roots.share_dir(home))
+        _refuse_research((deps_root,), research, SuiteError)    # again, now it exists: just before the clone
         tree = partial
         if (_git(home, "clone", "--no-checkout", "--no-hardlinks", "--quiet", research, partial) != 0
                 or _git(home, "-C", partial, "checkout", "--quiet", "--detach", sha) != 0
@@ -100,6 +109,14 @@ def _parse(args, default_pin, error):
         else:
             raise error("bad_arguments")
     return sha, bump, pin_file
+
+
+def _refuse_research(paths, research, error):
+    """error(research_clone_on_path) if any of paths lies in the deploy clone (roots.lies_in: stat calls only)."""
+    from betangel_suite import roots
+    for path in paths:
+        if roots.lies_in(path, research, "research_clone_on_path"):
+            raise error("research_clone_on_path")
 
 
 def _git(home, *args):

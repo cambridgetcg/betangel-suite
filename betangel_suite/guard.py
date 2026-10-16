@@ -85,7 +85,8 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           /usr/bin/open http://127.0.0.1:<permitted port>/#c=<code>; after seal(), none. A bare "git"
           must come through subprocess with a search path of /usr/bin and /bin only.
   vendor  before seal(), exactly the five git argvs tools/vendor_research.py runs, each with exactly the
-          environment VENDOR_GIT_ENV plus HOME; after, none.
+          environment VENDOR_GIT_ENV plus HOME, and a partial clone path that is not in the deploy clone by
+          name or identity (roots.lies_in); after, none.
   test    the test runner never seals. It may start /opt/homebrew/bin/python3.13 or 3.11 (or this
           interpreter) with -I -S -B, /bin/sh on this checkout's bin/suite, and /usr/bin/git only as
           git -C <dir under TMPDIR> [-c <test identity key>=...] <local subcommand> with relative operands,
@@ -691,7 +692,14 @@ def vendor_argv_ok(argv, env, research, deps_root, home):
     rest = argv[len(prefix):]
 
     def partial(path):
-        return os.path.dirname(path) == deps_root and bool(_PARTIAL_RE.fullmatch(os.path.basename(path)))
+        # Not in the deploy clone, by name or identity, as release_argv_ok keeps its repository out of it (Nuance's
+        # PR #2 review, item 2): git writes the clone from a child this hook cannot see. Stat calls only.
+        if not (os.path.dirname(path) == deps_root and _PARTIAL_RE.fullmatch(os.path.basename(path))):
+            return False
+        try:
+            return not roots.lies_in(path, research, "research_clone_on_path")
+        except SuiteError:
+            return False
 
     if len(rest) == 5 and rest[:4] == ["-C", research, "cat-file", "-e"]:
         return rest[4].endswith("^{commit}") and bool(_SHA_RE.fullmatch(rest[4][:-len("^{commit}")]))

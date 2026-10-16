@@ -797,6 +797,60 @@ results["outside"] = sorted(os.listdir(outside))
             self.assertFalse(ok(prefix + rest), rest)
         self.assertFalse(ok(["/usr/bin/git", "-C", research, "cat-file", "-e", sha + "^{commit}"]))
 
+    def test_vendor_partial_path_in_the_research_clone_is_refused(self):
+        # Nuance's PR #2 review, item 2: the partial clone's path text names deps/, but a link on an ancestor can put
+        # it in the deploy clone. Refused by name or identity (the firmlink spelling only by identity), as
+        # release_argv_ok keeps its repository out of the clone; a real deps root outside the clone passes.
+        from tests.test_pin import firmlink_spelling
+        home = make_home(self)
+        research = roots.research_clone(home)
+        inside = os.path.join(research, "vendor-share")
+        os.makedirs(inside)
+        share, deps = roots.share_dir(home), roots.deps_root(home)
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        partial = os.path.join(deps, "betangel-research-%s.partial" % sha[:12])
+        prefix, env = list(guard.VENDOR_GIT_PREFIX), dict(guard.VENDOR_GIT_ENV, HOME=home)
+        shapes = (["clone", "--no-checkout", "--no-hardlinks", "--quiet", research, partial],
+                  ["-C", partial, "checkout", "--quiet", "--detach", sha], ["-C", partial, "remote", "remove", "origin"])
+
+        def ok(rest):
+            return guard.vendor_argv_ok(prefix + rest, env, research, deps, home)
+
+        os.makedirs(deps)
+        self.assertTrue(all(ok(rest) for rest in shapes))
+        rmtree(share)
+        for target in (inside, firmlink_spelling(inside)):
+            os.symlink(target, share)
+            for made in (False, True):          # judged at the nearest existing ancestor, then at the path itself
+                if made:                        # made where it really is (the guard refuses the firmlink text)
+                    os.makedirs(os.path.join(inside, "deps", os.path.basename(partial)))
+                for rest in shapes:
+                    self.assertFalse(ok(rest), (target, made, rest[:2]))
+            rmtree(os.path.join(inside, "deps"))
+            os.remove(share)
+
+    def test_vendor_mode_refuses_a_clone_into_the_research_clone(self):
+        # The guard's own check, behind the tool's: a synthetic (empty) repository as the clone, with the share
+        # directory linked into it. Without the check git clones it into itself.
+        home = make_home(self)
+        research = roots.research_clone(home)
+        os.makedirs(os.path.join(research, "vendor-share"))
+        subprocess.run([guard.GIT, "-C", research, "-c", "init.defaultBranch=main", "init", "-q"], check=True,
+                       env={"HOME": home, "PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null",
+                            "GIT_CONFIG_NOSYSTEM": "1", FORBID: "1"}, capture_output=True, timeout=60)
+        os.symlink(os.path.join(research, "vendor-share"), roots.share_dir(home))
+        results = checks(self, home, mode="vendor", body="""
+import subprocess
+deps = roots.deps_root()
+os.makedirs(deps)
+partial = os.path.join(deps, "betangel-research-0123456789ab.partial")
+argv = list(guard.VENDOR_GIT_PREFIX) + ["clone", "--no-checkout", "--no-hardlinks", "--quiet", roots.research_clone(),
+                                       partial]
+attempt("clone", lambda: subprocess.run(argv, env=dict(guard.VENDOR_GIT_ENV, HOME=home), capture_output=True))
+results["partial_made"] = os.path.lexists(partial)
+""", setup="home = os.environ['HOME']\n")
+        self.assertEqual(results, {"clone": "subprocess_refused", "partial_made": False})
+
     def test_vendor_argv_needs_exactly_the_vendor_environment(self):
         # Nuance's PR #2 review, item 10: GIT_DIR (also when inherited, env=None) detached the clone's HEAD, and
         # GIT_CONFIG_COUNT with an fsmonitor pair ran a command. Only VENDOR_GIT_ENV plus the guard's HOME passes.

@@ -9,15 +9,20 @@ import ast
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import unittest
 
 from betangel_suite import guard, pin, roots
-from tests import ROOT, make_home, rmtree, run_suite
+from tests import ROOT, child_env, make_home, rmtree, run_relayed, run_suite
+from tests.test_pin import firmlink_spelling
 
 
 def snapshot(tree):
-    """(relative path, size, mtime_ns, mode) of everything under tree, for an unchanged-tree check."""
+    """(relative path, size, mtime_ns, mode) of everything under tree, for an unchanged-tree check.
+
+    Every directory is listed, empty ones included (git status would not show a new empty directory).
+    """
     found = []
     for directory, dirs, files in os.walk(tree):
         for name in dirs + files:
@@ -131,6 +136,64 @@ class VendorToolTests(unittest.TestCase):
         self.assertNotEqual(later, self.sha)
         self.assertEqual(self.vendor(self.sha, "--bump", "--pin-file", self.pin_file),
                          (0, "vendor_ok commit=%s files=26 mode=bump\n" % self.sha[:12], ""))
+
+    def test_share_dir_linked_into_the_clone_is_refused_before_anything(self):
+        # Nuance's PR #2 review, item 2: with ~/.local/share linked into the deploy clone, vendor wrote about 80
+        # files there. Refused now before any git call or mkdir, however the link spells the clone (the firmlink
+        # spelling is seen only by identity, at the nearest existing ancestor of the deps root).
+        inside = os.path.join(self.research, "vendor-share")
+        os.mkdir(inside)
+        share = os.path.join(self.home, ".local", "share")
+        os.rmdir(share)
+        for spell in (lambda path: path, firmlink_spelling):
+            with self.subTest(target=spell(inside)):
+                os.symlink(spell(inside), share)
+                before = snapshot(self.research)
+                self.assertEqual(self.vendor(self.sha, "--bump", "--pin-file", self.pin_file),
+                                 (2, "", "refused:research_clone_on_path\n"))
+                self.assertEqual(snapshot(self.research), before)
+                self.assertEqual(os.listdir(inside), [])
+                self.assertFalse(os.path.lexists(self.pin_file))
+                os.remove(share)
+
+    def test_pin_directory_in_the_clone_is_refused(self):
+        # --pin-file through a link in the state root that leads into the clone, and straight into the clone.
+        sub = os.path.join(self.research, "sub")
+        os.mkdir(sub)
+        linked = os.path.join(roots.state_dir(self.home), "linked")
+        os.makedirs(roots.state_dir(self.home), exist_ok=True)
+        os.symlink(sub, linked)
+        before = snapshot(self.research)
+        for pin_file in (os.path.join(linked, "pin.json"), os.path.join(firmlink_spelling(sub), "pin.json"),
+                         os.path.join(self.research, "pin", "pin.json")):
+            with self.subTest(pin_file=pin_file):
+                self.assertEqual(self.vendor(self.sha, "--bump", "--pin-file", pin_file),
+                                 (2, "", "refused:research_clone_on_path\n"))
+                self.assertEqual(snapshot(self.research), before)
+                self.assertFalse(os.path.lexists(roots.share_dir(self.home)))
+
+    def test_checkout_in_the_clone_is_refused(self):
+        # A copy of this checkout inside the clone: its own pin/ is the default pin file and a vendor-mode write
+        # root, so --bump rewrote it (Nuance's PR #2 review, item 2). Run through a plain relay: the test runner may
+        # start only this checkout's bin/suite.
+        nested = os.path.join(self.research, "nested-suite")
+        for relpath in self.checkout_files():
+            os.makedirs(os.path.dirname(os.path.join(nested, relpath)), exist_ok=True)
+            shutil.copyfile(os.path.join(ROOT, relpath), os.path.join(nested, relpath))
+        before = snapshot(self.research)
+        returncode, out, err = run_relayed(["/bin/sh", os.path.join(nested, "bin", "suite"), "vendor", self.sha,
+                                            "--bump"], child_env(self.home), self.home, timeout=120)
+        self.assertEqual((returncode, out, err), (2, "", "refused:research_clone_on_path\n"))
+        self.assertEqual(snapshot(self.research), before)
+        self.assertFalse(os.path.lexists(roots.share_dir(self.home)))
+
+    @staticmethod
+    def checkout_files():
+        """What bin/suite vendor runs from a checkout: the launcher, the package, the tool and the pin."""
+        names = ["bin/suite", "bin/_launch.py", "tools/vendor_research.py", "pin/betangel-research.json"]
+        names += ["betangel_suite/" + name for name in sorted(os.listdir(os.path.join(ROOT, "betangel_suite")))
+                  if name.endswith(".py")]
+        return names
 
     def test_bad_arguments(self):
         for args in ((), ("abc",), (self.sha.upper(),), (self.sha, "--pin-file", "relative.json"),

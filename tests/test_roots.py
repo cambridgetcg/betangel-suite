@@ -235,5 +235,36 @@ class WriterTests(unittest.TestCase):
         self.assertEqual(os.listdir(data_home), [".git"])
 
 
+class LiesInTests(unittest.TestCase):
+    """roots.lies_in, which vendor and the guard use to keep writes out of the deploy clone (Nuance's PR #2 review,
+    item 2): by text in any case, through links, and by identity at the nearest existing ancestor."""
+
+    def test_lies_in(self):
+        from tests.test_pin import firmlink_spelling
+        home = make_home(self)
+        clone = roots.research_clone(home)
+        os.makedirs(os.path.join(clone, "sub"))
+        outside = os.path.join(home, "outside")
+        os.makedirs(outside)
+        links = {"plain": os.path.join(clone, "sub"), "firm": firmlink_spelling(os.path.join(clone, "sub")),
+                 "dangling_firm": os.path.join(firmlink_spelling(clone), "missing"), "elsewhere": outside}
+        for name, target in links.items():
+            os.symlink(target, os.path.join(home, name))
+
+        def judged(*parts):
+            return roots.lies_in(os.path.join(home, *parts), clone, "research_clone_on_path")
+
+        for parts in (("betangel-research",), ("betangel-research", "sub", "missing", "deeper"), ("BetAngel-Research",),
+                      ("betangel-reſearch", "sub"), ("plain",), ("plain", "missing", "deeper"), ("firm",),
+                      ("firm", "missing", "deeper"), ("dangling_firm", "deeper")):
+            self.assertTrue(judged(*parts), parts)
+        for parts in (("outside",), ("elsewhere", "missing"), ("betangel-research-2",), ("missing", "deeper")):
+            self.assertFalse(judged(*parts), parts)
+        self.assertTrue(roots.lies_in(firmlink_spelling(os.path.join(clone, "sub")), clone, "research_clone_on_path"))
+        rmtree(clone)                                   # no clone: only the text can place a path in it
+        self.assertFalse(judged("firm"))
+        self.assertTrue(judged("betangel-research", "sub"))
+
+
 if __name__ == "__main__":
     unittest.main()
