@@ -40,6 +40,11 @@ scanner refuses to run (url_allowlist_invalid) if one is.
 Safety. The scanner refuses (exit 2) to run with a root inside betangel-data
 or a *.noindex directory. It never follows a symbolic link, never reads a
 path with a data-root component, and reads working-tree files with O_NOFOLLOW.
+Protected names match in any case: data-root components, forbidden
+directories, betangel-research copies, and betangel-data in a link target
+or text are compared with str.casefold(), because the lab's APFS volume
+folds case and matches U+017F (long s) to "s". The docs/synthetic/ and
+size allowlists stay exact, so a case variant fails closed.
 
 Allowlists live in this file only and change through a reviewed PR (Astra
 reviews the scanner, DESIGN.md 3.9). There is no inline suppression comment.
@@ -98,12 +103,14 @@ RULES = {
     "bootstrap_code": "suite bootstrap-code URL fragment",
 }
 
-# File-level codes whose file name may itself carry data: the basename is
-# withheld. An id rule firing on the path itself (line 0) withholds it too.
+# File-level codes whose file name may itself carry data, and content codes
+# that mark runner data (a runner name in a path is not redacted): the
+# basename is withheld. An id rule firing on the path itself (line 0)
+# withholds it too.
 _WITHHOLD_NAME = frozenset({
     "archive_member", "sqlite_file", "jsonl_file", "data_file", "key_file",
     "image_outside_synthetic", "binary_file", "oversize", "forbidden_dir",
-    "data_path", "upstream_copy",
+    "data_path", "upstream_copy", "runner_table", "runner_record", "stream_record",
 })
 _PATH_ID_CODES = ("market_id", "event_id", "member_path")
 
@@ -142,6 +149,7 @@ DATA_COMPONENTS = frozenset({
 
 
 def _is_data_component(part: str) -> bool:
+    part = part.casefold()
     return part in DATA_COMPONENTS or part.endswith(".noindex")
 
 
@@ -158,9 +166,9 @@ def _path_codes(rel: str) -> list:
     synthetic = rel.startswith(SYNTHETIC_DIR)
     if any(_is_data_component(p) for p in parts):
         codes.append("data_path")
-    if any(d.startswith("betangel-research") for d in dirs):
+    if any(d.casefold().startswith("betangel-research") for d in dirs):
         codes.append("upstream_copy")
-    if any(d in FORBIDDEN_DIRS and not (synthetic and d == "screenshots") for d in dirs):
+    if any(d.casefold() in FORBIDDEN_DIRS and not (synthetic and d == "screenshots") for d in dirs):
         codes.append("forbidden_dir")
     if ext in ARCHIVE_EXT:
         codes.append("archive_member")
@@ -205,7 +213,7 @@ _EVENT_ID = re.compile(r"(?<![0-9A-Za-z.])([1-8][0-9]{7})(?![0-9A-Za-z])(?!-[0-9
 _MEMBER_PATH = re.compile(
     r"\b(?:PRO|BASIC|ADVANCED)/(?:19|20)[0-9]{2}/[A-Z][a-z]{2}/[0-9]{1,2}/(?!9)[0-9]{5,}")
 _DATA_PATH_TEXT = re.compile(
-    r"betangel-data/[^\s\"'`<>()\[\]{}]{0,300}?"
+    r"(?i:betangel-data)/[^\s\"'`<>()\[\]{}]{0,300}?"
     r"(?:/(?:PRO|BASIC|ADVANCED)/(?:19|20)[0-9]{2}/|/[0-9a-f]{64}(?![0-9a-f]))")
 _DASH5 = "-{5}"
 _PRIVATE_KEY = re.compile(
@@ -362,7 +370,7 @@ def _line_codes(line: str) -> list:
         codes.append("event_id")
     if _MEMBER_PATH.search(line):
         codes.append("member_path")
-    if "betangel-data/" in line and _DATA_PATH_TEXT.search(line):
+    if "betangel-data/" in line.casefold() and _DATA_PATH_TEXT.search(line):
         codes.append("data_path_text")
     if _PRIVATE_KEY.search(line):
         codes.append("private_key")
@@ -446,7 +454,7 @@ class Refusal(Exception):
 
 def _symlink_codes(target: str) -> list:
     codes = ["symlink"]
-    if _has_data_component(target) or "betangel-data" in target:
+    if _has_data_component(target) or "betangel-data" in target.casefold():
         codes.append("data_path")
     return codes
 

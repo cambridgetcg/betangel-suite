@@ -511,6 +511,9 @@ def run(cfg, *, command, port, opener=None, on_ready=None, marker_grace_s=None, 
     httpd = control_server = app = None
     serving = None
     try:
+        # Again, now that this process holds engine.lock: Nuance writes the marker and then waits for the lock to
+        # be free (6.8), so a marker that appeared after the check above refuses the start here.
+        runmarker.require_absent(marker)
         grace = engine_module.MARKER_GRACE_S if marker_grace_s is None else marker_grace_s
         engine = engine_module.Engine(cfg, marker_path=marker, synthetic=synthetic, marker_grace_s=grace)
         files = static.load(static.ui_dir(guard.REPO_ROOT) if ui_dir is None else ui_dir)

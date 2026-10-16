@@ -68,7 +68,6 @@ BODY_KEYS = {
     "command": frozenset({"nonce", "command", "args"}),
 }
 NONCE_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")
-NONCE_CACHE = 1024
 # route -> (requests, per seconds)
 RATE_LIMITS = {"bootstrap": (30, 60.0), "stream": (60, 60.0), "query": (300, 10.0), "command": (300, 10.0)}
 OK = 200
@@ -100,29 +99,38 @@ class RateLimiter:
             return allowed
 
 
-class NonceCache:
-    """nonce -> the first result; a replay waits for an in-flight first request and returns its result."""
+_FINISHED = threading.Event()
+_FINISHED.set()                     # shared by every finished nonce: a replay of one never waits
 
-    def __init__(self, size=NONCE_CACHE):
-        self._size = size
+
+class NonceCache:
+    """nonce -> the first result, kept for the serve process's life (9.2 item 7; I-8: nonce replay places
+    nothing). Nothing is evicted, so a replay returns the first result and does nothing new however many
+    commands came after it; a replay of an in-flight request waits for it and returns its result.
+
+    An entry is [Event, result] only while its request is in flight; finish() swaps in (_FINISHED, result), so
+    a finished nonce costs a few hundred bytes, and the command rate limit adds at most 30 a second."""
+
+    def __init__(self):
         self._lock = threading.Lock()
-        self._entries = {}          # nonce -> [event, result]; insertion order is age
+        self._entries = {}          # nonce -> [event, result] in flight, then (_FINISHED, result)
 
     def claim(self, nonce):
-        """(True, entry) for a new nonce (the caller must finish() it), else (False, entry)."""
+        """(True, entry) for a new nonce (the caller must finish() or forget() it), else (False, entry)."""
         with self._lock:
             entry = self._entries.get(nonce)
             if entry is not None:
                 return False, entry
             entry = [threading.Event(), None]
             self._entries[nonce] = entry
-            while len(self._entries) > self._size:
-                del self._entries[next(iter(self._entries))]
             return True, entry
 
     def finish(self, nonce, entry, result):
         entry[1] = result
-        entry[0].set()
+        with self._lock:
+            if self._entries.get(nonce) is entry:
+                self._entries[nonce] = (_FINISHED, result)     # drop the request's own Event
+        entry[0].set()                  # replays already waiting hold entry itself, so they wake with result
 
     def forget(self, nonce, entry):
         """Drop a claimed nonce whose request was refused before dispatch (it may be sent again)."""
@@ -284,8 +292,8 @@ class App:
         nonce = body["nonce"]
         new, entry = self.nonces.claim(nonce)
         if not new:                             # a replay: the first result, nothing new (9.2 item 7)
-            entry[0].wait(10.0)
-            return (OK, entry[1]) if entry[1] is not None else refused(409, "engine_busy")
+            entry[0].wait()                     # as long as the first request takes: it always finishes or forgets
+            return (OK, entry[1]) if entry[1] is not None else refused(409, "engine_busy")     # forgotten: never ran
         if name == "claim_control":             # the one command a read-only tab may send (9.2 item 8)
             if not args_ok(body["args"], IMPLEMENTED[name]):
                 self.nonces.forget(nonce, entry)

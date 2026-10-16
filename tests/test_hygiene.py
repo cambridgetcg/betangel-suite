@@ -276,11 +276,32 @@ class FileRuleTests(_RepoCase):
                 self.setUp()
                 self.plant(f"{directory}/note.txt", "x\n", code="forbidden_dir", force=True)
 
+    def test_case_variant_forbidden_dirs_and_upstream_copy(self):
+        # The lab's APFS volume folds case. The screenshots exemption under docs/synthetic/ stays
+        # exact, so a case variant there fails closed.
+        for rel, code in (("Exports/note.txt", "forbidden_dir"), ("a/LOGS/note.txt", "forbidden_dir"),
+                          ("docs/synthetic/Screenshots/note.txt", "forbidden_dir"),
+                          (_j("Vendor/Betangel", "-Research-copy/x.py"), "upstream_copy")):
+            with self.subTest(rel=rel):
+                self.setUp()
+                self.plant(rel, "x = 1\n", code=code, force=True)
+
     def test_data_root_component(self):
         self.plant(_j("betangel", "-data/historic/note.txt"), "x\n", code="data_path", force=True)
 
     def test_noindex_component(self):
         self.plant("suite.noindex/note.txt", "x\n", code="data_path", force=True)
+
+    def test_case_variant_data_root_component(self):
+        # Compared with str.casefold(): APFS also folds U+017F (long s), so the last name is historic.
+        for name in (_j("Betangel", "-Data"), "Historic", "Suite.NoIndex", "hi\u017ftoric"):
+            with self.subTest(name=name):
+                self.setUp()
+                self.plant(f"{name}/note.txt", "x\n", code="data_path", force=True)
+                rc, out = self.scan(name)
+                self.assertEqual(rc, 1, out)
+                self.assertIn("data_path", self.codes(out), out)
+                self.assertIn("<name withheld>", out)
 
     def test_upstream_copy(self):
         self.plant("vendor/betangel-research-copy/x.py", "x = 1\n", code="upstream_copy")
@@ -293,6 +314,16 @@ class FileRuleTests(_RepoCase):
         self.add("data-link")
         self.assert_flags("data_path")
         self.assert_flags("symlink")
+
+    def test_symlink_into_case_variant_data_root(self):
+        # Dangling targets, as above: a case-variant data-root component, and the name inside a longer one.
+        for target in (_j("missing.invalid/Betangel", "-Data"),
+                       _j("missing.invalid/OLD-BETANGEL", "-DATA.bak")):
+            with self.subTest(target=target):
+                self.setUp()
+                os.symlink(target, os.path.join(self.repo, "data-link"))
+                self.add("data-link")
+                self.assert_flags("data_path")
 
     def test_plain_symlink(self):
         os.symlink("README.md", os.path.join(self.repo, "readme-link"))
@@ -340,6 +371,10 @@ class ContentRuleTests(_RepoCase):
 
     def test_data_path_text(self):
         self.plant("docs/f.md", f"path: {DATA_TEXT_PATH}\n", DATA_SHA, code="data_path_text")
+
+    def test_data_path_text_case_variant(self):
+        path = _j("~/Betangel", "-Data/Historic/raw/", DATA_SHA, "/x")
+        self.plant("docs/f2.md", f"path: {path}\n", DATA_SHA, code="data_path_text")
 
     def test_runner_table_markdown(self):
         rows = "\n".join(f"| {n} | {3 + i}.4 | {3 + i}.45 |" for i, n in enumerate(RUNNER_NAMES))
@@ -392,6 +427,23 @@ class ContentRuleTests(_RepoCase):
     def test_runner_record_named_field(self):
         name = RUNNER_NAMES[1]
         self.plant("pkg/k.py", f'row = {{"runnerName": "{name}"}}\n', name, code="runner_record")
+
+    def test_runner_named_file_is_withheld(self):
+        # A file holding runner data may be named after the runner; plant() checks the name never prints.
+        rows = "\n".join(f"| {n} | {3 + i}.4 | {3 + i}.45 |" for i, n in enumerate(RUNNER_NAMES))
+        runner_id = _j("123", "4567")
+        stream = _j('{"op":"mcm","pt":', "1431", "000000000", ',"mc":[{"rc":[{"at',
+                    'b":[[2.5,10.0],[2.4,5]],"id":', runner_id, "}]}]}")
+        name = RUNNER_NAMES[1]
+        cases = (("runner_record", f"notes/{name}.txt", f'row = {{"runnerName": "{name}"}}\n'),
+                 ("runner_table", f"docs/{name}.md", rows + "\n"),
+                 ("stream_record", f"docs/{name}.txt", stream + "\n"))
+        for code, rel, content in cases:
+            with self.subTest(code=code):
+                self.setUp()
+                self.plant(rel, content, name, code=code)
+                rc, out = self.scan("--staged")
+                self.assertIn("<name withheld>", out)
 
     def test_private_key_header(self):
         self.plant("conf/notes.txt", PEM_KEY + "\nAAAA\n", PEM_KEY, code="private_key")
@@ -470,6 +522,26 @@ class ModeTests(_RepoCase):
 
     def test_refuses_a_root_reached_through_a_link_into_a_data_root(self):
         target = os.path.join(self.tmp, "suite.noindex")
+        os.mkdir(target)
+        link = os.path.join(self.tmp, "innocent")
+        os.symlink(target, link)
+        rc, out = self.scan(root=link)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("refused:data_root", out)
+
+    def test_refuses_a_root_inside_a_case_variant_data_root(self):
+        # One parent per name: on the lab's case-insensitive APFS, Historic and the long-s spelling
+        # (U+017F) are the same directory.
+        for index, name in enumerate((_j("Betangel", "-Data"), "SUITE.NOINDEX", "Historic", "hi\u017ftoric")):
+            with self.subTest(name=name):
+                root = os.path.join(self.tmp, f"case{index}", name, "repo")
+                os.makedirs(root)
+                rc, out = self.scan(root=root)
+                self.assertEqual(rc, 2, out)
+                self.assertIn("refused:data_root", out)
+
+    def test_refuses_a_root_reached_through_a_link_into_a_case_variant_data_root(self):
+        target = os.path.join(self.tmp, "Suite.NoIndex")
         os.mkdir(target)
         link = os.path.join(self.tmp, "innocent")
         os.symlink(target, link)
