@@ -15,7 +15,8 @@ What the hook refuses, in every mode and phase:
 
   I-2  changing BETANGEL_BETFAIR_FORBID_NETWORK (arm() refuses unless it is "1"), setting any other
        BETFAIR* or BETANGEL_BETFAIR_* variable (arm() refuses if one is set), or changing TMPDIR or
-       SQLITE_TMPDIR (arm() refuses unless both name the same directory inside the write roots);
+       SQLITE_TMPDIR (arm() refuses unless both name the same directory inside the write roots, which the OS
+       resolves, as given, to where its normalised text does, inside the roots' real paths);
   I-3  socket connect, sendto and sendmsg, and every name or address lookup;
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
@@ -179,8 +180,7 @@ def arm(mode):
             raise SuiteError("stray_environment")
         tmp = os.environ.get("TMPDIR", "")
         state = _State(mode, os.path.normpath(tmp) if os.path.isabs(tmp) else "")
-        if (not state.tmp_root or tmp != os.environ.get("SQLITE_TMPDIR")
-                or not any(roots.within(state.tmp_root, root) for root in state.roots)):
+        if not state.tmp_root or tmp != os.environ.get("SQLITE_TMPDIR") or not _tmp_root_ok(state, tmp):
             raise SuiteError("tmpdir_mismatch")
         _wrap_node_calls()
         _wrap_sqlite_connect()
@@ -249,6 +249,18 @@ def _require_unsealed():
 
 def _stray(key):
     return key != FORBID_NETWORK_ENV and key.upper().startswith(STRAY_PREFIXES)
+
+
+def _tmp_root_ok(state, tmp):
+    """TMPDIR lies in a write root as text and, as the OS resolves it, in that root's real path.
+
+    Python's tempfile uses the normalised text (abspath), but SQLite reads SQLITE_TMPDIR from C as given, and the
+    OS resolves "link/.." through the link: both must reach the same directory.
+    """
+    real = os.path.realpath(tmp)
+    return real == os.path.realpath(state.tmp_root) and any(
+        roots.within(state.tmp_root, root) and roots.within(real, real_root)
+        for root, real_root in zip(state.roots, state.real_roots))
 
 
 # --- calls that raise no audit event of their own --------------------------------------------------
