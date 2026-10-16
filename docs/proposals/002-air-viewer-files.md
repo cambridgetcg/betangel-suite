@@ -315,7 +315,7 @@ DESIGN.md section 14's steps, for this proposal:
 | 6. Nuance implements upstream | Does not apply, as for step 3. |
 | 7. The suite bumps its pin | Does not apply. The pin does not change. |
 
-Rule 10 also asks for Nuance's review. Section 10 asks for it. The PR #5 description, written before this file, says Nuance's review is not required. It is updated to ask for Nuance's review of this proposal when this file is pushed.
+Rule 10 also asks for Nuance's review. Section 10 asks for it, and so does the PR #5 description.
 
 **Order for PR #5.** This answers Astra's finding 1.
 
