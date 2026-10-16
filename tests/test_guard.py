@@ -842,8 +842,53 @@ attempt("empty", lambda: sqlite3.connect("").close())
 """)
         for name in ("default", "uri_false", "uri_true"):
             self.assertEqual(results[name], "write_outside_roots", name)
-        self.assertEqual((results["memory"], results["empty"]), ("ok", "ok"))
+        self.assertEqual((results["memory"], results["empty"]), ("ok", "sqlite_connect_refused"))
         self.assertEqual(sorted(os.listdir(os.path.join(home, "outside"))), ["file"])
+
+    def test_sqlite_keeps_temporary_files_in_memory(self):
+        # Nuance's PR #2 review, item 15: temp_store=MEMORY was never set, and after a TMPDIR rename plus symlink
+        # connect("") opened etilqs_* files outside the roots. SQLite opens its temporary files from C, in whatever
+        # temp directory it finds then (/var/tmp or /tmp if TMPDIR is gone), so none may be opened at all. Open
+        # descriptors are listed through /dev/fd and named with F_GETPATH; SQLite unlinks a temp file at once, so
+        # a directory listing would not show it. The rename and the symlink are refused on their own
+        # (root_replace_refused, RootPlacementTests).
+        home = make_home(self)
+        results = checks(self, home, setup=self.SETUP, body="""
+import fcntl, sqlite3, sqlite3.dbapi2
+def temp_files():
+    found = 0
+    for name in os.listdir("/dev/fd"):
+        try:
+            path = fcntl.fcntl(int(name), fcntl.F_GETPATH, bytes(1024)).split(b"\\0", 1)[0]
+        except (OSError, ValueError):
+            continue
+        found += b"etilqs" in os.path.basename(path)
+    return found
+def spill(connection):
+    connection.execute("CREATE TEMP TABLE t (x TEXT)")
+    connection.execute("PRAGMA temp.cache_size = 2")
+    connection.executemany("INSERT INTO t VALUES (?)", (("synthetic-%05d" % i + "-" * 400,) for i in range(3000)))
+    connection.execute("SELECT x FROM t ORDER BY x DESC").fetchall()
+    results["temp_files_" + str(len(results))] = temp_files()
+for name, connect, database in (("file", sqlite3.connect, os.path.join(state, "a.sqlite")),
+                                ("dbapi2", sqlite3.dbapi2.connect, os.path.join(state, "b.sqlite")),
+                                ("memory", sqlite3.connect, ":memory:")):
+    connection = connect(database)
+    results["temp_store_" + name] = connection.execute("PRAGMA temp_store").fetchone()[0]
+    spill(connection)
+    connection.close()
+attempt("empty_name", lambda: sqlite3.connect(""))
+attempt("empty_bytes", lambda: sqlite3.connect(b""))
+class KeepsTempStore(sqlite3.Connection):
+    def execute(self, sql, *args):
+        return super().execute("SELECT 1" if sql.startswith("PRAGMA temp_store =") else sql, *args)
+attempt("temp_store_not_set", lambda: sqlite3.connect(os.path.join(state, "c.sqlite"), factory=KeepsTempStore))
+""")
+        self.assertEqual([value for name, value in results.items() if name.startswith("temp_files_")], [0, 0, 0])
+        self.assertEqual({name: results[name] for name in ("temp_store_file", "temp_store_dbapi2", "temp_store_memory")},
+                         {"temp_store_file": 2, "temp_store_dbapi2": 2, "temp_store_memory": 2})
+        for name in ("empty_name", "empty_bytes", "temp_store_not_set"):
+            self.assertEqual(results[name], "sqlite_connect_refused", name)
 
     def test_sqlite_cannot_attach_vacuum_into_or_load_extensions(self):
         home = make_home(self)
