@@ -5,7 +5,8 @@ any finding it exits 1 and prints only a rule code, a redacted path, a line
 number and an entry number. It never prints the text that matched. When the
 file may hold data (a data-file, runner, identifier or data-path finding)
 the whole path is withheld, and the entry number, the file's position in the
-scan, identifies it.
+scan, identifies it. A withheld path shows its suffix only when the suffix is
+on a fixed list (SHOWN_SUFFIXES), never a word that may come from the name.
 
 Run it with the fixed interpreter, standard library only:
 
@@ -677,15 +678,19 @@ def _default_root() -> str:
 
 _HEX_RUN = re.compile(r"[0-9a-fA-F]{16,}")
 _DIGIT_RUN = re.compile(r"[0-9]{5,}")
+# The only suffixes a withheld path still shows: the scanner's own suffix sets plus common code and
+# text suffixes. Any other suffix may be a word of the name (a runner's, say), so it is dropped.
+# Compared exactly: a case variant shows no suffix.
+SHOWN_SUFFIXES = (ARCHIVE_EXT | SQLITE_EXT | JSONL_EXT | DATA_EXT | KEY_EXT | IMAGE_EXT | AUDIO_EXT
+                  | {".sqlite", ".py", ".md", ".txt", ".json", ".sh", ".js", ".mjs", ".css", ".html",
+                     ".toml", ".yml", ".yaml", ".cfg", ".ini", ".swift"})
 
 
 def _shown_path(rel: str, withhold_name: bool) -> str:
+    if withhold_name:  # every component may carry data
+        ext = os.path.splitext(rel.rstrip("/").rpartition("/")[2])[1]
+        return "<name withheld>" + (ext if ext in SHOWN_SUFFIXES else "")
     shown = _DIGIT_RUN.sub("<n>", _HEX_RUN.sub("<hex>", rel.rstrip("/")))
-    if withhold_name:
-        ext = os.path.splitext(shown.rpartition("/")[2])[1]
-        if not re.fullmatch(r"\.[A-Za-z0-9-]{1,12}", ext):
-            ext = ""
-        shown = "<name withheld>" + ext  # every component may carry data
     return "".join(c if 32 <= ord(c) < 127 else "?" for c in shown)
 
 

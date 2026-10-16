@@ -467,6 +467,25 @@ class ContentRuleTests(_RepoCase):
                 self.setUp()
                 self.plant(rel, content, name, MARKET_2015, EVENT, DATA_SHA, code=code)
 
+    def test_withheld_path_shows_only_a_listed_suffix(self):
+        # A name can end in a word rather than a file type (a runner name with a dot for the space). A
+        # withheld path shows a suffix only from the scanner's fixed list, compared exactly, so the word
+        # never prints, in the tree scan or the staged one.
+        name = RUNNER_NAMES[1]
+        word = name.split()[-1]
+        content = f'row = {{"runnerName": "{name}"}}\n'
+        cases = ((name.replace(" ", "."), ""), (f"card.{word.lower()}", ""), (f"{name}.MD", ""),
+                 (f"{name}.md", ".md"), (f"{name}.csv", ".csv"))
+        for base, suffix in cases:
+            with self.subTest(base=base):
+                self.setUp()
+                self.plant(f"notes/{base}", content, name, word, word.lower(), code="runner_record",
+                           force=True)
+                for mode in ("--staged", None):
+                    rc, out = self.scan(*([mode] if mode else []))
+                    # Index entries: README.md, notes/<base>, pkg/module.py.
+                    self.assertIn(f"FAIL runner_record <name withheld>{suffix}:1 (entry 2)", out)
+
     def test_private_key_header(self):
         self.plant("conf/notes.txt", PEM_KEY + "\nAAAA\n", PEM_KEY, code="private_key")
 
