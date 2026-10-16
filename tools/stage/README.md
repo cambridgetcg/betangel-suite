@@ -19,9 +19,10 @@ Lab-Claude staged these files and never runs them. **Yu runs every step.** The l
 main checkout: `cd /Users/user/betangel-suite && bin/suite release <tag>` creates
 `~/.local/share/betangel-suite/app/current/` (the `suite` alias from step 1 works only once it exists, and a
 release copy cannot make releases itself). The setup script refuses without one, because the key's forced
-command runs that copy. Use the scripts from the release copy, which is reviewed and read-only against
-accidents (any process running as `user` can still change it), not from a working checkout. Below, `R`
-means `~/.local/share/betangel-suite/app/current/tools/stage` on the lab.
+command runs that copy. Use the lab files from the release copy, which is reviewed and read-only against
+accidents (any process running as `user` can still change it), not from a working checkout. The two Air files
+come only from GitHub (step 5). Below, `R` means `~/.local/share/betangel-suite/app/current/tools/stage` on
+the lab.
 
 ## Step 1 (lab): the `suite` alias
 
