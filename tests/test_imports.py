@@ -96,6 +96,63 @@ FORBIDDEN_TEXT = ORDER_METHODS + (_j("key", "chain"), _j("betfair", ".com"), _j(
                                   _j("find-", "internet-", "password"))
 
 
+def module_and_package(relpath):
+    """(module name, package its relative imports start from) of a pinned .py path."""
+    if relpath.endswith("/__init__.py"):
+        name = relpath[:-len("/__init__.py")].replace("/", ".")
+        return name, name
+    name = relpath[:-len(".py")].replace("/", ".")
+    return name, name.rpartition(".")[0]
+
+
+def upstream_imports(tree, package, is_module):
+    """(line, module) for every betangel_research module a parsed source imports, anywhere in it (inside functions
+    too); "<dynamic>" for an import_module or __import__ call whose module is not a literal absolute name.
+
+    `import a.b.c` imports a, a.b and a.b.c. `from <base> import name` imports base, and base.name too when
+    is_module(base.name) says that is a module (a file or package directory in the pinned tree), not an attribute.
+    Relative imports are resolved against package.
+    """
+    found = []
+
+    def add(name, line):
+        parts = name.split(".")
+        found.extend((line, ".".join(parts[:end])) for end in range(1, len(parts) + 1))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                add(alias.name, node.lineno)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                parts = package.split(".")
+                parts = parts[:len(parts) - (node.level - 1)]
+                base = ".".join(parts + ([node.module] if node.module else []))
+            else:
+                base = node.module
+            add(base, node.lineno)
+            for alias in node.names:
+                if alias.name != "*" and is_module(base + "." + alias.name):
+                    add(base + "." + alias.name, node.lineno)
+        elif isinstance(node, ast.Call):
+            func = node.func
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if called in ("import_module", "__import__"):
+                literal = node.args[0].value if node.args and isinstance(node.args[0], ast.Constant) else None
+                if isinstance(literal, str) and literal and not literal.startswith("."):
+                    add(literal, node.lineno)
+                else:
+                    found.append((node.lineno, "<dynamic>"))
+    return [(line, name) for line, name in found
+            if name == "<dynamic>" or name == "betangel_research" or name.startswith("betangel_research.")]
+
+
+def deps_module(name):
+    """True when name is a module of the real deps clone: a .py file or a package directory (read only)."""
+    path = os.path.join(DEPS, *name.split("."))
+    return os.path.isfile(path + ".py") or os.path.isdir(path)
+
+
 def python_sources():
     """Every Python file of the suite outside tests/: the package, the launcher and the tools."""
     found = []
@@ -223,6 +280,40 @@ class ClosureTests(unittest.TestCase):
                 modules.add(relpath[:-3].replace("/", "."))
         self.assertEqual(modules, EXPECTED_CLOSURE)
         self.assertEqual(len(EXPECTED_CLOSURE), 25)
+
+    def test_pinned_files_import_only_the_closure(self):
+        # Nuance's PR #2 review, item 7: the deps clone is on sys.path, so a pinned module that imported anything
+        # outside the closure (a lazy import in a function, say) would load unhashed code. Every import statement and
+        # literal import call in the 25 pinned modules must name closure modules only, and none may be dynamic.
+        problems = []
+        for relpath in pin.PINNED_FILES:
+            if relpath.endswith(".py"):
+                _name, package = module_and_package(relpath)
+                for line, name in upstream_imports(parse(os.path.join(DEPS, relpath)), package, deps_module):
+                    if name not in EXPECTED_CLOSURE:
+                        problems.append((relpath, line, name))
+        self.assertEqual(problems, [])
+
+    def test_the_closure_import_rule_catches_planted_imports(self):
+        def is_module(name):
+            return name.rsplit(".", 1)[-1] in ("risk", "gateway", "paper", "book", "archive")
+
+        package = "betangel_research.betfair"
+        for source, expected in (
+                ("import betangel_research.betfair.risk\n", ["betangel_research.betfair.risk"]),
+                ("from betangel_research.betfair import risk\n", ["betangel_research.betfair.risk"]),
+                ("from .risk import exposure_by_market\n", ["betangel_research.betfair.risk"]),
+                ("from . import risk, paper\n", ["betangel_research.betfair.risk"]),
+                ("def later():\n    import betangel_research.betfair.gateway as g\n", ["betangel_research.betfair.gateway"]),
+                ("import importlib\nm = importlib.import_module('betangel_research.betfair.risk')\n",
+                 ["betangel_research.betfair.risk"]),
+                ("m = __import__(name)\n", ["<dynamic>"]),
+                ("import importlib\nm = importlib.import_module('.risk', 'betangel_research.betfair')\n", ["<dynamic>"]),
+                ("from betangel_research.betfair import paper, book\nfrom .book import MarketBookCache\n", []),
+                ("from ..betfair.backtest import archive\nimport json\n", []),
+                ("from betangel_research.betfair.ticks import snap, LADDER_CLASSIC\n", [])):
+            names = [name for _line, name in upstream_imports(ast.parse(source), package, is_module)]
+            self.assertEqual(sorted(set(names) - EXPECTED_CLOSURE), expected, source)
 
     def test_fresh_engine_loads_exactly_the_closure(self):
         home = make_home(self, deps=True)
