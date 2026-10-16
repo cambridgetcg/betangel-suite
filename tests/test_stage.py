@@ -1177,9 +1177,30 @@ class SelfTestScriptTests(unittest.TestCase):
 
     def test_preflight_refusals(self):
         other_key = SSH_G + OTHER_KEY
+        # PATHs without ssh or without nc. /bin holds neither, so the real ones in /usr/bin are never reached.
+        self.assertFalse([name for name in ("ssh", "nc") if os.path.exists(os.path.join("/bin", name))])
+        only_nc = os.path.join(self.home, "only-nc")
+        only_ssh = os.path.join(self.home, "only-ssh")
+        _link_fake("nc", FAKE_NC, only_nc)
+        _link_fake("ssh", FAKE_SSH, only_ssh)
         cases = [
+            ("no ssh", dict(self.state("nossh", "secure"), PATH=only_nc + ":/bin"), "no_ssh"),
+            ("no nc", dict(self.state("nonc", "secure"), PATH=only_ssh + ":/bin"), "no_nc"),
+            ("ssh -G fails", self.state("unreadable", "secure", ssh_g=None), "air_config_unreadable"),
             ("wrong host", self.state("host", "secure", SSH_G.replace("192.168.50.88", "192.168.50.89")),
              "air_config_hostname"),
+            ("another user", self.state("user", "secure", SSH_G.replace("User user", "User yu")), "air_config_user"),
+            ("any address family", self.state("family", "secure", SSH_G.replace("addressfamily inet",
+                                                                                "addressfamily any")),
+             "air_config_addressfamily"),
+            ("other identities allowed", self.state("only", "secure", SSH_G.replace("identitiesonly yes",
+                                                                                    "identitiesonly no")),
+             "air_config_identitiesonly"),
+            ("forward failures ignored", self.state("eof", "secure", SSH_G.replace("exitonforwardfailure yes",
+                                                                                   "exitonforwardfailure no")),
+             "air_config_exitonforwardfailure"),
+            ("new host keys accepted", self.state("hostkey", "secure", SSH_G.replace(
+                "stricthostkeychecking true", "stricthostkeychecking accept-new")), "air_config_stricthostkeychecking"),
             ("a second key", self.state("keys", "secure", other_key), "air_config_identityfile"),
             ("keychain agent", self.state("agent", "secure", SSH_G.replace("addkeystoagent false",
                                                                           "addkeystoagent true")),
@@ -1193,6 +1214,8 @@ class SelfTestScriptTests(unittest.TestCase):
             ("a dynamic forward", self.state("dfwd", "secure", SSH_G + "dynamicforward 1080\n"),
              "air_config_dynamicforward"),
             ("viewer port busy", self.state("busy", "secure", busy=True), "viewer_port_busy"),
+            ("no temporary directory", dict(self.state("workdir", "secure"),
+                                            TMPDIR=os.path.join(self.home, "no-such-dir")), "workdir"),
             # The Host block of the DESIGN text alone, below a Host * that shares connections and an agent.
             ("an inherited ControlMaster", self.state("shared", "secure", _strip_hardening(SSH_G) + SHARED),
              "air_config_controlmaster"),
