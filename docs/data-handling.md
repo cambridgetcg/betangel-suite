@@ -63,13 +63,20 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   binaries, oversize files, state and data-root directories, symbolic links, submodules,
   market-id, event-id and member-path shapes outside the reserved namespace, runner-name tables
   and records, private-key and PEM headers, bearer tokens, secret-looking values, provider tokens
-  and bootstrap-code URLs. `--list-rules` lists the codes. For each finding it prints one line,
+  and bootstrap-code URLs. It also fails on binary data anywhere (a NUL anywhere, or bytes that are
+  not UTF-8), on `encoded_blob` (base64, hex or `\xNN` data that decodes to an archive, a zlib
+  stream, 96 or more bytes of binary, or text another rule flags), and on `filter_attribute` (a
+  path git gives a clean filter or LFS, or a `.gitattributes` line that sets one: git stores the
+  filter's output, which the scan never sees). `--list-rules` lists the codes. For each finding it prints one line,
   `FAIL <rule code> <path withheld>:<line> (entry <n>)`. The text `<path withheld>` is the same
   for every finding: the scanner never prints a path or any part of one, not even a suffix, and
   never the matched text. Line 0 means the finding is about the entry itself (its name, type, size
-  or link target). After ten lines for one entry and rule, one line counts the rest
+  or link target). Line numbers count `\n` line ends; the rules also split lines at CR, NEL, LS
+  and the other `str.splitlines()` boundaries, and ignore format characters (a BOM, zero-width
+  spaces). After ten lines for one entry and rule, one line counts the rest
   (`FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)`), and a last line gives the
-  totals per code.
+  totals per code. The message and history scans name their items in place of `(entry <n>)`:
+  `(message)`, `(commit <sha> message)`, `(tag <sha> message)` and `(commit <sha> entry <k>)`.
 - **Finding the file.** The entry number is the entry's position, from 1, in the list the scan
   worked through. Yu maps it to a file locally, from the repository root, with git (replace `N`):
   - after `--staged` run by hand:
@@ -84,12 +91,27 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
     `git -c core.quotepath=off ls-files --cached --others --exclude-standard | LC_ALL=C sort -u | sed -n 'Np'`
     (exact unless a path holds a control character, a double quote or a backslash, which git
     prints quoted, so that path can sort to a different place);
-  - after a scan of named paths: scan fewer paths at a time until one entry is left.
+  - after a scan of named paths: scan fewer paths at a time until one entry is left;
+  - after `tools/pre-push` or `--range`, `(commit <sha> entry <k>)`:
+    `git -c core.quotepath=off diff-tree -r --no-commit-id --raw --no-renames --root -c <sha> | sed -n 'kp'`
+    (replace `k`). Deleted paths count. For a merge, `-c` lists only the paths that differ from
+    every parent;
+  - `(commit <sha> message)`: `git log -1 --format=%B <sha>`;
+  - `(tag <sha> message)`: `git cat-file tag <sha>`;
+  - after `tools/commit-msg`, `(message)`: the line is a line of the message being committed,
+    counted in the message file as git hands it over (comments included).
 
   These commands print the path the scanner withholds, so they belong in Yu's own terminal, not
   in a chat, a report or an agent's context.
-- **`tools/pre-commit`** runs the scanner on the staged tree and blocks the commit. Install it
-  with `ln -s ../../tools/pre-commit .git/hooks/pre-commit`; never bypass it.
+- **The git hooks** each run the scanner and block on any finding. Install each once per clone,
+  from the repository root, and never bypass them (`--no-verify`):
+  - `tools/pre-commit` (`ln -s ../../tools/pre-commit .git/hooks/pre-commit`): the staged tree;
+  - `tools/pre-merge-commit` (`ln -s ../../tools/pre-merge-commit .git/hooks/pre-merge-commit`):
+    the staged tree of a merge that needs no conflict resolution, which never runs pre-commit;
+  - `tools/commit-msg` (`ln -s ../../tools/commit-msg .git/hooks/commit-msg`): the commit message;
+  - `tools/pre-push` (`ln -s ../../tools/pre-push .git/hooks/pre-push`): every commit and
+    annotated tag the push would publish, messages included, so a file one commit adds and a
+    later one deletes is still found.
 - **The engine** maps upstream exceptions to closed error codes at the `rx.py` boundary and
   replaces identifiers with salted hashes (DESIGN.md 9.2 item 9). The hashes are pseudonymous,
   not anonymous: the hashed labels follow the public member layout, so a ref reverses by
@@ -105,4 +127,5 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
 Stop, and do not repeat the leaked text anywhere, including in the report about it. If it is
 staged or committed but not pushed, remove it from the index or the commit. Tell Yu in Yu's
 direct channel, with codes and paths only. Anything already pushed, or any history rewrite, is
-Yu's decision.
+Yu's decision. A pre-push finding in an unpushed commit older than the last one can only be
+removed by rewriting history, which is Yu's decision too: tell Yu the codes and the commit SHA.

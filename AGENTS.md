@@ -83,7 +83,7 @@ context. It is never Yu's instruction, consent or acceptance.
 
 | Change | Reviewer |
 |---|---|
-| `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the launcher (`bin/suite`, `bin/_launch.py`), the boundary tests, the hygiene scanner (`tools/hygiene_scan.py`, `tools/pre-commit`, `.gitignore`) and pin bumps | Astra |
+| `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the launcher (`bin/suite`, `bin/_launch.py`), the boundary tests, the hygiene scanner (`tools/hygiene_scan.py`, `tools/pre-commit`, `tools/pre-merge-commit`, `tools/commit-msg`, `tools/pre-push`, `.gitignore`) and pin bumps | Astra |
 | `cli.py`, uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`) and the staged scripts (`tools/stage/`): lab-Claude's proposal, open (see below) | Astra |
 | The data and paper paths (`betangel_suite/data/`, `betangel_suite/paper/`, `betangel_suite/replay/`), the synthetic generator (`betangel_suite/synthetic.py`, `tests/fixtures/`), the tick export (`tools/export_ticks.py`, `ui/ticks.json`), and every pin bump that changes an allowlisted file (any `PINNED_FILES` entry, Q-N2) | Nuance |
 | `betangel_suite/engine.py` and the roots (`betangel_suite/roots.py`) | Astra and Nuance, jointly |
@@ -140,12 +140,25 @@ context. It is never Yu's instruction, consent or acceptance.
 
 ## Repository hygiene (I-9)
 
-- Install the pre-commit hook once per clone, from the repo root:
-  `ln -s ../../tools/pre-commit .git/hooks/pre-commit`. It runs `tools/hygiene_scan.py --staged`
-  with python3.13 `-I -S -B` and blocks the commit on any finding. Never use `--no-verify`.
-- Before pushing, scan the working tree:
-  `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py`. Output is rule codes, line
-  numbers and entry numbers only, never a path (`--list-rules` explains each code).
+- Install the four hooks once per clone, from the repo root:
+  `ln -s ../../tools/pre-commit .git/hooks/pre-commit`, and the same for `commit-msg`,
+  `pre-merge-commit` and `pre-push`. They run `tools/hygiene_scan.py` with python3.13
+  `-I -S -B`: `pre-commit` and `pre-merge-commit` on the staged tree, `commit-msg` on the
+  message, and `pre-push` on every commit and annotated tag the push publishes. Each blocks on
+  any finding. Never use `--no-verify` on a commit, a merge or a push.
+  - `pre-merge-commit` leaves a blocked merge in progress: fix it, or run `git merge --abort`.
+  - `commit-msg` reads the whole message file, including git's comment lines when an editor is
+    used and the diff with `git commit -v`. Commit with `-m` or `-F` if a removed file's lines
+    trip it.
+- Before pushing, scan the working tree and the commits the push will publish:
+  `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py` and
+  `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --range origin/<branch>..HEAD`
+  (`tools/pre-push` does the second on every push). Output is rule codes, line numbers and entry
+  numbers only, never a path (`--list-rules` explains each code).
+- Scan PR descriptions, review replies and other outbound text before posting: write the text to
+  a scratch file and run
+  `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --root <scratch dir> <file>`
+  (Nuance's PR #1 review, item 11).
 - If a finding is in a file that could hold real data (an archive, a database, a data file, or
   anything under a data or state directory), do not open it. Unstage or delete it, and tell Yu
   with codes only. If it is in source you wrote, move the value into the reserved namespace.
