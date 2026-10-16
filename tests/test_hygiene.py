@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import bz2
 import gzip
-import importlib.util
 import io
 import os
 import re
@@ -387,6 +386,12 @@ class ContentRuleTests(_RepoCase):
     def test_event_id(self):
         self.plant("pkg/c.json", f'{{"eventId": "{EVENT}"}}\n', EVENT, code="event_id")
 
+    def test_event_id_in_a_help_centre_article_url(self):
+        # No URL is exempt: the article-number exemption was dropped until a real documentation need exists
+        # (Astra's re-review of #5, Q-A2).
+        self.plant("docs/sources.md", f"https://privacy.claude.com/en/articles/{EVENT}-how-long\n", EVENT,
+                   code="event_id")
+
     def test_selection_id_outside_namespace(self):
         self.plant("pkg/d.py", f"SELECTION = {SELECTION}\n", SELECTION, code="event_id")
 
@@ -691,162 +696,6 @@ class ModeTests(_RepoCase):
         rc, out = self.scan(_j("--", MARKET_2015))
         self.assertEqual(rc, 2, out)
         self.assertNotIn(MARKET_2015, out)
-
-
-def _article(host, scheme="https://", path="/en/articles/", tail="-how-long-do-you-store-my-data"):
-    """A help-centre article URL whose 8-digit article number is EVENT (invented)."""
-    return _j(scheme, host, path, EVENT, tail)
-
-
-class UrlExemptionTests(_RepoCase):
-    """The event_id rule's one exemption: 8-digit runs inside https URLs on the exact hosts of URL_HOST_ALLOWLIST."""
-
-    def lines_by_code(self, rel: str, mode):
-        # Every finding withholds the whole path ("FAIL event_id <path withheld>:2 (entry 2)"), so a file's
-        # lines are told apart by its entry number. The scanner sorts its file list in both modes, and every file
-        # these tests write is staged, so the index and the tree list the same files: the entry is rel's place in
-        # the sorted tree (walked here, since the test guard allows no git ls-files).
-        listing = []
-        for directory, dirs, files in os.walk(self.repo):
-            dirs[:] = [name for name in dirs if name != ".git"]
-            base = os.path.relpath(directory, self.repo)
-            listing += [name if base == "." else base + "/" + name for name in files]
-        entry = sorted(listing).index(rel) + 1
-        rc, out = self.scan(*([mode] if mode else []))
-        found = {}
-        for line in out.splitlines():
-            match = re.match(r"^FAIL (\S+) .+:([0-9]+) \(entry %d\)$" % entry, line)
-            if match:
-                found.setdefault(match.group(1), set()).add(int(match.group(2)))
-        return rc, out, found
-
-    def test_article_urls_on_allowlisted_hosts_pass(self):
-        short_article = _j("https://privacy.claude.com/en/articles/", "712", "34", "56", "-how-long-do-you-store-my-org")
-        lines = [
-            _article("privacy.claude.com"),
-            # The shape of docs/proposals/001-agent-seat.md, Appendix A (the line the scanner flagged in Phase 0a).
-            "- **Anthropic:** https://www.anthropic.com/legal/consumer-terms ; " + _article("privacy.claude.com")
-            + " ; " + short_article + " ; https://code.claude.com/docs/en/data-usage",
-            "[the article](" + _article("support.claude.com") + ")",
-            "<" + _article("PRIVACY.Claude.com", tail="") + ">",
-            "url = '" + _article("support.anthropic.com") + "'",
-            '"' + _article("privacy.anthropic.com", path="/articles/", tail="?lang=en#retention") + '"',
-            _article("support.claude.com", path="/pt-BR/articles/"),
-        ]
-        self.write("docs/sources.md", "\n".join(lines) + "\n")
-        self.add("docs/sources.md")
-        self.assert_clean()
-
-    def test_lookalike_hosts_other_hosts_and_other_schemes_still_flag(self):
-        lookalikes = [
-            _article("privacy.claude.com.evil.example"),
-            _article("claude.com@evil.example"),
-            _article("privacy.claude.com@evil.example"),
-            _j("https://evil.example/privacy.claude.com/en/articles/", EVENT),
-            _article("privacy.claude.com:443"),
-            _article("privacy.claude.com", scheme="http://"),
-            "https://web.archive.org/web/2026/" + _article("privacy.claude.com"),
-            _article("xprivacy.claude.com"),
-            _article("privacy-claude.com"),
-            _article("privacy.claude.com\\@evil.example"),
-        ]
-        never = [
-            _article(_j("support.", "betfair", ".com")),
-            _article(_j("support.developer.", "betfair", ".com"), path="/hc/en-us/articles/"),
-            _article(_j("www.", "betangel", ".com")),
-            _article(_j("www.", "timeform", ".com")),
-            _article("docs.python.org"),
-        ]
-        self.write("docs/lookalike.md", "\n".join(lookalikes) + "\n")
-        self.write("docs/hosts.md", "\n".join(never) + "\n")
-        self.add("docs/lookalike.md", "docs/hosts.md")
-        for mode in ("--staged", None):
-            with self.subTest(mode=mode or "tree"):
-                rc, out, found = self.lines_by_code("docs/lookalike.md", mode)
-                self.assertEqual(rc, 1, out)
-                self.assertEqual(found, {"event_id": set(range(1, len(lookalikes) + 1))}, out)
-                _rc, _out, found = self.lines_by_code("docs/hosts.md", mode)
-                self.assertEqual(found, {"event_id": set(range(1, len(never) + 1))}, out)
-                self.assertNotIn(EVENT, out)
-
-    def test_no_exemption_outside_the_url(self):
-        lines = [
-            _j("see ", EVENT, " and ") + _article("privacy.claude.com"),
-            "https://privacy.claude.com/en/articles/x " + EVENT,
-            "| https://privacy.claude.com/en/articles/x |" + EVENT + "|",
-            "https://privacy.claude.com/en/articles/x\t" + EVENT,
-        ]
-        self.write("docs/outside.md", "\n".join(lines) + "\n")
-        self.add("docs/outside.md")
-        rc, out, found = self.lines_by_code("docs/outside.md", "--staged")
-        self.assertEqual(rc, 1, out)
-        self.assertEqual(found, {"event_id": {1, 2, 3, 4}}, out)
-
-    def test_only_the_article_number_of_an_article_path_is_exempt(self):
-        # An allowlisted host exempts nothing in the query, the fragment or any other path (Phase 0c review).
-        lines = [
-            _j("https://support.claude.com/?id=", EVENT),
-            _j("https://support.claude.com/#", EVENT),
-            _j("https://support.claude.com/x;", EVENT),
-            _j("https://support.claude.com/en/", EVENT),
-            _j("https://support.claude.com/en/articles/x#", EVENT),
-            _j("https://support.claude.com/en/articles/", EVENT, ".html"),
-            _j("https://support.claude.com/en/articles/x/", EVENT),
-            _article("support.claude.com", tail="-slug?e=" + EVENT),
-            _article("support.claude.com", tail="#" + EVENT),
-        ]
-        self.write("docs/query.md", "\n".join(lines) + "\n")
-        self.add("docs/query.md")
-        rc, out, found = self.lines_by_code("docs/query.md", "--staged")
-        self.assertEqual(rc, 1, out)
-        self.assertEqual(found, {"event_id": set(range(1, len(lines) + 1))}, out)
-        self.assertNotIn(EVENT, out)
-
-    def test_other_rules_still_apply_inside_allowlisted_urls(self):
-        lines = [
-            _j("https://privacy.claude.com/en/articles/", MARKET_2015),
-            _j("https://support.claude.com/files/", MEMBER),
-            _j("https://privacy.claude.com/en/articles/", EVENT, "-x?t=", GH_TOKEN),
-        ]
-        self.write("docs/inside.md", "\n".join(lines) + "\n")
-        self.add("docs/inside.md")
-        rc, out, found = self.lines_by_code("docs/inside.md", "--staged")
-        self.assertEqual(rc, 1, out)
-        self.assertEqual(found.get("market_id"), {1, 2}, out)
-        self.assertEqual(found.get("member_path"), {2}, out)
-        self.assertEqual(found.get("known_token"), {3}, out)
-        self.assertEqual(found.get("event_id"), {2}, "only an article number is exempt, never the id in a file path")
-        for text in (MARKET_2015, EVENT, GH_TOKEN):
-            self.assertNotIn(text, out)
-
-    def test_allowlist_holds_exact_documentation_hosts_only(self):
-        spec = importlib.util.spec_from_file_location("hygiene_scan_under_test", SCANNER)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        hosts = module.URL_HOST_ALLOWLIST
-        self.assertTrue(hosts)
-        self.assertLessEqual(len(hosts), 8, "a short, reviewed list")
-        for host in hosts:
-            with self.subTest(host=host):
-                self.assertRegex(host, r"\A[a-z0-9-]+(\.[a-z0-9-]+)+\Z")
-                for mark in ("betfair", "betangel", "timeform"):
-                    self.assertNotIn(mark, host)
-
-    def test_the_scanner_refuses_to_run_with_a_data_host_on_its_allowlist(self):
-        source = SCANNER.read_text(encoding="utf-8")
-        anchor = '    "support.claude.com",\n'
-        self.assertIn(anchor, source)
-        for label, extra in (("betfair", _j("support.", "betfair", ".com")), ("timeform", _j("www.", "timeform", ".com")),
-                             ("pattern", "*.claude.com")):
-            with self.subTest(case=label):
-                copy = os.path.join(self.tmp, "scanner-%s.py" % label)
-                with open(copy, "w", encoding="utf-8") as handle:
-                    handle.write(source.replace(anchor, anchor + '    "%s",\n' % extra))
-                proc = subprocess.run([sys.executable, "-I", "-S", "-B", copy, "--root", self.repo],
-                                      env=self.env, capture_output=True, timeout=120)
-                out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
-                self.assertEqual(proc.returncode, 2, out)
-                self.assertIn("refused:url_allowlist_invalid", out)
 
 
 class GitignoreTests(_RepoCase):

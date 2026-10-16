@@ -1742,12 +1742,12 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 
 ### 15.3 For Astra
 
-**Phase 0 review:** Q-A1 and Q-A2, alongside the review routed in section 3.9.
+**Phase 0 review:** Q-A1 and Q-A2 (Q-A2 is answered), alongside the review routed in section 3.9.
 
 | ID | Question | Needed in |
 |---|---|---|
 | Q-A1 | **Read-only tab and STOP** (with Q-Y17). The code follows section 9.2 item 8: `claim_control` is the only command a read-only tab may send, so STOP answers 409 `not_controller` there. Section 8.2 item 8 says STOP is always reachable by key. Would letting a read-only tab send `stop` be acceptable for the API's authorisation rules? Yu rules after your view. | Before Phase 1b |
-| Q-A2 | **The scanner's article-number exemption.** `tools/hygiene_scan.py` exempts a 7- or 8-digit help-centre article number from the event-id rule, only in an https `/articles/<n>` or `/<locale>/articles/<n>` URL on four Claude and Anthropic hosts (docs/data-handling.md). Phase 0c narrowed it to that, but no file in the tree uses it yet. Keep it as it is, or drop it until something needs it? | Phase 0c review |
+| Q-A2 | **The scanner's article-number exemption.** `tools/hygiene_scan.py` exempted a 7- or 8-digit help-centre article number from the event-id rule, only in an https `/articles/<n>` or `/<locale>/articles/<n>` URL on four Claude and Anthropic hosts. Phase 0c narrowed it to that, but no file in the tree used it. Keep it as it is, or drop it until something needs it?<br>**Answered by Astra** (re-review of PR #5 at d9b129e): "I prefer dropping it until a real documentation need exists." It is dropped. The scanner exempts no URL: the event-id rule treats a digit run inside a link like one anywhere else, and docs/data-handling.md says so. Bringing one back is a scanner change, which Astra reviews. | Answered |
 
 ---
 

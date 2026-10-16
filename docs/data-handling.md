@@ -59,13 +59,8 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   or link target). After ten lines for one entry and rule, one line counts the rest
   (`FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)`), and a last line gives the
   totals per code.
-  - One narrow exemption, from the event-id rule only: a 7- or 8-digit help-centre article
-    number in an https URL on the scanner's own host allowlist (`URL_HOST_ALLOWLIST`: four Claude
-    and Anthropic help hosts, never a Betfair, Bet Angel or Timeform host), where the path starts
-    `/articles/<n>` or `/<locale>/articles/<n>` and `<n>` is followed by `-slug`, `?`, `#` or the
-    end of the URL. Digits anywhere else still count: elsewhere in that URL's path, in its query
-    or fragment, and everywhere outside it. Every other rule still applies inside such a URL. No
-    file uses the exemption yet; Astra reviews it (DESIGN.md Q-A2).
+  - No URL is exempt. The event-id rule treats a digit run inside a link like one anywhere
+    else (Astra's answer to DESIGN.md Q-A2).
   - uisnap PNGs are synthetic only and live outside the repo (see the table above). The scanner
     fails on any image outside `docs/synthetic/`.
 - **Finding the file.** The entry number is the entry's position, from 1, in the list the scan

@@ -47,18 +47,6 @@ seven digits, the venue "Synthetic Park" and runners "Synthetic 1..n". The id
 rules never match that namespace, and runner names starting "Synthetic" are
 exempt from the runner rules.
 
-URL exemption (event_id only). Help-centre article numbers are 7 or 8
-digits, as in https://privacy.claude.com/en/articles/<n>-<slug>. A digit run
-is not an event id only when it is that article number: the path of an https
-URL whose host is exactly one of URL_HOST_ALLOWLIST (documentation and vendor
-hosts: no userinfo, port, other subdomain or suffix, and not a URL embedded in
-another URL) starts /articles/<n> or /<locale>/articles/<n>, with <n> ending
-the path or followed by a "-slug". Any other digits in such a URL (elsewhere
-in the path, the query, the fragment) are still flagged, as are the same
-digits outside it, and every other rule (market_id, member_path, ...) still
-applies inside it. No Betfair, Bet Angel or Timeform host may be listed: the
-scanner refuses to run (url_allowlist_invalid) if one is.
-
 Safety. The scanner refuses (exit 2) to run with a root inside betangel-data
 or a *.noindex directory. It never follows a symbolic link, never reads a
 path with a data-root component, and reads working-tree files with O_NOFOLLOW.
@@ -111,8 +99,7 @@ RULES = {
     "submodule": "submodule, gitlink or nested repository",
     "special_file": "FIFO, socket or device",
     "market_id": "Betfair market-id shape (1.1 or 1.2 then 8-9 digits); reserved 1.999 never matches",
-    "event_id": "8-digit event or selection id shape outside the reserved 9xxxxxxx namespace"
-                " (not a help-centre article number in an https article URL on URL_HOST_ALLOWLIST)",
+    "event_id": "8-digit event or selection id shape outside the reserved 9xxxxxxx namespace",
     "member_path": "historical-data member path with a non-reserved event id",
     "runner_table": "three or more rows of a capitalised name (after up to two number cells) and price columns",
     "runner_record": "runner-name field holding a non-synthetic name",
@@ -294,24 +281,6 @@ NUMERIC_ALLOWLIST = frozenset({
     "31622400",  # seconds in a 366-day year
 })
 
-# Hosts whose https URLs may carry 8-digit article numbers (the URL exemption in the module docstring).
-# Documentation and vendor hosts only; exact host names, never a pattern. Changes need review.
-URL_HOST_ALLOWLIST = frozenset({
-    "privacy.claude.com",
-    "support.claude.com",
-    "privacy.anthropic.com",
-    "support.anthropic.com",
-})
-_URL_HOST_NEVER = ("betfair", "betangel", "timeform")
-_HOST_NAME = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+")
-# An https URL that starts its own token (no URL character right before it, so not embedded in another URL);
-# group 1 is the host, which must end at "/", "?" or "#" (so no userinfo or port), group 2 the rest.
-_URL = re.compile(
-    r"(?<![A-Za-z0-9_/.~%+=&?#:@!$-])https://([A-Za-z0-9.-]+)(?=[/?#])([^\s\"'<>()\[\]{}`\\|]*)")
-# The start of a help-centre article path (matched at the start of _URL's group 2): an optional locale, then
-# articles/<7 or 8 digits> ending the path segment's number. Group 1 is the article number, the only exempt span.
-_ARTICLE_PATH = re.compile(r"/(?:[a-z]{2}(?:-[A-Za-z]{2,4})?/)?articles/([0-9]{7,8})(?=[-?#]|$)")
-
 
 def _is_price(token: str) -> bool:
     """A Betfair-range price: decimals up to 6 places (BSP has more than 2), or integer odds 2-1000."""
@@ -330,38 +299,6 @@ def _event_exempt(digits: str) -> bool:
         return True  # repdigits such as 88888888
     year, month, day = int(digits[:4]), int(digits[4:6]), int(digits[6:])
     return 1900 <= year <= 2099 and 1 <= month <= 12 and 1 <= day <= 31
-
-
-def _url_exempt_spans(line: str) -> list:
-    """(start, end) of the article number of each https help-centre article URL on an allowlisted host."""
-    if "https://" not in line:
-        return []
-    spans = []
-    for m in _URL.finditer(line):
-        article = _ARTICLE_PATH.match(m.group(2)) if m.group(1).lower() in URL_HOST_ALLOWLIST else None
-        if article:
-            spans.append((m.start(2) + article.start(1), m.start(2) + article.end(1)))
-    return spans
-
-
-def _has_event_id(line: str) -> bool:
-    """True if the line holds an event-id shape that no exemption covers."""
-    spans = None
-    for m in _EVENT_ID.finditer(line):
-        if _event_exempt(m.group(1)):
-            continue
-        if spans is None:
-            spans = _url_exempt_spans(line)
-        start, end = m.span(1)
-        if not any(low <= start and end <= high for low, high in spans):
-            return True
-    return False
-
-
-def _check_url_allowlist() -> None:
-    for host in URL_HOST_ALLOWLIST:
-        if not _HOST_NAME.fullmatch(host) or any(mark in host for mark in _URL_HOST_NEVER):
-            raise Refusal("url_allowlist_invalid")
 
 
 def _looks_secret(value: str) -> bool:
@@ -385,7 +322,7 @@ def _line_codes(line: str) -> list:
     codes = []
     if _MARKET_ID.search(line):
         codes.append("market_id")
-    if _has_event_id(line):
+    if any(not _event_exempt(m.group(1)) for m in _EVENT_ID.finditer(line)):
         codes.append("event_id")
     if _MEMBER_PATH.search(line):
         codes.append("member_path")
@@ -796,7 +733,6 @@ ROOT = ""
 
 def _main(argv) -> int:
     global ROOT
-    _check_url_allowlist()
     parser = _Parser(prog="hygiene_scan.py", add_help=True)
     parser.add_argument("--staged", action="store_true")
     parser.add_argument("--root")
