@@ -389,13 +389,18 @@ if results["absolute_fits"]:
 attempt("permit_outside_run_dir", lambda: guard.permit_unix_socket(os.path.join(os.environ["HOME"], "y.sock")))
 attempt("permit_bad_port", lambda: guard.permit_loopback_port(70000))
 # Audit-only from here (nothing is bound, so the path length does not matter): normpath would fold "alias/.."
-# that the OS resolves through the link, and a run directory replaced by a link moves every socket in it.
+# that the OS resolves through the link, a permitted name that is a dangling link makes bind create the socket
+# at the link's target, and a run directory replaced by a link moves every socket in it.
 def audit_bind(address):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sys.audit("socket.bind", sock, address)
 os.symlink(os.environ["HOME"], os.path.join(run, "alias"))
 attempt("unix_dotdot_after_link", lambda: audit_bind(os.path.join(run, "alias", "..", "c.sock")))
 attempt("unix_permitted_audit", lambda: audit_bind(control))
+dangling = os.path.join(run, "b.sock")              # bind would follow it and create HOME/b-target.sock
+guard.permit_unix_socket(dangling)
+os.symlink(os.path.join(os.environ["HOME"], "b-target.sock"), dangling)
+attempt("unix_permitted_dangling_link", lambda: audit_bind(dangling))
 attempt("permit_noncanonical", lambda: guard.permit_unix_socket(os.path.join(run, "alias", "..", "d.sock")))
 attempt("permit_trailing_slash", lambda: guard.permit_unix_socket(control + "/"))
 guard.seal()
@@ -418,7 +423,7 @@ attempt("unix_run_dir_replaced", lambda: audit_bind(control))
         self.assertEqual(results["permit_bad_port"], "bind_permit_invalid")
         self.assertEqual(results["permit_after_seal"], "guard_sealed")
         self.assertEqual(results["unix_permitted_audit"], "ok")
-        for name in ("unix_dotdot_after_link", "unix_run_dir_replaced"):
+        for name in ("unix_dotdot_after_link", "unix_permitted_dangling_link", "unix_run_dir_replaced"):
             self.assertEqual(results[name], "bind_refused", name)
         for name in ("permit_noncanonical", "permit_trailing_slash"):
             self.assertEqual(results[name], "bind_permit_invalid", name)
