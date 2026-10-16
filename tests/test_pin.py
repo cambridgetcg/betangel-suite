@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from betangel_suite import pin, roots
 from betangel_suite.errors import SuiteError
@@ -18,8 +19,8 @@ from tests import ARM_ENGINE, DEPS, PRELUDE, ROOT, make_home, run_python
 PINNED_COMMIT = "76f71dc94588a50f0df56dde2c3fabcf6e102f88"
 
 
-def outcome(case, home, code):
-    result = run_python(code, home)
+def outcome(case, home, code, timeout=60):
+    result = run_python(code, home, timeout=timeout)
     case.assertEqual(result.returncode, 0, result.stderr)
     return result.stdout.strip()
 
@@ -125,6 +126,56 @@ class VerifyCopyTests(unittest.TestCase):
         os.remove(path)
         os.symlink(os.path.join(DEPS, "betangel_research", "betfair", "ticks.py"), path)
         self.assert_refused("pin_mismatch")
+
+    def test_links_on_the_way_to_a_pinned_file(self):
+        # Nuance's PR #2 review, item 8: a symlinked research/ (or research/experiments/) and a hard-linked ticks.py
+        # passed activate(), reading bytes the deploy clone could change. Refused with O_NOFOLLOW_ANY, and by the
+        # component walk that replaces it where the flag is missing. The control copy verifies both ways.
+        elsewhere = os.path.join(self.home, "elsewhere")
+        os.makedirs(elsewhere)
+        experiments = os.path.join(self.deps, "research", "experiments")
+        ticks = os.path.join(self.deps, "betangel_research", "betfair", "ticks.py")
+
+        def link_directory(path):
+            moved = os.path.join(elsewhere, os.path.basename(path))
+            os.rename(path, moved)
+            os.symlink(moved, path)
+            return lambda: (os.remove(path), os.rename(moved, path))
+
+        def hard_link_file(path):
+            outside = os.path.join(elsewhere, "ticks.py")
+            shutil.copyfile(path, outside)
+            os.remove(path)
+            os.link(outside, path)
+            return lambda: (os.remove(outside),)
+
+        for nofollow_any in (pin._NOFOLLOW_ANY, 0):
+            with mock.patch.object(pin, "_NOFOLLOW_ANY", nofollow_any):
+                pin.verify(self.pin, self.deps)
+                for name, make in (("research", lambda: link_directory(os.path.dirname(experiments))),
+                                   ("experiments", lambda: link_directory(experiments)),
+                                   ("hard_link", lambda: hard_link_file(ticks))):
+                    with self.subTest(nofollow_any=nofollow_any, case=name):
+                        undo = make()
+                        try:
+                            self.assert_refused("pin_mismatch")
+                        finally:
+                            undo()
+                        pin.verify(self.pin, self.deps)
+
+    def test_fifo_in_place_of_a_pinned_file_or_the_pin_does_not_hang(self):
+        # Nuance's PR #2 review, item 22 (Astra's half): open() of a FIFO waits for a writer. O_NONBLOCK, then
+        # fstat before any read. Run in a child with a timeout, so a hang fails the test instead of the run.
+        path = os.path.join(self.deps, "research", "experiments", "backtest-p0-bsp-v1.json")
+        os.remove(path)
+        os.mkfifo(path)
+        fifo_pin = os.path.join(self.home, "pin-fifo.json")
+        os.mkfifo(fifo_pin)
+        code = ("from betangel_suite import pin\nfrom betangel_suite.errors import SuiteError\n"
+                "for call in (lambda: pin.verify(pin.load(), %r), lambda: pin.load(%r)):\n"
+                "    try:\n        call()\n        print('ok')\n    except SuiteError as exc:\n        print(exc)\n"
+                ) % (self.deps, fifo_pin)
+        self.assertEqual(outcome(self, self.home, code, timeout=20).splitlines(), ["pin_mismatch", "pin_invalid"])
 
     def test_bytecode_cache_present(self):
         os.mkdir(os.path.join(self.deps, "betangel_research", "betfair", "__pycache__"))
@@ -241,6 +292,25 @@ class ActivationTests(unittest.TestCase):
             with self.subTest(target=os.readlink(roots.deps_root(home))):
                 self.assertEqual(outcome(self, home, ARM_ENGINE + TRY_RX).splitlines(),
                                  ["research_clone_on_path", "upstream_absent"])
+
+    def test_links_in_deps_are_refused_before_any_upstream_import(self):
+        # Nuance's PR #2 review, item 8, end to end: a research/ that links into the deploy clone, and a ticks.py hard
+        # linked to the clone's copy, each with the right bytes, are refused before betangel_research is imported.
+        for case in ("research", "hard_link"):
+            home = make_home(self, deps=True)
+            research = roots.research_clone(home)
+            deps = pin.deps_dir(pin.load(), home)
+            os.makedirs(research)
+            if case == "research":
+                os.rename(os.path.join(deps, "research"), os.path.join(research, "research"))
+                os.symlink(os.path.join(research, "research"), os.path.join(deps, "research"))
+            else:
+                ticks = os.path.join("betangel_research", "betfair", "ticks.py")
+                os.makedirs(os.path.dirname(os.path.join(research, ticks)))
+                os.rename(os.path.join(deps, ticks), os.path.join(research, ticks))
+                os.link(os.path.join(research, ticks), os.path.join(deps, ticks))
+            with self.subTest(case=case):
+                self.assertEqual(outcome(self, home, ARM_ENGINE + TRY_RX).splitlines(), ["pin_mismatch", "upstream_absent"])
 
     def test_upstream_imported_before_activation_is_refused(self):
         home = make_home(self, deps=True)

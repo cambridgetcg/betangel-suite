@@ -5,8 +5,9 @@ it: the 25 modules of the verified import closure (section 4.1) and the experime
 month roles. tools/vendor_research.py writes it on a pin bump; nothing else does.
 
 activate() runs once per process, after the guard is armed and before betangel_research is imported. It
-hashes the pinned files in ~/.local/share/betangel-suite/deps/betangel-research-<sha12>/ (no git runs),
-refuses pin_mismatch on any difference, refuses a deps tree holding bytecode caches (Python would load a
+hashes the pinned files in ~/.local/share/betangel-suite/deps/betangel-research-<sha12>/ (no git runs; each
+file opened below the deps directory with no symlink on the way, O_NONBLOCK, and refused unless it is a regular
+file with exactly one link), refuses pin_mismatch on any difference, refuses a deps tree holding bytecode caches (Python would load a
 stale .pyc beside a matching .py) or anything Python would import in preference to a pinned .py (an
 extension module such as paper.cpython-313-darwin.so, a .pyc, or a package directory named like a pinned
 module), refuses a deps directory or any sys.path entry that lies in ~/betangel-research (the moving
@@ -72,6 +73,11 @@ SHADOW_SUFFIXES = tuple(sorted(set(importlib.machinery.EXTENSION_SUFFIXES) | set
                                | {".so", ".dylib", ".pyc"}))
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+# Every read here: O_NONBLOCK, so opening a FIFO never waits for a writer (the open of a regular file is unchanged).
+_READ_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
+# macOS 11 and later: refuse a symlink at any component of the path (ELOOP). Python 3.11 and 3.13 on the lab both
+# have it; without it, _open_below walks the path itself, one O_NOFOLLOW component at a time.
+_NOFOLLOW_ANY = getattr(os, "O_NOFOLLOW_ANY", 0)
 
 _ACTIVE = None
 
@@ -100,10 +106,11 @@ def deps_dir(pin, home_dir=None):
 
 
 def file_hashes(tree):
-    """{relpath: sha256} of PINNED_FILES under tree; each must be a regular file, not a symlink."""
+    """{relpath: sha256} of PINNED_FILES under tree; each must be a regular file with one link, reached from tree
+    with no symlink on the way (_read_regular); SuiteError(pin_mismatch) otherwise."""
     hashes = {}
     for relpath in PINNED_FILES:
-        data = _read_regular(os.path.join(tree, relpath), None)
+        data = _read_regular(relpath, None, tree)
         if data is None:
             raise SuiteError("pin_mismatch")
         hashes[relpath] = hashlib.sha256(data).hexdigest()
@@ -245,15 +252,54 @@ def assert_origins(deps):
                 raise SuiteError("upstream_origin_mismatch")
 
 
-def _read_regular(path, limit):
-    """Bytes of a regular file opened without following a final symlink, or None."""
+def _open_below(tree, relpath):
+    """A read-only descriptor for relpath below the directory tree, with no symlink at any component of relpath.
+
+    tree is opened first (O_DIRECTORY, and O_NOFOLLOW: tree itself must not be a link, though its ancestors may be),
+    and relpath is opened relative to that descriptor (dir_fd) with O_NOFOLLOW_ANY (macOS 11 and later), which fails
+    with ELOOP at a symlink anywhere in it: a deps tree whose research/ links into the deploy clone is refused
+    (Nuance's PR #2 review, item 8). Without O_NOFOLLOW_ANY the walk is done here instead, one component at a
+    time, each opened O_NOFOLLOW (directories also O_DIRECTORY), which refuses the same links. relpath must be a
+    plain relative path (no "", "." or ".." component). OSError otherwise.
+    """
+    parts = relpath.split("/")
+    if os.path.isabs(relpath) or any(part in ("", os.curdir, os.pardir) for part in parts):
+        raise OSError("not a plain relative path")
+    top = os.open(tree, _READ_FLAGS | os.O_DIRECTORY | os.O_NOFOLLOW)
+    current = top
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        if _NOFOLLOW_ANY:
+            return os.open(relpath, _READ_FLAGS | _NOFOLLOW_ANY, dir_fd=top)
+        for part in parts[:-1]:
+            following = os.open(part, _READ_FLAGS | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            if current != top:
+                os.close(current)
+            current = following
+        return os.open(parts[-1], _READ_FLAGS | os.O_NOFOLLOW, dir_fd=current)
+    finally:
+        if current != top:
+            os.close(current)
+        os.close(top)
+
+
+def _read_regular(path, limit, tree=None):
+    """Bytes of a regular file with exactly one link, or None.
+
+    tree None: path is opened without following a final symlink (the pin file). Otherwise path is relative to the
+    directory tree and no component of it may be a symlink (_open_below). Either way the open is O_NONBLOCK, so a
+    FIFO put in a file's place returns at once instead of waiting for a writer (Nuance's PR #2 review, item 22),
+    and fstat comes before any read: anything but a regular file, a file over limit bytes, and a file with more
+    than one link are refused. A hard link would let the deps tree share an inode with the deploy clone, whose
+    bytes then change under the pin and which vendor's chmod would reach (item 8).
+    """
+    try:
+        fd = os.open(path, _READ_FLAGS | os.O_NOFOLLOW) if tree is None else _open_below(tree, path)
     except OSError:
         return None
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or (limit is not None and info.st_size > limit):
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or (limit is not None and info.st_size > limit)):
             return None
         chunks = []
         while True:
