@@ -1,6 +1,6 @@
 """bin/suite commands (DESIGN.md 3.4). Phase 0a implements test and vendor; every other command refuses.
 
-bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except test and
+bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop and
 vendor, checked the run marker before main() is called. main() then creates TMPDIR (0700, through the
 writer helper) before any handler runs (DESIGN.md 3.6, 6.8), so SQLite never falls back to a system temp
 directory. vendor is the exception: it must work before the deps clone exists, never imports upstream
@@ -17,7 +17,9 @@ from .errors import SuiteError
 
 COMMANDS = ("serve", "open", "ssh-session", "stop", "catalogue", "selfcheck", "diagnose", "ledger-summary",
             "release", "test", "uisnap", "vendor")
-NO_RUN_MARKER_CHECK = ("stop", "test", "vendor")  # adaptation E; stop only reduces activity (DESIGN 3.9 rule 6)
+# Adaptation E. stop only reduces activity (DESIGN 3.9 rule 6). vendor starts no engine and writes nothing
+# under ~/betangel-data. test refuses during a run like the other commands (Nuance's answer to Q-N14).
+NO_RUN_MARKER_CHECK = ("stop", "vendor")
 REPO_ROOT = guard.REPO_ROOT
 
 

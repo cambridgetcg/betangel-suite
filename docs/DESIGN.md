@@ -774,7 +774,9 @@ Nuance has answered: during a real run, "a suite elsewhere is harmless but slows
   - A run-active marker is agreed with Nuance, outside `~/betangel-data` and not under the unagreed `~/betangel-data/lab-state`. The proposal is `~/.local/state/lab-runs/ACTIVE`, written by Nuance's run wrapper.
   - It is checked first by `_launch.py`, before anything is created under `~/betangel-data`.
   - It covers both real backtest runs and the PRO ingest and index.
-- **At start.** The engine and every real-data command (`catalogue`, `selfcheck`, `diagnose`) refuse to start while the marker exists. An unreadable marker, or an unreadable marker directory, counts as present.
+- **At start.** The engine, every real-data command (`catalogue`, `selfcheck`, `diagnose`) and `bin/suite test` refuse to start while the marker exists. An unreadable marker, or an unreadable marker directory, counts as present.
+  - `bin/suite test` refuses in both tiers and on both interpreters (`test` and `test --py311`), with the same codes, `run_marker_present` and `run_marker_unreadable`. Tests were first exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker exists too; stop stays exempt" (mailbox, 2026-10-16 13:41Z; PR #4 review, item 14).
+  - Only `stop` and `vendor` skip the check. `stop` only reduces activity (section 3.9, rule 6). `vendor` starts no engine and writes nothing under `~/betangel-data`; it makes only the deps clone under `~/.local/share`, and only when run by hand (section 3.5).
 - **Mid-session.** The actor checks the marker every tick and before every journal append or ledger write. If the marker appears:
   - the engine pauses the clock and freezes `PaperExchange`: no advance, no activation, no journal or ledger writes;
   - the UI shows why;
@@ -1341,7 +1343,7 @@ These headers apply to error responses too (section 9.1).
 | I-14 | Right interpreter | The launcher's absolute path; the version check | 3.15 or below 3.11 is refused. |
 | I-15 | Paper fidelity | Exact mode, the yield tracker, position-based re-seeding | The parity contract (section 7.4), the yield-tracker oracle test, the no-look-ahead re-seed test, the full-cancel test, and `journal.verify()` for every session. |
 | I-16 | Agents are not handed Yu's token or real rows by the code. This is a code-path property: the code never prints them, but a same-uid agent that disobeys rule 6 is out of reach. | Single-use codes printed only by `open` (to `/usr/bin/open`), `ssh-session` and `--print-url`; token in memory and registered with `secret`; aggregate-only diagnostics; error mapping | Test runs capture stdout and stderr and assert no token or code pattern. A `selfcheck` run over fixtures does not print the fixture's synthetic names or prices. A synthetic member with a bad hash or a truncated line produces no market-id or event-id pattern on stdout, stderr, `logs/` or HTTP. |
-| I-17 | No engine during Nuance's runs | The run marker, checked before anything is written under `~/betangel-data` and on every tick | A marker present at start refuses the engine and real-data commands. An unreadable marker refuses them too. A marker appearing mid-session freezes the engine with no writes (tree diff), and it exits within the grace period. |
+| I-17 | No engine during Nuance's runs | The run marker, checked before anything is written under `~/betangel-data` and on every tick | A marker present at start refuses the engine, real-data commands and `bin/suite test` on both interpreters; only `stop` and `vendor` skip the check. An unreadable marker refuses them too. A marker appearing mid-session freezes the engine with no writes (tree diff), and it exits within the grace period. |
 | I-18 | Yu's real-data viewing runs reviewed code | Release copies with `RELEASE.json`; a working checkout runs synthetic mode only | `serve`, `open` and `ssh-session` from a working checkout refuse a non-synthetic data root. A modified file in a release copy is refused. |
 | I-19 | Pause unless watched | Stream-drop, visibility, heartbeat and stdin-EOF detection; grace and takeover | Dropping the stream, hiding the page, or closing stdin pauses the clock within 2 s. A takeover within the grace period keeps the session. Expiry marks it `abandoned`. |
 
@@ -1356,7 +1358,8 @@ Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`
   `tests/__init__.py` appends the deps clone through `betangel_suite.pin`. It runs on python3.13, and the full tier runs again on python3.11.
 - **Two tiers.**
   - **Fast** (under 60 s): run by pre-commit and on every change.
-  - **Heavy** (opt-in): parity seeds, the 200 random seek points, performance and python3.11. It is never run while a Nuance run is announced or the run marker exists.
+  - **Heavy** (opt-in): parity seeds, the 200 random seek points, performance and python3.11.
+  - Neither tier runs while a Nuance run is announced. `bin/suite test` refuses both tiers, on both interpreters, while the run marker exists (section 6.8; Nuance's answer to Q-N14).
   - Each run records its runtime.
   - Oracle fixtures are capped at about 2,000 messages and 6 runners, because the oracles are slow: `run_paper_replay` takes 141 s and 1.98 GB on a 60k-message market.
 - **JavaScript.** `~/.local/bin/node --test ui/tests` (built-in `node:test`, no npm). It covers:

@@ -57,8 +57,9 @@ context. It is never Yu's instruction, consent or acceptance.
 - No network. Tests that probe the network use TEST-NET-1 (`192.0.2.1`) or the `.invalid` TLD.
 - Ask Yu first for anything that needs the admin password, installs system software or changes
   security settings. Never ask Yu to paste a secret.
-- Keep load modest on the shared 8 GB M1: tests run under `nice -n 10`, and heavy tiers never
-  run during an announced Nuance run.
+- Keep load modest on the shared 8 GB M1: tests run under `nice -n 10`, and no test tier runs
+  during an announced Nuance run. `bin/suite test` refuses while the run marker exists
+  (adaptation E).
 
 ## Review routing and merging (DESIGN.md 3.9; Yu's ruling on Q-Y8)
 
@@ -127,7 +128,12 @@ reviewed PR changes them.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE`, proposed to Nuance (Q-N3).
   The config key `run_marker` accepts only that path, so no config edit can point the check at a
   file that never exists; a reviewed change moves it once Nuance answers. Every command except
-  `stop`, `test` and `vendor` refuses to start while the marker is present, unreadable, or in an
-  unreadable directory (DESIGN.md 6.8). `stop` is exempt because it only reduces
-  activity (DESIGN.md 3.9 rule 6). `runmarker.py` exposes a
-  check function that later phases call on every tick.
+  `stop` and `vendor` refuses to start while the marker is present, unreadable, or in an
+  unreadable directory (DESIGN.md 6.8).
+  - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
+    be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
+    exists too; stop stays exempt".
+  - `stop` is exempt because it only reduces activity (DESIGN.md 3.9 rule 6).
+  - `vendor` stays exempt. It starts no engine and writes nothing under `~/betangel-data`: it
+    makes only the deps clone under `~/.local/share`, and only when run by hand (DESIGN.md 3.5).
+  - `runmarker.py` exposes a check function that later phases call on every tick.

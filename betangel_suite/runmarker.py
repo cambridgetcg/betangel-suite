@@ -9,8 +9,9 @@ so does a marker that cannot be checked: an unreadable or unsearchable marker di
 "directory" that is not a directory, or any error other than "no such file". Only a definite absence of
 the marker (or of its directory) lets a command start.
 
-bin/_launch.py calls require_absent() before every command except stop, test and vendor, before anything is
-created. Later phases call active() on every actor tick and before every journal or ledger write.
+bin/_launch.py calls require_absent() before every command except stop and vendor, before anything is
+created; test is checked too, on both interpreters (Nuance's answer to Q-N14). Later phases call active()
+on every actor tick and before every journal or ledger write.
 Standard library only.
 """
 
