@@ -5,7 +5,9 @@ into a TAR under TMPDIR. Upstream's own archive.ingest_archive and market_index.
 imported here and nowhere outside tests/ (AGENTS.md rule 2; tests/test_imports.py scans only the package, bin/
 and tools/, and checks that rx exports neither), ingest and index it into a temporary data root. The index must
 see every synthetic market with the facts the generator put there, and the month gate must refuse the 2026 and
-2027 members (by path, never decompressed) and a member whose content names 2026-01 under a 2015-05 path.
+2027 members (by path, never decompressed) and a member whose content names 2026-01 under a 2015-05 path. A member
+whose "marketTime" keys are escaped passes ingest's byte scan and is stored; the index refuses its market at index
+time, and head.files[] still lists the member as indexed.
 """
 
 import bz2
@@ -162,6 +164,44 @@ class MonthGateTests(ArchiveCase):
 
         summary = upstream_index.index_archive(self.root, sha)
         self.assertEqual((summary["markets"], summary["files"], summary["markets_refused"]), (1, 1, 0))
+
+    def test_an_escaped_market_time_passes_ingest_and_the_index_refuses_its_market(self):
+        # Nuance's PR #4 review, item 8. ingest's content scan reads only unescaped "marketTime" keys (archive.py:48-51),
+        # so a 2026-01 market under a 2015-05 path, its keys escaped, is stored. market_index's parsed check refuses
+        # the market, yet head.files[] still lists its member as indexed (market_index.py:739-741). Both are pinned
+        # here before Phase 1a catalogue code is written against them.
+        archive = gen.escaped_archive(self.tars)
+        kept, escaped = gen.escaped_markets()
+        path = gen.member_path(escaped, date=gen.STANDARD_MONTH + "-09")
+        text = bz2.decompress(archive.members[1].data)
+        self.assertEqual((archive.members[1].path, text.count(b'"marketTime"')), (path, 0))
+        self.assertGreater(text.count(b'"market\\u0054ime":"2026-01-'), 0)
+        self.assertEqual(json.loads(text.split(b"\n")[0])["mc"][0]["marketDefinition"]["marketTime"][:7], "2026-01")
+
+        result = self.ingest(archive)
+        self.assertEqual((result["status"], result["members"], result["refused"], result["sealed_holdout_members"]),
+                         ("ingested", 2, 0, 0))
+        sha = result["archive_sha256"]
+        manifest, _sha = upstream_index.load_manifest(self.root, sha)
+        entry = next(item for item in manifest["members"] if item["path"] == path)
+        self.assertEqual((entry["month"], entry["market_id"], entry["content_months"]),
+                         (gen.STANDARD_MONTH, escaped.market_id, []))          # the scan saw no marketTime
+        with open(self.raw(sha, path), "rb") as handle:
+            self.assertEqual(handle.read(), archive.members[1].data)          # stored
+
+        summary = upstream_index.index_archive(self.root, sha)
+        self.assertEqual((summary["markets"], summary["markets_refused"], summary["files"], summary["files_indexed"],
+                          summary["files_refused"]), (1, 1, 2, 2, 0))
+        index = os.path.join(self.data_root, "index", sha)
+        with open(os.path.join(index, upstream_index.HEAD_FILE), "rb") as handle:
+            head = upstream_index.loads_strict(handle.read())
+        files = {item["path"]: item for item in head["files"]}
+        self.assertEqual((files[path]["status"], files[path]["markets"]), ("indexed", [escaped.market_id]))
+        self.assertEqual(head["refused_markets"], [{"market_id": escaped.market_id, "member_path": path,
+                                                    "reason": "market_time_month_sealed_holdout"}])
+        with open(os.path.join(index, upstream_index.MARKETS_FILE), "rb") as handle:
+            records = [upstream_index.loads_strict(line) for line in handle]
+        self.assertEqual([record["market_id"] for record in records], [kept.market_id])
 
     def test_an_archive_of_gated_months_only_is_refused_whole(self):
         _kept, gated, _content = gen.gated_markets()
