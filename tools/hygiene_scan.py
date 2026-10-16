@@ -2,7 +2,10 @@
 
 It keeps licensed Betfair data, real identifiers and secrets out of git. On
 any finding it exits 1 and prints only a rule code, a redacted path, a line
-number and an entry number. It never prints the text that matched.
+number and an entry number. It never prints the text that matched. When the
+file may hold data (a data-file, runner, identifier or data-path finding)
+the whole path is withheld, and the entry number, the file's position in the
+scan, identifies it.
 
 Run it with the fixed interpreter, standard library only:
 
@@ -90,16 +93,18 @@ RULES = {
     "bootstrap_code": "suite bootstrap-code URL fragment",
 }
 
-# File-level codes whose file name may itself carry data, and content codes
-# that mark runner data (a runner name in a path is not redacted): the
-# basename is withheld. An id rule firing on the path itself (line 0)
-# withholds it too.
+# File-level codes whose path may itself carry data, and content codes that
+# mark runner data (a runner name in a path is not redacted): the whole path
+# is withheld, since any directory may be named after a runner or a market.
+# An identifier or data-path finding, in the content or on the path itself,
+# withholds it too. The entry number still identifies the file.
 _WITHHOLD_NAME = frozenset({
     "archive_member", "sqlite_file", "jsonl_file", "data_file", "key_file",
     "image_outside_synthetic", "binary_file", "oversize", "forbidden_dir",
     "data_path", "upstream_copy", "runner_table", "runner_record", "stream_record",
 })
 _PATH_ID_CODES = ("market_id", "event_id", "member_path")
+_WITHHOLD_CONTENT = frozenset(_PATH_ID_CODES) | {"data_path_text"}
 
 # ---------------------------------------------------------------- path rules
 
@@ -676,11 +681,10 @@ _DIGIT_RUN = re.compile(r"[0-9]{5,}")
 def _shown_path(rel: str, withhold_name: bool) -> str:
     shown = _DIGIT_RUN.sub("<n>", _HEX_RUN.sub("<hex>", rel.rstrip("/")))
     if withhold_name:
-        head, _, base = shown.rpartition("/")
-        ext = os.path.splitext(base)[1]
+        ext = os.path.splitext(shown.rpartition("/")[2])[1]
         if not re.fullmatch(r"\.[A-Za-z0-9-]{1,12}", ext):
             ext = ""
-        shown = (head + "/" if head else "") + "<name withheld>" + ext
+        shown = "<name withheld>" + ext  # every component may carry data
     return "".join(c if 32 <= ord(c) < 127 else "?" for c in shown)
 
 
@@ -696,8 +700,7 @@ def _report(results, mode: str) -> int:
         if not found:
             continue
         files_with += 1
-        withhold = any(c in _WITHHOLD_NAME or (line == 0 and c in _PATH_ID_CODES)
-                       for line, c in found)
+        withhold = any(c in _WITHHOLD_NAME or c in _WITHHOLD_CONTENT for _line, c in found)
         shown = _shown_path(rel, withhold)
         by_code = {}
         for line, code in sorted(set(found)):

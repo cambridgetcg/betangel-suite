@@ -444,6 +444,19 @@ class ContentRuleTests(_RepoCase):
                 rc, out = self.scan("--staged")
                 self.assertIn("<name withheld>", out)
 
+    def test_withheld_path_hides_runner_named_directories_and_id_files(self):
+        # Any component may carry data: the whole path is withheld, and identifier or data-path content
+        # withholds it too. plant() checks in both modes that neither the name nor the id prints.
+        name = RUNNER_NAMES[1]
+        cases = (("runner_record", f"notes/{name}/card.txt", f'row = {{"runnerName": "{name}"}}\n'),
+                 ("market_id", f"notes/{name}.txt", f"see {MARKET_2015}\n"),
+                 ("event_id", f"notes/{name}/ids.txt", f"event {EVENT}\n"),
+                 ("data_path_text", f"docs/{name}.md", f"path: {DATA_TEXT_PATH}\n"))
+        for code, rel, content in cases:
+            with self.subTest(code=code):
+                self.setUp()
+                self.plant(rel, content, name, MARKET_2015, EVENT, DATA_SHA, code=code)
+
     def test_private_key_header(self):
         self.plant("conf/notes.txt", PEM_KEY + "\nAAAA\n", PEM_KEY, code="private_key")
 
@@ -468,8 +481,10 @@ class ContentRuleTests(_RepoCase):
         self.add("pkg/p.py")
         rc, out = self.scan("--staged")
         self.assertEqual(rc, 1)
-        self.assertIn("FAIL market_id pkg/p.py:7 ", out)
+        # Index entries: README.md, pkg/module.py, pkg/p.py; the entry number identifies the withheld path.
+        self.assertIn("FAIL market_id <name withheld>.py:7 (entry 3)", out)
         self.assertNotIn(MARKET_2015, out)
+        self.assertNotIn("pkg/p.py", out)
 
 
 class ModeTests(_RepoCase):
