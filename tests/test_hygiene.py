@@ -253,6 +253,16 @@ class FileRuleTests(_RepoCase):
     def test_csv_export(self):
         self.plant("out/practice.csv", "a,b\n1,2\n", code="data_file", force=True)
 
+    def test_long_s_suffix_variants(self):
+        # Forbidden names compare with str.casefold(): APFS here matches U+017F (long s) to "s", so
+        # out/practice.c\u017fv opens as out/practice.csv.
+        for rel, code in (("out/practice.c\u017fv", "data_file"), ("data/commands.j\u017fonl", "jsonl_file"),
+                          ("state/x.\u017fqlite3", "sqlite_file"), ("state/x.db-\u017fhm", "sqlite_file"),
+                          ("conf/id_r\u017fa", "key_file")):
+            with self.subTest(rel=rel):
+                self.setUp()
+                self.plant(rel, "a,b\n1,2\n", code=code, force=True)
+
     def test_oversize(self):
         self.plant("docs/notes.md", "synthetic line\n" * 40000, code="oversize")
 

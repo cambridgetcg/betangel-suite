@@ -32,10 +32,11 @@ Safety. The scanner refuses (exit 2) to run with a root inside betangel-data
 or a *.noindex directory. It never follows a symbolic link, never reads a
 path with a data-root component, and reads working-tree files with O_NOFOLLOW.
 Protected names match in any case: data-root components, forbidden
-directories, betangel-research copies, and betangel-data in a link target
-or text are compared with str.casefold(), because the lab's APFS volume
-folds case and matches U+017F (long s) to "s". The docs/synthetic/ and
-size allowlists stay exact, so a case variant fails closed.
+directories, forbidden file names and suffixes, betangel-research copies,
+and betangel-data in a link target or text are compared with
+str.casefold(), because the lab's APFS volume folds case and matches
+U+017F (long s) to "s". The docs/synthetic/ and size allowlists stay
+exact, and the media allowlist is not casefolded, so a variant fails closed.
 
 Allowlists live in this file only and change through a reviewed PR (Astra
 reviews the scanner, DESIGN.md 3.9). There is no inline suppression comment.
@@ -153,7 +154,7 @@ def _path_codes(rel: str) -> list:
     codes = []
     parts = rel.rstrip("/").split("/")
     dirs, name = parts[:-1], parts[-1]
-    low = name.lower()
+    low = name.casefold()  # APFS folds U+017F too: x.c\u017fv opens as x.csv
     ext = os.path.splitext(low)[1]
     synthetic = rel.startswith(SYNTHETIC_DIR)
     if any(_is_data_component(p) for p in parts):
