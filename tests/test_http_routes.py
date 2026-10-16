@@ -417,15 +417,15 @@ class NonceAndRateTests(unittest.TestCase):
         def replay():
             new_again, waiting = cache.claim("nonce-001")
             claimed.set()
-            waiting[0].wait(5)
-            seen.append((new_again, waiting[1]))
+            seen.append((new_again, waiting[0].wait(5), waiting[1]))   # woken by finish(), not timed out
 
         thread = threading.Thread(target=replay)
         thread.start()
         self.assertTrue(claimed.wait(5))
+        self.assertFalse(entry[0].is_set())                   # nothing has woken the replay yet
         cache.finish("nonce-001", entry, {"ok": True})
         thread.join(5)
-        self.assertEqual(seen, [(False, {"ok": True})])
+        self.assertEqual(seen, [(False, True, {"ok": True})])
         new, finished = cache.claim("nonce-001")              # later replays get the small finished entry
         self.assertFalse(new)
         self.assertIsNot(finished, entry)
