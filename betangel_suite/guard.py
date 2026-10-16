@@ -58,7 +58,10 @@ What the hook refuses, in every mode and phase:
        directory, or missing, at exactly realpath(~/betangel-data)/suite.noindex. And the hook refuses a
        symlink, hard link or rename that puts a name where a root or TMPDIR really is, or moves one away
        (root_replace_refused): os.symlink(<a data root>, suite.noindex) would otherwise pass as a write in
-       the roots and steer the next process. Links elsewhere in the roots stay allowed.
+       the roots and steer the next process. Links elsewhere in the roots stay allowed. The same goes for
+       run/realdata.lock, which may not be removed either (run_lock_protected): the suite makes it once and
+       never unlinks it, since a holder of the old file and Nuance's wrapper locking a new one would not
+       exclude each other (runmarker.py).
        chmod, chown, utime and truncate on a descriptor (fchmod and the like) are judged by the file's path
        from F_GETPATH, and refused when it has none: a read-only open is never checked, so a descriptor
        does not show that its file lies in the roots. open() of a descriptor is not judged again.
@@ -165,11 +168,11 @@ _REFUSED_IMPORTS = ("multiprocessing", "concurrent.futures.process", "ctypes", "
 _LIBRARY_LOADS = frozenset({"ctypes.dlopen", "ctypes.dlsym", "ctypes.dlsym/handle", "ctypes.call_function",
                             "sqlite3.enable_load_extension", "sqlite3.load_extension"})
 # event -> ((index of a path argument, index of its dir_fd argument or None, follows a final symlink,
-#            puts a name in place or moves one away: never a root's or TMPDIR's), ...)
+#            puts a name in place, or moves or removes one: never a root's, TMPDIR's or the realdata lock's), ...)
 _MUTATIONS = {
     "os.mkdir": ((0, 2, False, False),),
     "os.rmdir": ((0, 1, False, False),),
-    "os.remove": ((0, 1, False, False),),
+    "os.remove": ((0, 1, False, True),),
     "os.rename": ((0, 2, False, True), (1, 3, False, True)),
     "os.link": ((0, 2, True, False), (1, 3, False, True)),
     "os.symlink": ((1, 2, False, True),),
@@ -218,15 +221,17 @@ class _State:
         self.roots = tuple(found)
         self.real_roots = tuple(os.path.realpath(root) for root in found)
         self.tmp_root = tmp_root
-        # Where each root and TMPDIR really are (casefolded: the lab's APFS volume folds case). No name may be
-        # put there, and none moved away, so the placement arm() checked holds for the life of the process.
-        self.slots = frozenset(real.casefold() for real in self.real_roots + (
-            (os.path.realpath(tmp_root),) if tmp_root else ()))
+        # Where each root and TMPDIR really are (casefolded: the lab's APFS volume folds case), and the refusal
+        # code for each. No name may be put there, and none moved away or removed, so the placement arm() checked
+        # holds for the life of the process. The realdata lock is added below.
+        self.slots = dict.fromkeys((real.casefold() for real in self.real_roots + (
+            (os.path.realpath(tmp_root),) if tmp_root else ())), "root_replace_refused")
         self.agreed = roots.STATE_ROOT_AGREED
         self.data_home = roots.data_home(home).casefold()
         self.run_dir = roots.run_dir(home)
         run_parent, run_name = os.path.split(self.run_dir)
         self.real_run_dir = os.path.join(os.path.realpath(run_parent), run_name)     # where a real run/ resolves
+        self.slots[os.path.join(self.real_run_dir, roots.REALDATA_LOCK_NAME).casefold()] = "run_lock_protected"
         self.research = roots.research_clone(home)
         self.deps_root = roots.deps_root(home)
         self.interpreters = frozenset(TEST_INTERPRETERS + (sys.executable,))
@@ -815,8 +820,9 @@ def _check_write(state, path, dir_fd, follow, slot=False):
             if roots.within(resolved, real):
                 if slot and resolved.casefold() in state.slots:
                     # A link, or a name renamed into place, where a root or TMPDIR is (os.symlink(historic-pro,
-                    # suite.noindex), say), or a root or TMPDIR moved away: the next process would trust it.
-                    raise GuardRefusal("root_replace_refused")
+                    # suite.noindex), say), or a root or TMPDIR moved away: the next process would trust it. Or the
+                    # realdata lock removed, moved or replaced.
+                    raise GuardRefusal(state.slots[resolved.casefold()])
                 return
             break
     raise GuardRefusal("write_outside_roots")

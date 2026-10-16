@@ -1583,6 +1583,41 @@ results["tmp_is_dir"] = os.path.isdir(tmp) and not os.path.islink(tmp)
         self.assertEqual((results["suite_is_link"], results["tmp_is_dir"]), (False, True))
         self.assertEqual(os.listdir(historic), [])
 
+    def test_the_realdata_lock_is_never_removed_moved_or_replaced(self):
+        # runmarker.py: the suite makes run/realdata.lock once and never unlinks it, since a holder of the old file
+        # and Nuance's wrapper locking a new one would not exclude each other. Every mode refuses, however the name
+        # is spelt; other files in run/ stay removable.
+        refused = ("remove", "unlink", "unlink_dir_fd", "unlink_other_case", "unlink_dot_dot", "rename_away",
+                   "rename_onto", "replace_onto", "hard_link_onto", "symlink_onto", "rmtree_run")
+        for mode in ("engine", "test", "vendor"):
+            home = make_home(self)
+            os.makedirs(roots.run_dir(home), 0o700)
+            open(os.path.join(roots.run_dir(home), "realdata.lock"), "w").close()
+            results = checks(self, home, mode=mode, body="""
+import shutil
+run = roots.run_dir()
+lock, other, spare = (os.path.join(run, name) for name in ("realdata.lock", "other", "spare"))
+for path in (other, spare):
+    open(path, "w").close()
+fd = os.open(run, os.O_RDONLY)
+attempt("remove", lambda: os.remove(lock))
+attempt("unlink", lambda: os.unlink(lock))
+attempt("unlink_dir_fd", lambda: os.unlink("realdata.lock", dir_fd=fd))
+attempt("unlink_other_case", lambda: os.unlink(os.path.join(run, "REALDATA.LOCK")))
+attempt("unlink_dot_dot", lambda: os.unlink(os.path.join(run, "..", "run", "realdata.lock")))
+attempt("rename_away", lambda: os.rename(lock, other + ".moved"))
+attempt("rename_onto", lambda: os.rename(other, lock))
+attempt("replace_onto", lambda: os.replace(other, lock))
+attempt("hard_link_onto", lambda: os.link(other, lock))
+attempt("symlink_onto", lambda: os.symlink(other, lock))
+attempt("remove_spare", lambda: os.remove(spare))
+attempt("rmtree_run", lambda: shutil.rmtree(run))
+results["lock_is_file"] = os.path.isfile(lock) and not os.path.islink(lock)
+""")
+            for name in refused:
+                self.assertEqual(results[name], "run_lock_protected", (mode, name))
+            self.assertEqual((results["remove_spare"], results["lock_is_file"]), ("ok", True), mode)
+
     def test_bin_suite_refuses_before_creating_anything(self):
         # The evidence's own commands: bin/suite test made lab-state/betangel-suite/tmp; an engine command would
         # have used historic-pro/tmp as its TMPDIR.
