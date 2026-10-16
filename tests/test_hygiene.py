@@ -1137,6 +1137,71 @@ class HistoryTests(_RepoCase):
                 rc, out = self.scan(*args)
                 self.assertEqual(rc, 2, out)
 
+    # git replace and grafts show one object, or one list of parents, in another's place, while a commit records and
+    # a push sends the original (round-4 review). The scan must read what git stores. The replace refs, the stand-in
+    # objects and the graft files are written into the temporary .git by hand.
+
+    def loose(self, kind: str, body: bytes) -> str:
+        """Write a loose object; return its id."""
+        raw = kind.encode() + b" " + str(len(body)).encode() + b"\0" + body
+        sha = hashlib.sha1(raw).hexdigest()
+        self.write(os.path.join(".git", "objects", sha[:2], sha[2:]), zlib.compress(raw))
+        return sha
+
+    def rev(self, name: str) -> str:
+        return self.git("rev-parse", name).stdout.decode().strip()
+
+    def assert_found(self, *scans) -> None:
+        for args, stdin in scans:
+            with self.subTest(args=args):
+                rc, out = self.scan(*args, stdin=stdin)
+                self.assertEqual(rc, 1, out)
+                self.assertIn("market_id", self.codes(out))
+                self.assert_withheld(out)
+                self.assertNotIn(MARKET_2015, out)
+
+    def test_a_blob_replaced_by_a_clean_one_is_scanned_as_stored(self):
+        base = self.commit("base")
+        self.write("notes.txt", f"m = '{MARKET_2015}'\n")
+        self.add("notes.txt")
+        dirty = self.rev(":notes.txt")
+        clean = self.loose("blob", b"clean synthetic notes\n")
+        self.write_ref(f"refs/replace/{dirty}", clean)
+        self.assert_found((("--staged",), b""))
+        tip = self.commit("notes")
+        self.assertEqual(self.rev(f"{tip}:notes.txt"), dirty)          # the commit records the dirty blob
+        self.assert_found((("--range", f"{base}..{tip}"), b""),
+                          (("--push", "origin"), f"refs/heads/main {tip} refs/heads/main {base}\n".encode()))
+
+    def test_a_commit_replaced_by_a_clean_twin_is_scanned_as_stored(self):
+        base = self.commit("base")
+        self.write("notes.txt", f"m = '{MARKET_2015}'\n")
+        self.add("notes.txt")
+        dirty = self.commit("notes")
+        stamp = "Synthetic Tester <tester@example.invalid> 1700000000 +0000"
+        tree = self.rev(base + "^{tree}")                                # the twin adds nothing to base
+        twin = self.loose("commit", f"tree {tree}\nparent {base}\nauthor {stamp}\ncommitter {stamp}\n\nnotes\n".encode())
+        self.write_ref(f"refs/replace/{dirty}", twin)
+        self.assert_found((("--range", f"{base}..{dirty}"), b""),
+                          (("--push", "origin"), f"refs/heads/main {dirty} refs/heads/main {ZERO}\n".encode()),
+                          (("--push", "origin"), f"refs/heads/main {dirty} refs/heads/main {base}\n".encode()))
+
+    def test_a_graft_hides_no_commit(self):
+        base, added, tip = self.history_only_file()                  # added holds the id; tip deletes it again
+        self.write(".git/info/grafts", f"{tip} {base}\n")             # git would now skip added
+        outside = os.path.join(self.tmp, "grafts")
+        with open(outside, "w") as handle:
+            handle.write(f"{tip} {base}\n")
+        scans = ((("--range", f"{base}..{tip}"), b""),
+                 (("--push", "origin"), f"refs/heads/main {tip} refs/heads/main {base}\n".encode()))
+        self.assert_found(*scans)
+        os.unlink(os.path.join(self.repo, ".git", "info", "grafts"))
+        for args, stdin in scans:                                       # and a graft file named by the environment
+            with self.subTest(args=args, graft_file="environment"):
+                rc, out = self.scan(*args, stdin=stdin, env={**self.env, "GIT_GRAFT_FILE": outside})
+                self.assertEqual(rc, 1, out)
+                self.assertIn("market_id", self.codes(out))
+
     def test_message_files(self):
         member = bz2.compress(_stream_text().encode())
         cases = {"market_id": f"synthetic subject\n\nsee {MARKET_2015}\n".encode(),

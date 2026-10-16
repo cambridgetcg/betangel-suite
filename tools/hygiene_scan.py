@@ -73,6 +73,9 @@ exempt from the runner rules.
 Safety. The scanner refuses (exit 2) to run with a root inside betangel-data
 or a *.noindex directory. It never follows a symbolic link, never reads a
 path with a data-root component, and reads working-tree files with O_NOFOLLOW.
+Every git command it runs has replace refs and grafts turned off
+(GIT_NO_REPLACE_OBJECTS=1, GIT_GRAFT_FILE=/dev/null), so it reads the objects
+and parents a commit records and a push sends, never a stand-in.
 Protected names match in any case: data-root components, forbidden
 directories, forbidden file names and suffixes, betangel-research copies,
 and betangel-data in a link target or text are compared with
@@ -712,12 +715,21 @@ def _size_limit(rel: str) -> int:
 # ------------------------------------------------------------------- git I/O
 
 GIT = shutil.which("git") or "/usr/bin/git"
+# A replace ref (`git replace`, refs/replace/*) or a graft (.git/info/grafts, or GIT_GRAFT_FILE) makes git show one
+# object, or one list of parents, in another's place. A commit still records the original blob and a push sends the
+# original objects, so a scan that followed them would pass a dirty blob or commit it never saw (round-4 review).
+# Every git child below gets this process's environment (the hook's, with GIT_DIR or GIT_INDEX_FILE) plus these.
+_NO_STAND_INS = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
+
+
+def _git_env() -> dict:
+    return {**os.environ, **_NO_STAND_INS}
 
 
 def _git(root: str, *args: str) -> bytes:
     proc = subprocess.run(
         [GIT, "-C", root, "-c", "core.quotepath=off", *args],
-        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        stdin=subprocess.DEVNULL, capture_output=True, check=False, env=_git_env())
     if proc.returncode != 0:
         raise Refusal("git_failed")
     return proc.stdout
@@ -726,7 +738,7 @@ def _git(root: str, *args: str) -> bytes:
 def _is_git_worktree(root: str) -> bool:
     proc = subprocess.run(
         [GIT, "-C", root, "rev-parse", "--is-inside-work-tree"],
-        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        stdin=subprocess.DEVNULL, capture_output=True, check=False, env=_git_env())
     return proc.returncode == 0 and proc.stdout.strip() == b"true"
 
 
@@ -750,7 +762,7 @@ def _filtered(rels) -> set:
     for cached in ((), ("--cached",)):
         proc = subprocess.run(
             [GIT, "-C", ROOT, "check-attr", *cached, "-z", "--stdin", "filter"],
-            input=stdin, capture_output=True, check=False)
+            input=stdin, capture_output=True, check=False, env=_git_env())
         if proc.returncode != 0:
             raise Refusal("git_check_attr")
         fields = proc.stdout.split(b"\0")  # path, attribute, value; one record per path, in order
@@ -784,7 +796,7 @@ class _Objects:
         if self.proc is None:
             self.proc = subprocess.Popen(
                 [GIT, "-C", ROOT, "cat-file", "--batch"],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=_git_env())
         self.proc.stdin.write(sha + b"\n")
         self.proc.stdin.flush()
         header = self.proc.stdout.readline().split()
@@ -897,7 +909,7 @@ def _read_message_file(path: str) -> bytes:
 def _is_commit(sha: str) -> bool:
     proc = subprocess.run(
         [GIT, "-C", ROOT, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{sha}^{{commit}}"],
-        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        stdin=subprocess.DEVNULL, capture_output=True, check=False, env=_git_env())
     return proc.returncode == 0
 
 
@@ -1155,7 +1167,7 @@ def _default_root() -> str:
     _check_lexical(os.getcwd())
     proc = subprocess.run(
         [GIT, "rev-parse", "--show-toplevel"],
-        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        stdin=subprocess.DEVNULL, capture_output=True, check=False, env=_git_env())
     if proc.returncode == 0 and proc.stdout.strip():
         return proc.stdout.strip().decode("utf-8", "surrogateescape")
     return os.getcwd()
