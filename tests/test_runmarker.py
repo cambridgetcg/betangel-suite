@@ -1,7 +1,8 @@
 """I-17 (start-time part): no engine while Nuance's run marker exists (DESIGN.md 6.8; adaptation E).
 
 A present marker, an unreadable marker or an unreadable marker directory refuses every command except
-stop, test and vendor, before anything is created. All markers live under a temporary HOME.
+stop and vendor, before anything is created. That includes test, on 3.13 and on the 3.11 floor (Nuance's
+answer to Q-N14). All markers live under a temporary HOME.
 """
 
 import json
@@ -136,16 +137,40 @@ class StartTimeTests(unittest.TestCase):
         open(path, "w").close()
         self.assertEqual(self.suite(home, "stop"), (0, ""))          # no engine running: prints not_running
 
-    def test_test_and_vendor_do_not_check_the_marker(self):
+    def test_test_refuses_while_the_marker_exists(self):
+        # Q-N14, Nuance: "no". Both interpreters refuse, before the arguments are read, any test is loaded or
+        # anything is created. Every run names no test or bad arguments, so a regression cannot start a
+        # nested full run.
         home = make_home(self, deps=True)
         path = marker(home)
         os.makedirs(os.path.dirname(path))
         open(path, "w").close()
+        runs = (("test", "-k", "zzz_no_such_test"), ("test", "--py311", "-v", "-k", "zzz_no_such_test"))
+        bad = (("test", "--no-such-flag"), ("test", "--py311", "--no-such-flag"))
+        before = tree_listing(home)
+        for args in runs + bad:
+            self.assertEqual(self.suite(home, *args), (2, "refused:run_marker_present\n"), args)
+        self.assertEqual(tree_listing(home), before)
+        os.remove(path)
+        os.chmod(os.path.dirname(path), 0)
+        self.addCleanup(os.chmod, os.path.dirname(path), 0o700)
+        for args in runs:
+            self.assertEqual(self.suite(home, *args), (2, "refused:run_marker_unreadable\n"), args)
+        os.chmod(os.path.dirname(path), 0o700)
+        for args in runs:                       # with the marker gone, the same runs start and find no test
+            returncode, stderr = self.suite(home, *args)
+            self.assertEqual(returncode, 0, stderr)
+            self.assertIn("Ran 0 tests", stderr)
+        for args in bad:
+            self.assertEqual(self.suite(home, *args), (2, "refused:bad_arguments\n"), args)
+
+    def test_vendor_does_not_check_the_marker(self):
+        # vendor starts no engine and writes nothing under ~/betangel-data (adaptation E).
+        home = make_home(self)
+        path = marker(home)
+        os.makedirs(os.path.dirname(path))
+        open(path, "w").close()
         self.assertEqual(self.suite(home, "vendor"), (2, "refused:bad_arguments\n"))
-        returncode, stderr = self.suite(home, "test", "-k", "zzz_no_such_test")
-        self.assertEqual(returncode, 0, stderr)
-        self.assertIn("Ran 0 tests", stderr)
-        self.assertNotIn("run_marker", stderr)
 
 
 if __name__ == "__main__":

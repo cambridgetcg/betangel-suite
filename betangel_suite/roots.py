@@ -4,16 +4,18 @@ Roots, under the home directory taken from $HOME (bin/suite passes the caller's 
 
     ~/.local/state/betangel-suite/            0700  config, prefs, run/, tmp/, install-salt (Phase 0)
     ~/.local/share/betangel-suite/deps/       read-only pinned upstream code (written only by the vendor tool)
-    ~/betangel-data/suite.noindex/            0700  the suite root, ONLY once STATE_ROOT_AGREED is True
+    ~/betangel-data/suite.noindex/            0700  the suite root, ONLY while STATE_ROOT_AGREED is True
 
-STATE_ROOT_AGREED stays False until Nuance agrees the suite root (Q-N3). While it is False nothing may be
-created or written anywhere under ~/betangel-data: the writer helper refuses with state_root_not_agreed
-on the path text alone, before touching the file system, and the audit hook (guard.py) refuses the same
-writes from any other code. Every command's TMPDIR is then the state root's tmp/. Flipping the flag turns
-on the design's behaviour (suite root writable, its tmp/ used by every command except test, uisnap and
-vendor). The flip is a two-line reviewed change: this flag and bin/suite's default TMP branch, which a
-shell script cannot read from here. The launcher refuses any mismatch between them (tmpdir_mismatch), so
-a half-done flip fails closed.
+STATE_ROOT_AGREED is True: Yu agreed the suite root (R-4), and Nuance agreed it on three conditions
+(Q-N3; DESIGN.md 3.7). So the suite root is writable (by the engine only: guard.py gives it to no other
+mode), and its tmp/ is the TMPDIR of every command except test, uisnap and vendor. The flag and
+bin/suite's default TMP branch, which a shell script cannot read from here, change together. The launcher
+refuses any mismatch between them (tmpdir_mismatch), so a half-done change fails closed.
+
+With the flag False (tests still cover it, under temporary HOMEs) nothing may be created or written
+anywhere under ~/betangel-data: the writer helper refuses with state_root_not_agreed on the path text
+alone, before touching the file system, the audit hook (guard.py) refuses the same writes from any other
+code, and every command's TMPDIR is the state root's tmp/.
 
 The writer helper creates directories 0700 and files 0600 with O_CREAT|O_EXCL|O_NOFOLLOW, never follows a
 symlink below a root, refuses any path outside the roots, and passes each new path through upstream's
@@ -27,7 +29,7 @@ import stat
 
 from .errors import SuiteError
 
-STATE_ROOT_AGREED = False           # Q-N3 / R-4: flip with bin/suite's TMP line once Nuance agrees
+STATE_ROOT_AGREED = True            # R-4 (Yu) and Q-N3 (Nuance); changes only with bin/suite's TMP line
 
 DATA_HOME_PARTS = ("betangel-data",)
 SUITE_ROOT_PARTS = ("betangel-data", "suite.noindex")

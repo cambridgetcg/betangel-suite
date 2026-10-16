@@ -189,18 +189,23 @@ def _in_research(entry, home_dir=None):
     /.vol/<dev>/<ino>): the kernel's own path for what entry names has neither, nor any link, so its
     directories are the real ancestors, and none may be the clone (compared by st_dev and st_ino; the clone
     itself is only stat()ed, never opened).
+
+    realpath and F_GETPATH get entry as the import system opens it: unchanged when absolute, else joined to
+    the cwd without normalising. Normalising first folds "alias/.." away before alias is followed, so with
+    alias -> clone/sub the entry alias/../sub, which opens clone/sub, would be judged as a sibling of alias.
+    Only the text check also sees the normalised spelling.
     """
     research = roots.research_clone(home_dir)
     forms = (research.casefold(), os.path.realpath(research).casefold())
-    absolute = os.path.abspath(entry)
+    raw = entry if os.path.isabs(entry) else os.path.join(os.getcwd(), entry)
     if any(roots.within(candidate.casefold(), form)
-           for candidate in (os.path.normpath(absolute), os.path.realpath(absolute)) for form in forms):
+           for candidate in (os.path.normpath(raw), os.path.realpath(raw)) for form in forms):
         return True
     try:
         clone = os.stat(research)
     except OSError:
         return False                                   # no clone, so nothing lies in it
-    path = _kernel_path(absolute)
+    path = _kernel_path(raw)
     while path is not None:
         try:
             if os.path.samestat(os.stat(path), clone):

@@ -1,16 +1,17 @@
 """The run marker: no suite engine while Nuance runs a real backtest or the PRO ingest (DESIGN.md 6.8, I-17).
 
-The marker is a file Nuance's run wrapper creates, outside ~/betangel-data. The proposed path is
-~/.local/state/lab-runs/ACTIVE (pending Nuance's answer to Q-N3). The config key run_marker accepts only
-that path, so no config edit can point the check at a file that never exists.
+The marker is a file Nuance's run wrapper creates, outside ~/betangel-data, at ~/.local/state/lab-runs/ACTIVE
+(agreed with Nuance, Q-N3). The config key run_marker accepts only that path, so no config edit can point
+the check at a file that never exists. Lab-Claude never creates or removes the marker.
 
 Fail closed: any directory entry at the marker path counts as present (a dangling symlink included), and
 so does a marker that cannot be checked: an unreadable or unsearchable marker directory, a marker
 "directory" that is not a directory, or any error other than "no such file". Only a definite absence of
 the marker (or of its directory) lets a command start.
 
-bin/_launch.py calls require_absent() before every command except stop, test and vendor, before anything is
-created. Later phases call active() on every actor tick and before every journal or ledger write.
+bin/_launch.py calls require_absent() before every command except stop and vendor, before anything is
+created; test is checked too, on both interpreters (Nuance's answer to Q-N14). Later phases call active()
+on every actor tick and before every journal or ledger write.
 Standard library only.
 """
 

@@ -38,7 +38,7 @@ import re
 import unittest
 
 from betangel_suite import engine, roots, rx, synthetic
-from tests import LAUNCHER, ROOT, child_env, run_relayed
+from tests import LAUNCHER, ROOT, child_env, run_relayed, tree_listing
 from tests import test_http_support as support
 from tests.test_ui_assets import without_comments
 
@@ -660,7 +660,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self.child.stderr(), "http:404:not_found\n" * 6 + "http:401:bad_code\n")
         self.assertEqual(support.secret_shaped(self.child.stdout() + self.child.stderr()), [])
         self.assertFalse(os.path.lexists(support.control_path(self.home)))
-        self.assertFalse(os.path.lexists(os.path.join(roots.data_home(self.home))))
+        # Under ~/betangel-data the engine made only its TMPDIR, the suite root's tmp/ (0700), and left it empty.
+        self.assertEqual(tree_listing(roots.data_home(self.home)), [("suite.noindex", 0o700),
+                                                                    (os.path.join("suite.noindex", "tmp"), 0o700)])
 
     # --- the UI's frame code on these frames ------------------------------------------------------------------
 

@@ -1,7 +1,8 @@
 #!/bin/sh
 # betangel-suite pre-commit hook (docs/DESIGN.md I-9, sections 5.6 and 9.4).
 # Blocks a commit whose staged tree fails tools/hygiene_scan.py. The scanner
-# prints rule codes and redacted paths only, never the matched text.
+# prints rule codes, line numbers and entry numbers only, never a path or
+# the matched text.
 #
 # Install once per clone, from the repository root:
 #   ln -s ../../tools/pre-commit .git/hooks/pre-commit

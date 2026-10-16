@@ -136,11 +136,11 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
 | R-1 | **Yes.** The suite drives `paper.PaperExchange` directly with its own paper journal, outside `gateway.py`, for paper orders Yu clicks on historical replay. |
 | R-2 | **Yes.** Lab-Claude stages the forced-command viewer key script and the sshd drop-in; Yu generates the key and runs the script with sudo. |
 | R-3 | `user_package_unverified` until Yu checks the package in My Account. |
-| R-4 | **Agreed by Yu.** `~/betangel-data/suite.noindex`. Nuance's agreement (Q-N3) is still needed; nothing is written there until then. |
+| R-4 | **Agreed by Yu.** `~/betangel-data/suite.noindex`. Nuance agreed too, on three conditions (Q-N3, 2026-10-16; section 3.7), so `roots.STATE_ROOT_AGREED` is now True. |
 | R-5 | **Yes.** A suite-side, display-only SP parser; no `schemas.py` change. Nuance to confirm (Q-N9). |
 | R-6 | **Confirmed.** No rule-generated paper orders in the MVP. Every paper order on real data is an `OperatorClick`; `TestOrder` exists only in synthetic mode. |
 | R-7 | **Practise live v1** by default (`v1-live-mirror` caps, live-parity mode). The `practice` profile is still built and selectable. |
-| Q-Y8 | Lab-Claude merges a PR after the reviewer routed in section 3.9 has accepted it; UI-only PRs merge on Yu's acceptance alone. Yu can veto or revert any merge. Q-N12 (Nuance's agreement to the routing) is still open. |
+| Q-Y8 | Lab-Claude merges a PR after the reviewer routed in section 3.9 has accepted it; UI-only PRs merge on Yu's acceptance alone. Yu can veto or revert any merge. Nuance answered Q-N12 "agree once amended" (2026-10-16): section 3.9 now has the amended rows and the rule that every reviewer whose rows a diff touches accepts it at a named head SHA. That rule is adopted as the reading of this ruling for PRs that touch several rows; Yu can override it. Asked of Yu on 2026-10-16, not answered yet: must the tests also pass on 3.13 and 3.11 at that SHA? |
 
 **Bet Angel on Yu's Betfair account:** never used (Yu, 2026-10-15), so the design needs no handling for orders or limits shared with Bet Angel. If Bet Angel is ever installed against the account, that needs a fresh review first.
 
@@ -310,7 +310,8 @@ The pin is a **read-only, network-free local clone**:
    - the upstream offline suite at the new commit, from the deps clone: `PATH=/opt/homebrew/bin:$PATH BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 python3.13 -B -m unittest discover -s tests`, never during an announced Nuance run;
    - the suite's own tests.
    
-   Nuance reviews every bump that changes an allowlisted file.
+   Nuance reviews every bump that changes an allowlisted file. "Allowlisted file" means every `PINNED_FILES` entry, the month-roles JSON included (Nuance, Q-N2).
+6. **The pin stays at 76f71dc (Nuance, Q-N2).** Nuance found that up to 041461a only the P0 JSON changed, that its population is equal, and that no suite code reads it. A bump is made only when a closure module the suite needs, or the month roles, change.
 
 ### 3.6 Launcher and Python version policy
 
@@ -334,8 +335,8 @@ for a in "$@"; do
   [ "$a" != "--print-url" ] || [ -z "${SSH_CONNECTION:-}" ] || { echo "refused:print_url_over_ssh" >&2; exit 2; }
 done
 case "${1:-}" in
-  test|uisnap) TMP="$HOME/.local/state/betangel-suite/tmp" ;;
-  *)           TMP="$HOME/betangel-data/suite.noindex/tmp" ;;   # created 0700 by _launch.py after the run-marker check
+  test|uisnap|vendor) TMP="$HOME/.local/state/betangel-suite/tmp" ;;
+  *)                  TMP="$HOME/betangel-data/suite.noindex/tmp" ;;   # created 0700 after the run-marker check
 esac
 exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/bin \
   TMPDIR="$TMP" SQLITE_TMPDIR="$TMP" SUITE_VIA_SSH="$VIA_SSH" \
@@ -361,7 +362,7 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
   - Nothing installs or upgrades an interpreter. `session.json` records the interpreter version.
 - **Tests.** `bin/suite test` runs `python3.13 -I -S -B -m unittest discover -s tests -t .` from the repo root under the same environment, then `~/.local/bin/node --test ui/tests` (section 11 for the fast and heavy tiers).
 
-### 3.7 State roots (proposed; R-4 needs Yu's and Nuance's agreement)
+### 3.7 State roots (agreed: R-4 by Yu, Q-N3 by Nuance)
 
 | Root | Mode | Contents | Licensed? |
 |---|---|---|---|
@@ -379,6 +380,11 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
   - `~/betangel-data/lab-state`, `~/betangel-data/logs`, `incoming/`, and anything under a data root for writing;
   - `~/Library/Application Support/betangel-research/betfair` and `~/.config/betangel-research`;
   - the Keychain.
+- **Nuance's conditions (Q-N3).** Nuance agreed the suite root on three conditions (PR #4 review, 2026-10-16):
+  1. Nuance never uses `~/betangel-data` or `suite.noindex` itself as a data or lab-state root.
+  2. Before Phase 1a, the suite refuses a data root that equals, contains or lies inside `suite.noindex`, `lab-state` or `logs`, or that lies inside `incoming/`. It compares roots by file identity, not by path text. **Owed before Phase 1a** (section 5.2); Phase 0 reads no data root.
+  3. The marker half is agreed first. It now is (section 6.8).
+- **The flag.** `roots.STATE_ROOT_AGREED` is True, and `bin/suite`'s default `TMP` branch is the suite root's `tmp/` (section 3.6). The two change together; `_launch.py` refuses a mismatch (`tmpdir_mismatch`). Only the engine's guard mode has the suite root as a write root: the test runner and `vendor` never write under `~/betangel-data`, and tests use temporary HOMEs. The first engine command run with the real HOME creates `~/betangel-data/suite.noindex/` (0700) and its `tmp/`, after the run-marker check.
 - **Why `~/betangel-data/suite.noindex`.**
   - It sits beside the data roots, so Nuance's discovery never sees it. That discovery is `archive_shas(root)` over `<root>/manifests` (market_index.py:927).
   - The `.noindex` suffix keeps Spotlight from indexing the suite's text derivatives (CSV exports, `session.json`, `report.json`, `commands.jsonl`). Yu is also asked to add all of `~/betangel-data` to Spotlight Privacy (Q-Y15), which Nuance called sensible (mailbox 08:57Z, B3).
@@ -391,13 +397,13 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 | Key | Default | Notes |
 |---|---|---|
 | `data_roots` | `[]` until Nuance names the PRO root (Q-N4), then `["~/betangel-data/historic-pro"]` | Each must pass `archive.check_data_root`. With no root, the engine runs synthetic mode only. The BASIC root is used only by explicit counts-only commands (section 5.1). |
-| `state_root` | `~/betangel-data/suite.noindex` | R-4 |
+| `state_root` | `~/betangel-data/suite.noindex` | R-4 (Yu); Q-N3 (Nuance, on three conditions, section 3.7) |
 | `port` | 8765 | loopback only |
 | `frame_hz` | 10 | 5-20 |
 | `cap_profile` | `v1-live-mirror` | or `practice` (section 7.2; R-7) |
 | `commission_source` | `user_package_unverified` | R-3 |
 | `research_months_ruling` | `null` | A ruling id. While it is null, research months are hidden and not written to the catalogue (section 5.3). |
-| `run_marker` | `~/.local/state/lab-runs/ACTIVE` (proposed; agreed with Nuance) | section 6.8 |
+| `run_marker` | `~/.local/state/lab-runs/ACTIVE` (agreed with Nuance, Q-N3) | section 6.8 |
 | `watch_grace_s` | 600 | pause-unless-watched grace (section 8.6) |
 
 - **Paper config.** It is `deepcopy(config.DEFAULTS)` (config.py:27-72), with the active cap profile merged in, plus:
@@ -411,10 +417,14 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 
 ### 3.9 Development workflow and the suite's AGENTS.md
 
-- **Branches and PRs.** Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS, so work continues while reviews queue. Review routing is agreed up front (Q-N12, Q-Y8):
-  - Astra reviews `guard.py`, `rx.py`, `errors.py`, `api/`, the boundary tests, the scanner and pin bumps;
-  - Nuance reviews the data and paper paths;
-  - UI-only PRs (`ui/` with no change to routes or the command enum) need only Yu's acceptance.
+- **Branches and PRs.** Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS, so work continues while reviews queue. Review routing is agreed up front (Q-N12, Q-Y8); the table in AGENTS.md is the binding copy:
+  - Astra reviews `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `cli.py`, `roots.py`, `api/`, the launcher, uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`), the staged scripts (`tools/stage/`), the boundary tests, the scanner and pin bumps;
+  - Nuance reviews the data and paper paths (`data/`, `paper/`, `replay/`), the synthetic generator (`synthetic.py`, `tests/fixtures/`), the tick export (`tools/export_ticks.py`, `ui/ticks.json`), and every pin bump that changes an allowlisted file;
+  - Astra and Nuance review `engine.py` and the roots (`roots.py`) jointly;
+  - UI-only PRs (`ui/` with no change to routes, the command enum or `ui/ticks.json`) need only Yu's acceptance.
+- **Merging.** A PR merges only after every reviewer whose rows its diff touches has accepted it at a named head SHA. Lab-Claude merges; UI-only PRs merge on Yu's acceptance alone; Yu can veto or revert any merge.
+  - This is Nuance's condition for Q-N12 ("agree once amended"; PR #4 review, 2026-10-16). It is adopted as the reading of Yu's Q-Y8 ruling (section 2.2.1) for PRs that touch several rows. Yu can override it.
+  - Asked of Yu on 2026-10-16, and not answered yet: must the tests also pass on 3.13 and 3.11 at that head SHA?
 - **Collab.** Edit tasks use `root_path=/Users/user/betangel-suite`.
 - **Upstream changes.** Any betangel-research change goes to Nuance as a proposal (section 14).
 - **Yu's feedback channel.** Yu's acceptance and feedback reach lab-Claude only in two ways:
@@ -452,6 +462,15 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 
 The closure loads no gateway, cli, auth, credentials, transport, api, esa, recorder, killswitch, arming, presence, reconcile, **risk** or **capability**. tests/test_betfair_boundaries.py:22 marks the last two `INTERNAL_ONLY`.
 
+**Nuance accepted this closure (Q-N1, PR #4 review, 2026-10-16):** "Exactly 25 modules load, with no gateway, auth, credentials, transport, risk or capability module and no network module."
+
+**Owed before Phase 1b (Nuance, Q-N1).** `rx.py` gains wrappers, so that:
+- `StatePaths` is built only with explicit roots;
+- `OrderJournal` is built only with `mode="paper"` and an explicit clock;
+- `validate_place` always runs with `mode="paper"`.
+
+`SystemClock` is no longer on the allowlist (Nuance, Q-N1): no suite code uses it, and the journal always gets the suite's `SimClock`.
+
 The **upstream closure** loads no `socket`, `ssl`, `http` or `urllib`. The suite's own server does load `socket` and `http`, which is why the audit hook polices them (section 10). `subprocess` is loaded through `receipts` and `paths`, which is why the hook polices it too.
 
 | Module | Interface (as used; signatures exact) | Citation | Suite use |
@@ -469,7 +488,7 @@ The **upstream closure** loads no `socket`, `ssl`, `http` or `urllib`. The suite
 | pnl, evaluation | `order_pnl_pence(side, avg_price_h, size_settled_p, runner_result)`; `market_realized(orders, runner_results, *, commission_rate)`; `EXCLUDING_RESULTS`; `evaluation.settled_market_costs` | pnl.py:24, :38 (Rule-4 exclusion :53-54, dead heat :55-56, commission rounding :79-82), :15; evaluation.py:136 | What-If, settlement at 2%, the official exclusion, and the indicative Rule-4 figure (section 7.9). |
 | config | `DEFAULTS`; `validate_config(config, *, paths)` | config.py:27-72 (orders :56, caps :58-62, rules :63, paper :65-66), :254 | The paper config and cap profiles, validated by the repo's own validator (section 3.8). |
 | paths | `FORBID_NETWORK_ENV`; `network_forbidden()`; `overrides_allowed()`; `StatePaths(home=..., root_override=...)` | paths.py:22, :29, :36, :58-72 | Startup refusal without FORBID_NETWORK; the validation-only override. `.paper.lock` (:82) is never taken. |
-| receipts | `utc_from_ns(ns)` (int only); `parse_utc_ns(text)`; the `SystemClock` protocol; `canonical_sha256`; `file_sha256`; `atomic_write_json`; `append_jsonl`; `strict_json_loads` | receipts.py:29-34, :52, :78, :104, :113, :180, :208, :247 | The sim clock on the pt axis (always `ms * 1_000_000`, never a float), session hashes, atomic 0600 writes, and strict request bodies (duplicate keys and NaN refused). |
+| receipts | `utc_from_ns(ns)` (int only); `parse_utc_ns(text)`; `canonical_sha256`; `file_sha256`; `atomic_write_json`; `append_jsonl`; `strict_json_loads` | receipts.py:29-34, :52, :104, :113, :180, :208, :247 | The sim clock on the pt axis (always `ms * 1_000_000`, never a float), session hashes, atomic 0600 writes, and strict request bodies (duplicate keys and NaN refused). |
 | secret | `register(value)`; `assert_clean`; `refuse_forbidden` (called by the writers above) | secret.py:20-25, :114-133 | The session token and bootstrap codes are registered, so a journal or receipt write that contains one is refused (journal.py:296; receipts.py:185, :214). |
 | backtest.archive | `CHUNK_BYTES`; `LIMIT_CEILINGS`, `Limits.stricter(**changes)`, `DEFAULT_LIMITS`; `market_month`; `month_gate(month)`; `parse_member_path(name)`; `check_data_root(path)`; `HashingReader`; `safe_path`; `safe_target(root, sha, member_path)` | archive.py:95, :110-132, :168, :179, :200, :209, :245, :273, :383, :643, :662 | Read-only, symlink-safe, bounded, month-gated member loads. The suite uses stricter limits: DEFAULT allows 8 GiB decompressed per member (archive.py:120). `market_month` can return `None` (archive.py:200-206), and `month_gate(None)` raises `TypeError` (archive.py:211), so the suite refuses `None` first. |
 | backtest.market_index | `HEAD_FILE`, `MARKETS_FILE`; `loads_strict(data)`; `market_sort_key(id)`; `load_manifest(root, sha)`; `archive_shas(root)`; head `files[]` entries with `status` and `complete_before_pt` | market_index.py:142-143, :215, :220, :225, :927, :720-724 (refused), :740-741 (indexed or unreadable) | Catalogue build and the strict line parse. Readability comes from the head's `files[]`, never from `evaluator_only_outcome`. |
@@ -483,8 +502,9 @@ The **upstream closure** loads no `socket`, `ssl`, `http` or `urllib`. The suite
 | `paper.run_paper_replay(recording_paths, orders_path, params, out_dir, *, repo_root, snapshot_reader=None, key_type=None)`; `ORDER_FILE_KEYS` | paper.py:956, :61 | The parity oracle, on **small synthetic fixtures only** (capped at about 2,000 messages and 6 runners). It holds every snapshot in a list (paper.py:991-996); *measured (synthetic)* at about 1.98 GB RSS and 141 s for one 60k-message market. It is never run on real data. `repo_root` is always a temp `git clone --local` of the deps clone, never `~/betangel-research`, because `receipts.git_state` runs `git status --porcelain` there, which can rewrite `.git/index` (receipts.py:132-145; paper.py:956-957, :1053). A test asserts this. |
 | `book.snapshots_from_recording(path, *, key_type)` | book.py:526-582 | The oracle for the yield tracker (section 6.2), including 503 windows. |
 | `market_index._messages(stream, limits)` (private) | market_index.py:268-297 | Reader parity: one test imports it, so drift is caught on pin bumps. |
-| `risk.worst_case_market_loss(orders, outcome_ids, *, hedge_credit=False)`; `risk.exposure_by_market`; `STATUS_EXPOSURE_BASIS` | risk.py:136, :167, :52 | The oracle for the suite's own exposure code, on both bases. Note the default is `hedge_credit=False`. The engine never imports risk (INTERNAL_ONLY, tests/test_betfair_boundaries.py:22). Whether even test-only use is acceptable is a question for Nuance. |
 | `archive.ingest_archive(tar_path, data_root)`; `market_index.index_archive(root, sha)` | archive.py:765; market_index.py:870 | End-to-end data tests: a synthetic TAR is ingested and indexed into a temp root. Engine code never calls them (AST test). |
+
+**No `risk` oracle (Nuance, Q-N1).** `risk` is not a test oracle. It is not pinned: Nuance found that a tampered copy of `risk.py` passed `pin.verify`. The suite's exposure code is checked instead against an independent exposure oracle written in the tests, as upstream's own tests do (tests/test_betfair_support_orders.py:724-760). The engine never imports risk (INTERNAL_ONLY, tests/test_betfair_boundaries.py:22).
 
 ### 4.3 Later phases (Air, Nuance-owned), never imported on the lab
 
@@ -532,7 +552,7 @@ The suite mirrors, and does not import, the following:
 | `MarketBookCache` being deep-copyable, for checkpoints | — |
 | The `PaperExchange` state format | paper.py:58, :194-230 |
 
-`tests/test_upstream_contract.py` fails loudly on a pin bump if any of these drift:
+**The contract test.** Nuance agreed it, narrowed (Q-N1, PR #4 review): it does not exist yet, and Nuance found that seven injected breaks passed all tests. `tests/test_upstream_contract.py` lands on phase0/http. Every pin bump is gated on it, and it covers Phase 0's names first (`replay_market_time`, `parse_utc_ns`, `ticks.*`). In full, it fails loudly on a pin bump if any of these drift:
 
 - `PARAM_KEYS`, `ORDER_FILE_KEYS`, `STATE_KEYS` (paper.py:58-61);
 - `INTENT_PAYLOAD_KEYS` and `INTENT_SOURCES` (journal.py:95-97), and `KINDS` (journal.py:80);
@@ -565,6 +585,7 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
 ### 5.2 Data roots and discovery
 
 - The suite reads a configured list of indexed data roots. Each must pass `archive.check_data_root` (archive.py:273). It never reads `incoming/`.
+- **Owed before Phase 1a (Nuance's Q-N3 condition 2).** The suite refuses a data root that equals, contains or lies inside the suite root, `~/betangel-data/lab-state` or `~/betangel-data/logs`, or that lies inside `incoming/`. It compares roots by file identity, not by path text.
 - For every `manifests/<sha>.json` found by `market_index.archive_shas(root)` (market_index.py:927), it needs `index/<sha>/head-v1.json`, with these checks:
   - the head's `kind` is `betfair_historical_market_index_head`;
   - its `schema_version` is 1;
@@ -771,19 +792,29 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
 Nuance has answered: during a real run, "a suite elsewhere is harmless but slows the run; please avoid it" (mailbox 08:57Z, A5). So the rule is **no engine during runs**, not a reduced quiet mode.
 
 - **The marker.**
-  - A run-active marker is agreed with Nuance, outside `~/betangel-data` and not under the unagreed `~/betangel-data/lab-state`. The proposal is `~/.local/state/lab-runs/ACTIVE`, written by Nuance's run wrapper.
+  - The marker is `~/.local/state/lab-runs/ACTIVE`, agreed with Nuance (Q-N3, 2026-10-16). It lies outside `~/betangel-data`, and not under `~/betangel-data/lab-state`.
+  - Only Nuance's run wrapper creates and removes it. Lab-Claude never does.
   - It is checked first by `_launch.py`, before anything is created under `~/betangel-data`.
   - It covers both real backtest runs and the PRO ingest and index.
-- **At start.** The engine and every real-data command (`catalogue`, `selfcheck`, `diagnose`) refuse to start while the marker exists. An unreadable marker, or an unreadable marker directory, counts as present.
+- **At start.** The engine, every real-data command (`catalogue`, `selfcheck`, `diagnose`) and `bin/suite test` refuse to start while the marker exists. An unreadable marker, or an unreadable marker directory, counts as present.
+  - `bin/suite test` refuses in both tiers and on both interpreters (`test` and `test --py311`), with the same codes, `run_marker_present` and `run_marker_unreadable`. Tests were first exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker exists too; stop stays exempt" (mailbox, 2026-10-16 13:41Z; PR #4 review, item 14).
+  - Only `stop` and `vendor` skip the check. `stop` only reduces activity (section 3.9, rule 6). `vendor` starts no engine and writes nothing under `~/betangel-data`; it makes only the deps clone under `~/.local/share`, and only when run by hand (section 3.5).
+  - The engines that tests start run under temporary HOMEs, where no marker ever exists, so their own checks never see a real run. So the test helpers check the runner's real marker before each engine they start, and refuse with the same codes. A run announced mid-way then starts no further engine; the tests that would have started one fail (Nuance's PR #4 review, item 14: "check it before each engine launch").
 - **Mid-session.** The actor checks the marker every tick and before every journal append or ledger write. If the marker appears:
   - the engine pauses the clock and freezes `PaperExchange`: no advance, no activation, no journal or ledger writes;
   - the UI shows why;
   - the engine exits after a grace period of 30 s without writing.
   
+  So the engine may hold `engine.lock` for about 35 s after the marker appears. Nuance agreed this (Q-N3); Nuance measured the lock free only after 30.23-30.60 s (PR #4 review, item 15).
+  
   At the next start, after the run, the session is marked `interrupted_run`. It is not counted as abandoned by Yu.
-- **Nuance's side.** Nuance's wrapper writes the marker, then waits until `~/.local/state/betangel-suite/run/engine.lock` is free (at most about 30 s) before touching sources or data. This is a request to Nuance (Q-N3).
+- **Nuance's side (agreed, Q-N3).** Nuance's wrapper creates the marker with O_EXCL, then waits up to 60 s for `~/.local/state/betangel-suite/run/engine.lock` to be free before touching sources or data. If the lock is still held after 60 s, it refuses its own run. Nuance's PR #4 review adds:
+  - the marker holds only the job kind, the UTC start and the pid, and the wrapper holds a flock on it for the job's life;
+  - a missing lock file counts as free, and any other error as busy;
+  - the wrappers run outside betangel_research;
+  - the wrapper removes only its own marker, and only after the job exits.
 - **No automatic work.** The catalogue is rebuilt only on an explicit command, never on a head change, so nothing fires during Nuance's ingest.
-- **Until a marker is agreed.** Lab-Claude runs no real-data commands while a run is announced, and Yu is told before starting. **The agreed marker is a Phase 0 exit criterion, and Phase 1b journal writes on real data do not ship without it.**
+- **The marker is agreed (Q-N3).** It was a Phase 0 exit criterion, and Phase 1b journal writes on real data do not ship without it. Lab-Claude still runs no real-data commands while a run is announced, and Yu is told before starting.
 
 ---
 
@@ -975,7 +1006,7 @@ Parity runs only on small synthetic fixtures; `run_paper_replay` materialises ev
   - **paper** (worst case with hedge credit);
   - **live** (worst case without hedge credit, as live R8-R10 count it; STATUS_EXPOSURE_BASIS, risk.py:52).
   
-  Unmatched, pending and unknown portions count at their full adverse loss in both bases. Tests check it against `risk.worst_case_market_loss(..., hedge_credit=True/False)` on randomised order sets. Showing both bases makes visible that greening at live defaults would use up the £20 daily cap.
+  Unmatched, pending and unknown portions count at their full adverse loss in both bases. Tests check it against an independent exposure oracle written in the tests, on both bases and on randomised order sets. `risk` is not used as the oracle, because it is not pinned (Nuance, Q-N1; section 4.2). Showing both bases makes visible that greening at live defaults would use up the £20 daily cap.
 
 ### 7.8 Green-up / close trade (new suite code; an operator action)
 
@@ -1330,22 +1361,22 @@ These headers apply to error responses too (section 9.1).
 | I-3 | No outbound network, no name lookups | The PEP 578 audit hook (irrevocable), installed before any upstream import, refuses `socket.connect`, `connect_ex`, `sendto`, `sendmsg`, `getaddrinfo`, `gethostbyname`, `gethostbyaddr` and `getnameinfo`. The one exception is a connect to the control socket path in the 0700 run dir, permitted before `seal()` with `permit_unix_connect` (for `stop` and `open` to reach a running engine, section 9.1), matched by its exact text, with no NUL in it (the kernel ends the socket name at the first NUL), while the run dir still resolves where it did at `arm()` and the socket path is not itself a link (connect follows one). TCP connects stay refused. | `socket.create_connection(("192.0.2.1", 443))` (TEST-NET-1) raises before any packet. `getaddrinfo("example.com", 443)` raises. A second hook cannot remove the first. A Unix connect to an unpermitted path, to a permitted path that is a link or has a NUL in it, or after the run dir is replaced by a link raises, and so does a TCP connect to `127.0.0.1`. |
 | I-4 | Loopback only | The hook allows `socket.bind` only to `("127.0.0.1", port)` and to the control socket path in the 0700 run dir, matched by its exact text, with no NUL in it (the kernel ends the socket name at the first NUL), while the run dir still resolves where it did at `arm()` and the socket path is not itself a link (bind follows a dangling one and creates the socket at its target). `getsockname` is asserted. | Binding `0.0.0.0`, the wrong port or another Unix path raises, and so does a permitted Unix path that is a dangling link. A Unix path with a NUL in it is never permitted. The server's address is `127.0.0.1`. A control-socket peer of another uid is refused. |
 | I-5 | No subprocess after startup | The hook's **startup phase** allows exactly two argvs:<br>- `git -C <abs dir under the suite roots> rev-parse --is-inside-work-tree` (paths.py:149, used by `validate_config` and `StatePaths`);<br>- one `/usr/bin/open http://127.0.0.1:<port>/#c=...`.<br>Then `seal()`. After sealing it refuses `subprocess.Popen`, `os.system`, `os.exec*`, `os.posix_spawn`, `os.spawn*`, `os.fork` and `ctypes.dlopen`. | Startup succeeds. After sealing, `subprocess.run(["/usr/bin/security", ...])` and `os.system` raise. Any other argv during startup raises. |
-| I-6 | Writes confined | The single writer helper, plus the hook's write guard on `open` (write flags), `os.mkdir`, `os.rename`, `os.remove` and `sqlite3.connect` paths: only the suite state roots, plus a temp root in tests. `TMPDIR` and `SQLITE_TMPDIR` are the same absolute path with no `.` or `..` component (so it differs from its normalised text at most by a redundant or final `/`), inside the roots both as normalised text and with its links resolved, and `temp_store=MEMORY` is set. Defence in depth, not a sandbox. | A session over fixtures under a temporary HOME-like root writes nothing outside the roots (tree diff). Nothing appears under `/tmp` or `/var/tmp` during a catalogue build or a session. Writes under a data root, or into a `path_guard` denied tree, raise. |
+| I-6 | Writes confined | The single writer helper, plus the hook's write guard on `open` (write flags), `os.mkdir`, `os.rename`, `os.remove` and `sqlite3.connect` paths: only the suite state roots, plus a temp root in tests. The suite root under `~/betangel-data` is a write root for the engine only; the test runner and `vendor` never get it, so tests, which use temporary HOMEs, cannot reach the real one. `TMPDIR` and `SQLITE_TMPDIR` are the same absolute path with no `.` or `..` component (so it differs from its normalised text at most by a redundant or final `/`), inside the roots both as normalised text and with its links resolved, and `temp_store=MEMORY` is set. Defence in depth, not a sandbox. | A session over fixtures under a temporary HOME-like root writes nothing outside the roots (tree diff). Nothing appears under `/tmp` or `/var/tmp` during a catalogue build or a session. Writes under a data root, or into a `path_guard` denied tree, raise. |
 | I-7 | No live route | The closed route table and command enum | Exact-equality tests and the forbidden-name test. |
 | I-8 | Orders on real data come only through the operator-click code path. This is a code-path property, not proof of a human (section 7.1). | OperatorClick minted only in request handlers, with a fresh nonce and a valid session token. `TestOrder` and `ReplayedClick` are accepted only in synthetic mode. | An AST test checks construction sites and the callers of `PaperDesk.place`, `.cancel` and `.withdraw`. Nonce replay places nothing. A `TestOrder` on an engine with a real data root is refused. |
 | I-9 | Licensed data never in git | `.gitignore`, the hygiene scanner, the pre-commit hook, the fixture namespace | The scanner fails on planted `.bz2`, a large file and a `1.1xxxxxxxx` id. Fixture-provenance test. |
 | I-10 | Raw data read-only; no ingest or index by the engine | A read-only open. The AST test forbids `ingest_archive` and `index_archive(s)` outside tests. | A synthetic data tree's hash is unchanged after a full session. |
 | I-11 | No gated month ever replayed | `month_gate` on path and marketTime at catalogue time and at every open. A `None` month is refused as `month_unknown` first. | Synthetic members dated 2026-01, 2026-09, 2026-10 and 2027-01 are refused with the gate reason. A member with no parseable marketTime is refused as `month_unknown`. Research months are refused while no ruling is set. |
 | I-12 | Spoiler-free | Catalogue field allowlist; the tap releases outcome values only at their pt | Planted outcome values never reach SQLite, a frame or the browser before CLOSED. |
-| I-13 | Pin integrity, and never the moving clone | Per-file hashes, the origin assertion, `sys.path` append only | A tampered file in a temp copy gives `pin_mismatch`. `sys.path` never contains `~/betangel-research`. Origin-assertion test. Oracle tests never pass `~/betangel-research` as `repo_root`. |
+| I-13 | Pin integrity, and never the moving clone | Per-file hashes over every `PINNED_FILES` entry, the origin assertion, `sys.path` append only. The pin stays at 76f71dc until a closure module the suite needs, or the month roles, change; Nuance reviews every bump that changes a `PINNED_FILES` entry, and the contract test gates it (Q-N1, Q-N2). | A tampered file in a temp copy gives `pin_mismatch`. `sys.path` never contains `~/betangel-research`. Origin-assertion test. Oracle tests never pass `~/betangel-research` as `repo_root`. |
 | I-14 | Right interpreter | The launcher's absolute path; the version check | 3.15 or below 3.11 is refused. |
 | I-15 | Paper fidelity | Exact mode, the yield tracker, position-based re-seeding | The parity contract (section 7.4), the yield-tracker oracle test, the no-look-ahead re-seed test, the full-cancel test, and `journal.verify()` for every session. |
 | I-16 | Agents are not handed Yu's token or real rows by the code. This is a code-path property: the code never prints them, but a same-uid agent that disobeys rule 6 is out of reach. | Single-use codes printed only by `open` (to `/usr/bin/open`), `ssh-session` and `--print-url`; token in memory and registered with `secret`; aggregate-only diagnostics; error mapping | Test runs capture stdout and stderr and assert no token or code pattern. A `selfcheck` run over fixtures does not print the fixture's synthetic names or prices. A synthetic member with a bad hash or a truncated line produces no market-id or event-id pattern on stdout, stderr, `logs/` or HTTP. |
-| I-17 | No engine during Nuance's runs | The run marker, checked before anything is written under `~/betangel-data` and on every tick | A marker present at start refuses the engine and real-data commands. An unreadable marker refuses them too. A marker appearing mid-session freezes the engine with no writes (tree diff), and it exits within the grace period. |
+| I-17 | No engine during Nuance's runs | The run marker, checked before anything is written under `~/betangel-data` and on every tick. Nuance's wrapper creates it with O_EXCL, waits up to 60 s for `engine.lock`, and refuses its own run if the lock is still held (Q-N3). | A marker present at start refuses the engine, real-data commands and `bin/suite test` on both interpreters; only `stop` and `vendor` skip the check. An unreadable marker refuses them too. The test helpers start no engine while the runner's real marker is present or unreadable. A marker appearing mid-session freezes the engine with no writes (tree diff), and it exits within the grace period, releasing `engine.lock` within about 35 s. |
 | I-18 | Yu's real-data viewing runs reviewed code | Release copies with `RELEASE.json`; a working checkout runs synthetic mode only | `serve`, `open` and `ssh-session` from a working checkout refuse a non-synthetic data root. A modified file in a release copy is refused. |
 | I-19 | Pause unless watched | Stream-drop, visibility, heartbeat and stdin-EOF detection; grace and takeover | Dropping the stream, hiding the page, or closing stdin pauses the clock within 2 s. A takeover within the grace period keeps the session. Expiry marks it `abandoned`. |
 
-Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the boundary tests, the hygiene scanner and pin bumps is routed to Astra (section 3.9).
+Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `cli.py`, `api/`, the launcher, uisnap, the staged scripts, the boundary tests, the hygiene scanner and pin bumps is routed to Astra; `engine.py` and `roots.py` go to Astra and Nuance jointly (section 3.9).
 
 ---
 
@@ -1356,7 +1387,8 @@ Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`
   `tests/__init__.py` appends the deps clone through `betangel_suite.pin`. It runs on python3.13, and the full tier runs again on python3.11.
 - **Two tiers.**
   - **Fast** (under 60 s): run by pre-commit and on every change.
-  - **Heavy** (opt-in): parity seeds, the 200 random seek points, performance and python3.11. It is never run while a Nuance run is announced or the run marker exists.
+  - **Heavy** (opt-in): parity seeds, the 200 random seek points, performance and python3.11.
+  - Neither tier runs while a Nuance run is announced. `bin/suite test` refuses both tiers, on both interpreters, while the run marker exists (section 6.8; Nuance's answer to Q-N14). The helpers that start engines check the real marker again before each launch (section 6.8).
   - Each run records its runtime.
   - Oracle fixtures are capped at about 2,000 messages and 6 runners, because the oracles are slow: `run_paper_replay` takes 141 s and 1.98 GB on a 60k-message market.
 - **JavaScript.** `~/.local/bin/node --test ui/tests` (built-in `node:test`, no npm). It covers:
@@ -1550,7 +1582,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 | Q-Y5 | **Practice defaults.** Start at T-10 min; 2x until auto-slow at T-3; pause at the off? One-click on by default, or confirm every order at first? | 1b |
 | Q-Y6 | **Practice loss limit** of £20 a day: useful or annoying? | 1b |
 | Q-Y7 | **Research-corpus months** (2023-2025): keep them hidden (the default, which protects later research)? Or open them, which needs a ruling id with Nuance and Astra and is logged? | Later |
-| Q-Y8 | **Repo workflow.** Lab-Claude pushes branches and opens PRs that Nuance or Astra review (routing in section 3.9). Who merges: you, or lab-Claude after review? May UI-only PRs go on your acceptance alone? | Phase 0 packet |
+| Q-Y8 | **Repo workflow.** Lab-Claude pushes branches and opens PRs that Nuance or Astra review (routing in section 3.9). Who merges: you, or lab-Claude after review? May UI-only PRs go on your acceptance alone? <br>**Answered** by Yu on 2026-10-15 (section 2.2.1). **Asked on 2026-10-16, not answered yet:** must the tests also pass on 3.13 and 3.11 at the head SHA the reviewers accepted? | Phase 0 packet |
 | Q-Y9 | **Agents and data.** Confirm that agents never see real rows, the viewed-markets ledger or real-data screenshots, and that any exception needs your OK each time, scoped to one problem report. | 1a |
 | Q-Y10 | **Screen Recording: recommended No.** It would be granted to the host terminal (iTerm2) and cover every process under it, and `screencapture` takes the whole display. Any real race on the lab screen would then go into model context, which counts as an upload. `tools/uisnap` gives lab-Claude synthetic screenshots without it. If you still want it, capture would go only through a suite subcommand: that subcommand starts a synthetic-only engine, captures only its own window (`screencapture -l <id>`), and refuses while a real-data engine runs. You would revoke the permission when it is not in use. | Not needed |
 | Q-Y11 | **Browser.** A Safari Private window for the suite on both machines (recommended), or a dedicated profile with no Betfair login, no extensions and no iCloud sync? After data downloads, sign out of historicdata.betfair.com in the lab's Safari. | 1a |
@@ -1566,9 +1598,9 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 
 | ID | Question | Needed in |
 |---|---|---|
-| Q-N1 | Do you accept the engine importing only the 25-module closure in section 4.1, with no risk or capability? Will you treat the contract-tested names (section 4.5) as an interface and flag breaking changes in PR descriptions? Is test-only use of `risk` as an oracle acceptable under INTERNAL_ONLY? | Phase 0 |
-| Q-N2 | Is the pin by a network-free local clone (`clone --no-checkout --no-hardlinks` from the lab clone, `checkout --detach`, remote removed, read-only) OK? Or do you prefer `git archive`? Who bumps pins? | Phase 0 |
-| Q-N3 | **State root and the run marker.** Is `~/betangel-data/suite.noindex` acceptable? Following your A5 answer, the suite will not run at all during your runs. Will your run and ingest wrappers write a marker such as `~/.local/state/lab-runs/ACTIVE`, and wait for `~/.local/state/betangel-suite/run/engine.lock` to be free before touching sources or data? | Phase 0 |
+| Q-N1 | Do you accept the engine importing only the 25-module closure in section 4.1, with no risk or capability? Will you treat the contract-tested names (section 4.5) as an interface and flag breaking changes in PR descriptions? Is test-only use of `risk` as an oracle acceptable under INTERNAL_ONLY? <br>**Answered by Nuance** (PR #4 review, 2026-10-16):<br>- Closure: accepted. Exactly 25 modules load (section 4.1). Before Phase 1b, `rx.py` gains wrappers: `StatePaths` with explicit roots, `OrderJournal` with `mode="paper"` and an explicit clock, and `validate_place` forced to paper. `SystemClock` is dropped from the allowlist; no suite code used it.<br>- Contract test: "yes, narrowed". `tests/test_upstream_contract.py` lands on phase0/http; every bump is gated on it, Phase 0's names first (section 4.5).<br>- `risk` as a test oracle: no. It is unpinned; an independent exposure oracle is used instead (section 4.2). | Answered |
+| Q-N2 | Is the pin by a network-free local clone (`clone --no-checkout --no-hardlinks` from the lab clone, `checkout --detach`, remote removed, read-only) OK? Or do you prefer `git archive`? Who bumps pins? <br>**Answered by Nuance** (PR #4 review, 2026-10-16): keep 76f71dc, and bump only when a closure module the suite needs, or the month roles, change. "Allowlisted file" means every `PINNED_FILES` entry (section 3.5). The review does not say whether Nuance prefers `git archive` or who bumps pins. | Answered |
+| Q-N3 | **State root and the run marker.** Is `~/betangel-data/suite.noindex` acceptable? Following your A5 answer, the suite will not run at all during your runs. Will your run and ingest wrappers write a marker such as `~/.local/state/lab-runs/ACTIVE`, and wait for `~/.local/state/betangel-suite/run/engine.lock` to be free before touching sources or data?<br>**Answered by Nuance: yes to both** (PR #4 review; mailbox, 2026-10-16 13:41Z).<br>- Root: `~/betangel-data/suite.noindex`, on three conditions (section 3.7): (1) Nuance never uses `~/betangel-data` or `suite.noindex` itself as a data or lab-state root; (2) before Phase 1a, the suite refuses a data root that equals, contains or lies inside `suite.noindex`, `lab-state` or `logs`, or lies inside `incoming/`, comparing by file identity (owed before Phase 1a); (3) the marker half is agreed first (it now is). The flag is on.<br>- Marker: `~/.local/state/lab-runs/ACTIVE`. Nuance's wrapper creates it with O_EXCL, waits up to 60 s for `engine.lock`, and refuses its own run if the lock is still held. Nuance agreed that the engine may hold `engine.lock` for about 35 s after the marker appears; Nuance measured the lock free only after 30.23-30.60 s (PR #4 review, item 15). | Answered |
 | Q-N4 | **PRO ingest.** When will you ingest and index it (a date), and what is the final data root (`historic-pro`?)? Is it one archive sha, with index v1 built as for BASIC? A header listing shows 12,208 market files at depth 6, all PRO, including 8 in 2016-May (in no contract split). Is there anything in the index the picker should surface? | Now |
 | Q-N5 | **Paper semantics.** Is direct `PaperExchange` use with a suite `OrderJournal(path, mode="paper", clock=SimClock)` fine, given Yu's R-1? Intent source `paper_replay` with `customer_strategy_ref` `suite-click` (and `suite-test` in synthetic tests), with click provenance in `note` events, until U-9? Is withdrawing a pending order as SUBMITTING → REFUSED (`operator_withdrawn_before_activation`) acceptable? | Phase 0 |
 | Q-N6 | **Quiet-market staleness.** Paper V10 and `_activation_refusal` measure age from the market's last change. Real data shows it is rare near the off. Do you want U-8 at all? (Low priority; the relaxation mode is cut.) | Later |
@@ -1577,7 +1609,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 | Q-N9 | **SP display (R-5).** Do you confirm a suite-side, display-only parser needs no repo ruling? Do you plan U-2, including whether SP non-finites should invalidate the whole book? | 1a |
 | Q-N10 | **Rule 4.** Will you take U-1? Until then, is the "indicative, exact-case" figure acceptable? | 1b |
 | Q-N11 | **Viewed-markets ledger.** Which fields and format do you want, so markets opened in the suite reconcile with your trial ledger? Agents never read the ledger; reconciliation is by code over salted hashes, printing match counts only. Does human practice on the engineering year matter to P0 or P1? | 1a |
-| Q-N12 | **Review routing.** Do you agree the routing in section 3.9 (Astra for guard, rx, errors, release, run marker, api, boundaries, scanner and pins; you for data and paper; Yu alone for UI-only PRs)? Should lab-originated review requests arrive as a lab-journal coordination task plus a mailbox note? | Phase 0 |
+| Q-N12 | **Review routing.** Do you agree the routing in section 3.9 (Astra for guard, rx, errors, release, run marker, api, boundaries, scanner and pins; you for data and paper; Yu alone for UI-only PRs)? Should lab-originated review requests arrive as a lab-journal coordination task plus a mailbox note? <br>**Answered by Nuance: "agree once amended"** (PR #4 review, 2026-10-16). Amended in section 3.9 and AGENTS.md as asked: Astra's row adds uisnap, `tools/stage/`, `cli.py` and `roots.py`; Nuance's row adds `synthetic.py`, `tests/fixtures/`, `tools/export_ticks.py`, `ui/ticks.json` and `replay/`; `engine.py` and the roots are reviewed jointly; and a PR merges only after every reviewer whose rows its diff touches has accepted it at a named head SHA. The review does not answer the second part (how review requests arrive). | Answered |
 | Q-N13 | **The Air later.** Does the Air have the Command Line Tools and Swift? Which Python is there? Will you host the Air-side package (L1/L2) in a separate repo, or in betangel-research, never cloned on the lab? | Later (L1) |
 
 ---
@@ -1613,7 +1645,7 @@ Nothing becomes more permissive by configuration alone. **The MVP needs none of 
 
 Base: the mvp-ux draft. The following were fixed or grafted in:
 
-1. **INTERNAL_ONLY.** The engine no longer imports `risk` or `capability` (tests/test_betfair_boundaries.py:22). Exposure is computed in suite code on both bases, and `risk.worst_case_market_loss` (whose default is `hedge_credit=False`, risk.py:136) is a test oracle only. One `rx.py` facade, enforced by an AST test.
+1. **INTERNAL_ONLY.** The engine no longer imports `risk` or `capability` (tests/test_betfair_boundaries.py:22). Exposure is computed in suite code on both bases, and `risk.worst_case_market_loss` (whose default is `hedge_credit=False`, risk.py:136) is a test oracle only. (Superseded: Nuance answered Q-N1 that risk is not an oracle either; section 4.2.) One `rx.py` facade, enforced by an AST test.
 2. **Sampled stepping removed.** Exact mode is the default whenever orders are pending or open; the clock lags instead of sampling. The reasons: per-step flooring (paper.py:543), and 503 windows raising high-water marks without filling (paper.py:470-482, :552-553).
 3. **Clock-stamped snapshots removed from the default path.** Stamping the activation book at A would count the first interval (paper.py:321, :496-503) and break parity. (Draft 0.1 kept an opt-in relaxation at A − 1 ms; draft 0.2 cut it, section 7.5.)
 4. **Integer timestamps.** `utc_from_ns` takes an integer only (receipts.py:29-31), so the design always uses `ms * 1_000_000`.

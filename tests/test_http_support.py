@@ -7,7 +7,8 @@ helpers of CLIENT below, and returns the JSON the script prints. Servers run as 
 seams (an injected opener, an on_ready hook, a short run-marker grace). Every server binds 127.0.0.1 on an
 ephemeral port, under a temporary HOME short enough for the control socket path (sockaddr_un holds 104
 bytes), and is stopped and its socket removed in cleanup, on failure too. /usr/bin/open is never run: the
-open path is driven only with an injected opener.
+open path is driven only with an injected opener. Each server starts only after the real run marker is
+checked (tests.require_no_run_marker), because its own check looks at its temporary HOME.
 
 The client scripts never print a bootstrap code or a session token; when a test needs them it reads them
 from a 0600 file in the temporary HOME.
@@ -24,7 +25,7 @@ import time
 import unittest
 
 from betangel_suite import pin, roots
-from tests import DEPS, LAUNCHER, PRELUDE, PYTHON, child_env, rmtree
+from tests import DEPS, LAUNCHER, PRELUDE, PYTHON, child_env, require_no_run_marker, rmtree
 
 CODE_RE = re.compile(r"[A-Za-z0-9_-]{22}")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
@@ -58,13 +59,16 @@ class _Cleanup:
 
 
 def short_home(case, *, deps=True):
-    """A temporary HOME (TMPDIR/h-XXXXXXXX) with .local/state, .local/share, the state tmp/ and the deps copy.
+    """A temporary HOME (TMPDIR/h-XXXXXXXX) with .local/state, .local/share, the state tmp/, an empty
+    betangel-data (0700, as on the lab) and the deps copy.
 
-    make_home's longer path would push run/control.sock past the 104 bytes of sockaddr_un.
+    make_home's longer path would push run/control.sock past the 104 bytes of sockaddr_un. The engine's
+    TMPDIR is the suite root's tmp/ (roots.STATE_ROOT_AGREED), and the writer helper creates the suite root
+    only inside an existing ~/betangel-data (root_parent_missing otherwise).
     """
     home = tempfile.mkdtemp(prefix="h-")
     case.addCleanup(rmtree, home)
-    for parts in ((".local", "state"), (".local", "share")):
+    for parts in ((".local", "state"), (".local", "share"), roots.DATA_HOME_PARTS):
         os.makedirs(os.path.join(home, *parts), mode=0o700)
     os.makedirs(roots.tmp_dir("test", home), mode=0o700)
     if deps:
@@ -150,6 +154,7 @@ class Child:
 
 def serve(case, home, *args):
     """bin/suite serve --port 0 [args] as a child; returns (Child, port)."""
+    require_no_run_marker()
     child = Child(case, home, ["/bin/sh", LAUNCHER, "serve", "--port", "0", *args])
     return child, child.wait_ready()
 
@@ -178,9 +183,15 @@ sys.exit(status)
 
 
 def run_child(case, home, body, *, name="engine"):
-    """A python engine-mode child set up as bin/_launch.py would; body defines main(), which returns server.run(...)."""
+    """A python engine-mode child set up as bin/_launch.py would; body defines main(), which returns server.run(...).
+
+    Its TMPDIR is the one bin/suite gives serve and open: the suite root's tmp/ while the flag is on.
+    """
+    require_no_run_marker()
     code = RUN_CHILD + body + RUN_TAIL
-    return Child(case, home, [PYTHON, "-I", "-S", "-B", "-c", code], name=name)
+    tmp = roots.tmp_dir("serve", home)
+    env = child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp)
+    return Child(case, home, [PYTHON, "-I", "-S", "-B", "-c", code], env=env, name=name)
 
 
 # --- the unguarded client ---------------------------------------------------------------------------

@@ -21,8 +21,10 @@ clone, and is never uploaded or shared. A model context counts as an upload.
 | **The browser** | A Safari Private window (or a profile with no Betfair login, extensions or iCloud sync); UI preferences in `localStorage` | The session token in storage, cookies, external requests; a page title that names a race (it is always `betangel-suite`) |
 | **Disk** | Derivatives under the suite root (0700); data roots are read-only to the suite | Decompressed members anywhere; any derivative outside `~/betangel-data`; temp files outside the suite's own `TMPDIR` |
 
-In Phase 0 nothing is written under `~/betangel-data` at all: the suite root is not agreed yet
-(AGENTS.md, Phase 0 status A), and Phase 0 is synthetic-only.
+Phase 0 is synthetic-only, so it writes no licensed derivative. The suite root is agreed
+(AGENTS.md, Phase 0 status A): an engine command creates `~/betangel-data/suite.noindex/` and its
+`tmp/` (both 0700), and only the engine may write there. Tests use temporary HOMEs and never
+write under the real `~/betangel-data`.
 
 ## Exceptions
 
@@ -50,12 +52,25 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   binaries, oversize files, state and data-root directories, symbolic links, submodules,
   market-id, event-id and member-path shapes outside the reserved namespace, runner-name tables
   and records, private-key and PEM headers, bearer tokens, secret-looking values, provider tokens
-  and bootstrap-code URLs. It prints a rule code, a redacted path and a line number, never the
-  matched text. When the file may hold data, the whole path is withheld and an entry number
-  identifies it. Its suffix is still shown only when it is exactly one of a short list of
-  file-type abbreviations that are not English words (`.py`, `.md`, `.csv`, `.bz2` and the like:
-  `SHOWN_SUFFIXES` in the scanner); any other suffix may be a word of the name and is dropped.
-  `--list-rules` lists the codes.
+  and bootstrap-code URLs. `--list-rules` lists the codes. For each finding it prints one line,
+  `FAIL <rule code> <path withheld>:<line> (entry <n>)`. The text `<path withheld>` is the same
+  for every finding: the scanner never prints a path or any part of one, not even a suffix, and
+  never the matched text. Line 0 means the finding is about the entry itself (its name, type, size
+  or link target). After ten lines for one entry and rule, one line counts the rest
+  (`FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)`), and a last line gives the
+  totals per code.
+- **Finding the file.** The entry number is the entry's position, from 1, in the list the scan
+  worked through. Yu maps it to a file locally, from the repository root, with git (replace `N`):
+  - after `--staged` or the pre-commit hook:
+    `git -c core.quotepath=off ls-files --stage | sed -n 'Np'`
+  - after a working-tree scan (no paths):
+    `git -c core.quotepath=off ls-files --cached --others --exclude-standard | LC_ALL=C sort -u | sed -n 'Np'`
+    (exact unless a path holds a control character, a double quote or a backslash, which git
+    prints quoted, so that path can sort to a different place);
+  - after a scan of named paths: scan fewer paths at a time until one entry is left.
+
+  These commands print the path the scanner withholds, so they belong in Yu's own terminal, not
+  in a chat, a report or an agent's context.
 - **`tools/pre-commit`** runs the scanner on the staged tree and blocks the commit. Install it
   with `ln -s ../../tools/pre-commit .git/hooks/pre-commit`; never bypass it.
 - **The engine** maps upstream exceptions to closed error codes at the `rx.py` boundary and

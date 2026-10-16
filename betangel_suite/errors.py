@@ -256,8 +256,8 @@ def _unraisablehook(unraisable):
 def install_excepthooks():
     """Replace the hooks that would print tracebacks or exception messages (DESIGN.md 9.1).
 
-    Phase 0 writes full tracebacks nowhere: they belong in the suite root's private/ directory, which
-    does not exist until the suite root is agreed (roots.STATE_ROOT_AGREED).
+    Phase 0 writes full tracebacks nowhere. They belong in the suite root's private/ directory, which
+    nothing writes yet.
     """
     sys.excepthook = _excepthook
     threading.excepthook = _thread_excepthook

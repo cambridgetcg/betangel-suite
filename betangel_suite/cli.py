@@ -1,12 +1,13 @@
 """bin/suite commands (DESIGN.md 3.4). Built: test and vendor (Phase 0a), serve, open and stop (Phase 0b);
 every other command refuses with not_implemented.
 
-bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop, test and
-vendor, checked the run marker before main() is called. main() checks the command's arguments first, then
-creates TMPDIR (0700, through the writer helper) before any handler runs (DESIGN.md 3.6, 6.8), so SQLite
-never falls back to a system temp directory. vendor and stop are the exceptions: vendor must work before
-the deps clone exists and never imports upstream (which the writer helper's path_guard needs); stop only
-talks to the control socket. Neither makes temporary files. Output is codes and counts only.
+bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop and vendor,
+checked the run marker before main() is called (test is checked too: Nuance's answer to Q-N14). main()
+checks the command's arguments first, then creates TMPDIR (0700, through the writer helper) before any
+handler runs (DESIGN.md 3.6, 6.8), so SQLite never falls back to a system temp directory. vendor and stop
+are the exceptions: vendor must work before the deps clone exists and never imports upstream (which the
+writer helper's path_guard needs); stop only talks to the control socket. Neither makes temporary files.
+Output is codes and counts only.
 
     serve [--port N]   the engine in synthetic mode on 127.0.0.1 (config port; N = 0 picks a free port);
                        prints "serving port=<n>", never a bootstrap code or token
@@ -27,7 +28,9 @@ from .errors import SuiteError
 
 COMMANDS = ("serve", "open", "ssh-session", "stop", "catalogue", "selfcheck", "diagnose", "ledger-summary",
             "release", "test", "uisnap", "vendor")
-NO_RUN_MARKER_CHECK = ("stop", "test", "vendor")  # adaptation E; stop only reduces activity (DESIGN 3.9 rule 6)
+# Adaptation E. stop only reduces activity (DESIGN 3.9 rule 6). vendor starts no engine and writes nothing
+# under ~/betangel-data. test refuses during a run like the other commands (Nuance's answer to Q-N14).
+NO_RUN_MARKER_CHECK = ("stop", "vendor")
 NO_TMPDIR = ("stop", "vendor")                    # they create no temporary files and must not need upstream
 REPO_ROOT = guard.REPO_ROOT
 

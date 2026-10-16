@@ -33,9 +33,12 @@ What the hook refuses, in every mode and phase:
        os.forkpty always; subprocess.Popen and os.posix_spawn except as below;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
        link (both paths: a hard link would alias an outside inode inside the roots), symlink, truncate,
-       chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. While roots.STATE_ROOT_AGREED is
-       False a write under ~/betangel-data is refused as state_root_not_agreed, judged on the path text
-       alone. A relative path in a write open is refused too: the open event does not say which dir_fd it
+       chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. The write roots are the state
+       root in every mode; the suite root only in engine mode, and only while roots.STATE_ROOT_AGREED is
+       True; and in vendor mode also the share directory and this checkout's pin/. So the test runner
+       never writes under ~/betangel-data, whatever the flag says: its tests use temporary HOMEs. While
+       the flag is False a write under ~/betangel-data is refused as state_root_not_agreed, judged on the
+       path text alone. A relative path in a write open is refused too: the open event does not say which dir_fd it
        is relative to (the other events do, and a dir_fd is resolved with F_GETPATH). The roots check
        resolves the path as given, as the OS does: "link/.." and a final "/" follow the link.
        CPython raises no audit event for os.mkfifo and os.mknod, so arm() replaces them (in os and posix)
@@ -146,7 +149,8 @@ class _State:
 
     def __init__(self, mode, tmp_root):
         home = roots.home()
-        found = list(roots.write_roots(home))
+        # The suite root holds licensed derivatives and belongs to the engine alone (DESIGN.md 3.7).
+        found = list(roots.write_roots(home)) if mode == "engine" else [roots.state_dir(home)]
         if mode == "vendor":
             found += [roots.share_dir(home), os.path.join(REPO_ROOT, "pin")]
         self.mode = mode

@@ -12,7 +12,7 @@ from unittest import mock
 
 from betangel_suite import config, engine, rx, runmarker, synthetic
 from betangel_suite.errors import SuiteError
-from tests import make_home
+from tests import make_home, require_no_run_marker
 
 START_NS = 5_000_000_000_000
 
@@ -75,6 +75,7 @@ def floats_in(value):
 class EngineCase(unittest.TestCase):
 
     def make(self, cfg=None, synthetic_module=SmallSynthetic, marker=None, grace_s=30, tick_s=engine.TICK_S):
+        require_no_run_marker()             # the actor below watches only its temporary HOME's marker
         self.home = make_home(self)
         self.clock = FakeClock()
         self.marker = marker or runmarker.marker_path(None, self.home)

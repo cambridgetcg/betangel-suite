@@ -1,15 +1,30 @@
 """Hygiene scanner for betangel-suite (docs/DESIGN.md I-9, sections 5.6 and 9.4).
 
 It keeps licensed Betfair data, real identifiers and secrets out of git. On
-any finding it exits 1 and prints only a rule code, a redacted path, a line
-number and an entry number. It never prints the text that matched. When the
-file may hold data (a data-file, runner, identifier or data-path finding)
-the whole path is withheld, and the entry number, the file's position in the
-scan, identifies it. A withheld path shows its final suffix only when it is
-exactly one of a short list of file-type abbreviations (SHOWN_SUFFIXES),
-each picked because it is not an English word; any other suffix, which may
-be a word of the name, is dropped. A name that itself ends in one of those
-abbreviations still shows it.
+any finding it exits 1 and prints one line per finding:
+
+    FAIL <rule code> <path withheld>:<line> (entry <n>)
+
+"<path withheld>" is literal and the same for every finding: the scanner
+never prints a path or any part of one (no directory, name or suffix), and
+never the text that matched. Line 0 means the finding is about the entry
+itself (its name, type, size or link target), not one of its lines. After
+ten lines for one entry and rule, one more line counts the rest:
+
+    FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)
+
+A last line gives the totals per rule code. The entry number is the
+entry's position, counted from 1, in the list the scan worked through:
+
+  --staged         the records of `git ls-files --stage`, in that order
+                   (a conflicted path has one record per stage)
+  (no PATH)        the paths of `git ls-files --cached --others
+                   --exclude-standard`, de-duplicated and sorted (outside a
+                   git work tree: every file under the root, sorted)
+  PATH ...         the files under the given paths, sorted
+
+docs/data-handling.md shows how Yu maps an entry number to its file
+locally.
 
 Run it with the fixed interpreter, standard library only:
 
@@ -98,18 +113,12 @@ RULES = {
     "bootstrap_code": "suite bootstrap-code URL fragment",
 }
 
-# File-level codes whose path may itself carry data, and content codes that
-# mark runner data (a runner name in a path is not redacted): the whole path
-# is withheld, since any directory may be named after a runner or a market.
-# An identifier or data-path finding, in the content or on the path itself,
-# withholds it too. The entry number still identifies the file.
-_WITHHOLD_NAME = frozenset({
-    "archive_member", "sqlite_file", "jsonl_file", "data_file", "key_file",
-    "image_outside_synthetic", "binary_file", "oversize", "forbidden_dir",
-    "data_path", "upstream_copy", "runner_table", "runner_record", "stream_record",
-})
+# Identifier codes that are also checked on the path text itself.
 _PATH_ID_CODES = ("market_id", "event_id", "member_path")
-_WITHHOLD_CONTENT = frozenset(_PATH_ID_CODES) | {"data_path_text"}
+# Printed in place of every path. Any part of a path may carry data or a
+# secret (a runner's name, a market id, a token used as a directory name),
+# and no rule can show that a part is safe, so no part is ever printed.
+WITHHELD = "<path withheld>"
 
 # ---------------------------------------------------------------- path rules
 
@@ -679,45 +688,19 @@ def _default_root() -> str:
 
 # ----------------------------------------------------------------- output
 
-_HEX_RUN = re.compile(r"[0-9a-fA-F]{16,}")
-_DIGIT_RUN = re.compile(r"[0-9]{5,}")
-# The only suffixes a withheld path still shows, compared exactly (a case variant shows none). This is a
-# short literal list, not the scanner's detection sets: those hold English words (.key, .zip, .tar,
-# .gif, .tiff, .pickle, .arrow, .feather, .parquet, ...), and any suffix may be a word of the name (a
-# runner's, say). Each kept one is a file-type abbreviation that is not an English word and is unlikely
-# in a runner's name; that lowers the chance of printing a word of the name, it cannot rule it out.
-SHOWN_SUFFIXES = frozenset({
-    ".py", ".md", ".txt", ".json", ".js", ".mjs", ".html", ".css",  # source, docs and text
-    ".csv", ".tsv", ".jsonl", ".ndjson", ".xlsx", ".pkl",           # data exports
-    ".sqlite", ".sqlite3", ".db",                                   # SQLite
-    ".bz2", ".gz", ".tgz", ".xz", ".zst", ".7z",                    # archives (.bz2: licensed data)
-    ".pem", ".p12",                                                 # keys and certificates
-    ".png", ".jpg", ".jpeg",                                        # images
-})
-
-
-def _shown_path(rel: str, withhold_name: bool) -> str:
-    if withhold_name:  # every component may carry data
-        ext = os.path.splitext(rel.rstrip("/").rpartition("/")[2])[1]
-        return "<name withheld>" + (ext if ext in SHOWN_SUFFIXES else "")
-    shown = _DIGIT_RUN.sub("<n>", _HEX_RUN.sub("<hex>", rel.rstrip("/")))
-    return "".join(c if 32 <= ord(c) < 127 else "?" for c in shown)
-
-
 def _report(results, mode: str) -> int:
+    """Print the findings. Every path shows as WITHHELD, whatever the rule."""
     total = 0
     per_code = {}
     files_with = 0
     scanned = 0
-    for index, (rel, found) in enumerate(results, 1):
+    for index, (_rel, found) in enumerate(results, 1):
         if found is None:
             continue
         scanned += 1
         if not found:
             continue
         files_with += 1
-        withhold = any(c in _WITHHOLD_NAME or c in _WITHHOLD_CONTENT for _line, c in found)
-        shown = _shown_path(rel, withhold)
         by_code = {}
         for line, code in sorted(set(found)):
             by_code.setdefault(code, []).append(line)
@@ -726,9 +709,9 @@ def _report(results, mode: str) -> int:
             per_code[code] = per_code.get(code, 0) + len(lines)
             total += len(lines)
             for line in lines[:MAX_REPORTED_LINES]:
-                print(f"FAIL {code} {shown}:{line} (entry {index})")
+                print(f"FAIL {code} {WITHHELD}:{line} (entry {index})")
             if len(lines) > MAX_REPORTED_LINES:
-                print(f"FAIL {code} {shown}: +{len(lines) - MAX_REPORTED_LINES} more line(s) (entry {index})")
+                print(f"FAIL {code} {WITHHELD}: +{len(lines) - MAX_REPORTED_LINES} more line(s) (entry {index})")
     if total:
         summary = ", ".join(f"{code}={n}" for code, n in sorted(per_code.items()))
         print(f"hygiene_scan: FAIL {total} finding(s) in {files_with} file(s) [{mode}]: {summary}")
