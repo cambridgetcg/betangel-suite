@@ -762,6 +762,24 @@ results["wrapped"] = os.mkfifo is posix.mkfifo and os.mkfifo.__module__ == "beta
         for name in ("fifo_out", "fifo_posix", "node_out"):
             self.assertFalse(os.path.lexists(os.path.join(home, name)), name)
 
+    def test_sqlite_uri_names_are_refused_whatever_the_uri_flag(self):
+        # The event does not say whether URIs are on: without SQLITE_USE_URI, uri=False opens "file::memory:"
+        # as a file of that name in the cwd (here outside the roots).
+        home = make_home(self)
+        results = checks(self, home, setup=self.SETUP, body="""
+import sqlite3
+os.chdir(outside)
+attempt("default", lambda: sqlite3.connect("file::memory:").close())
+attempt("uri_false", lambda: sqlite3.connect("file::memory:?mode=rwc", uri=False).close())
+attempt("uri_true", lambda: sqlite3.connect("file::memory:", uri=True).close())
+attempt("memory", lambda: sqlite3.connect(":memory:").close())
+attempt("empty", lambda: sqlite3.connect("").close())
+""")
+        for name in ("default", "uri_false", "uri_true"):
+            self.assertEqual(results[name], "write_outside_roots", name)
+        self.assertEqual((results["memory"], results["empty"]), ("ok", "ok"))
+        self.assertEqual(sorted(os.listdir(os.path.join(home, "outside"))), ["file"])
+
     def test_sqlite_cannot_attach_vacuum_into_or_load_extensions(self):
         home = make_home(self)
         results = checks(self, home, setup=self.SETUP, body="""

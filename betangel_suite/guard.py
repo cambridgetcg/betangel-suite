@@ -483,10 +483,12 @@ def _check_env_change(event, args):
 
 def _check_sqlite(state, database):
     text = os.fsdecode(os.fspath(database))
-    if text in ("", ":memory:", "file::memory:") or text.startswith("file::memory:?"):
+    if text in ("", ":memory:"):
         return
     if text.startswith("file:"):
-        raise GuardRefusal("write_outside_roots")      # the suite opens no URI filenames
+        # The suite opens no URI filenames, memory ones included: the event does not say whether URIs are
+        # on, and without SQLITE_USE_URI, uri=False opens "file::memory:" as a file in the cwd.
+        raise GuardRefusal("write_outside_roots")
     _check_write(state, text, -1, True)
 
 
