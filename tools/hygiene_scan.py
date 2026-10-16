@@ -82,7 +82,7 @@ EXIT_CLEAN, EXIT_FINDINGS, EXIT_REFUSED = 0, 1, 2
 # the limit. DESIGN.md alone may grow to 2 MiB; it is still content-scanned.
 MAX_FILE_BYTES = 512 * 1024
 SIZE_ALLOWLIST = {"docs/DESIGN.md": 2 * 1024 * 1024}
-SNIFF_BYTES = 8192
+SNIFF_BYTES = 8192  # magic bytes are read here, and only this much of an oversize file is read
 MAX_REPORTED_LINES = 10  # per file and rule; the rest are counted
 MAX_TABLE_LINE = 400  # longer lines are never table rows
 
@@ -93,7 +93,7 @@ RULES = {
     "data_file": "tabular or serialised data file (.csv .tsv .xlsx .parquet .pkl ...)",
     "key_file": "key, certificate or secrets file (.pem .key .p12 .crt .env .netrc id_*)",
     "image_outside_synthetic": "image or video outside docs/synthetic/",
-    "binary_file": "binary file that is not an allowed media type",
+    "binary_file": "binary file (a NUL anywhere, or not UTF-8) that is not an allowed media type",
     "oversize": "file over 512 KiB (allowlist: SIZE_ALLOWLIST)",
     "forbidden_dir": "path under exports/ run/ screenshots/ private/ ledger/ sessions/ catalogue/ reports/ logs/ tmp/",
     "data_path": "path or symlink into betangel-data, a *.noindex root or a data-root directory",
@@ -419,17 +419,29 @@ def _symlink_codes(target: str) -> list:
 
 
 def _content_codes(rel: str, data: bytes, oversize: bool) -> list:
+    """Findings for one entry's bytes: all of it, or the first SNIFF_BYTES of an oversize one.
+
+    Binary means a NUL anywhere in what was read, or bytes that are not strict UTF-8, so data
+    after 8 KiB of text, a NUL-free zlib stream and text in another encoding (cp500, UTF-16)
+    all count. Only text that decodes as UTF-8 reaches the text rules.
+    """
     found = []
     magic = _magic_code(data[:SNIFF_BYTES])
     if magic:
         found.append((0, magic))
-    if b"\0" in data[:SNIFF_BYTES]:
+    if b"\0" in data:
         if not _binary_allowed(rel):
             found.append((0, "binary_file"))
         return found
     if magic or oversize:
         return found
-    found.extend(_text_findings(data.decode("utf-8", "replace")))
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        if not _binary_allowed(rel):
+            found.append((0, "binary_file"))
+        return found
+    found.extend(_text_findings(text))
     return found
 
 

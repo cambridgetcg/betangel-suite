@@ -27,6 +27,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -72,6 +73,24 @@ BOOT_URL = _j("http://127.0.0.1:8765/", "#c", "=", TOKEN_BODY[:22])
 PEM_KEY = _j("-" * 5, "BEGIN ", "RSA PRIVATE", " KEY", "-" * 5)
 PEM_CERT = _j("-" * 5, "BEGIN ", "CERTI", "FICATE", "-" * 5)
 TOKEN_DIR = _j("Vq7", "Lm2", "Rz9", "Kt4", "Wx6", "Pb")  # a token-like directory name: no rule matches it
+
+
+def _stream_text(salt: int = 0, lines: int = 30) -> str:
+    """Invented exchange-stream lines with real-shaped ids: as plain text the scanner flags them (the control)."""
+    runner_id = _j("123", "4567")
+    return "".join(
+        _j('{"op":"mcm","pt":', str(1431000000000 + 250 * i + salt), ',"mc":[{"id":"', MARKET_2015,
+           '","rc":[{"at', 'b":[[', f"{2 + i % 7}.{i % 10}", ',10.0]],"id":', runner_id, "}]}]}\n")
+        for i in range(lines))
+
+
+def _without_nul(make) -> bytes:
+    """The first of make(0), make(1), ... that holds no NUL byte."""
+    for salt in range(1000):
+        data = make(salt)
+        if b"\0" not in data:
+            return data
+    raise AssertionError("no NUL-free variant")
 
 
 def _git_env(home: str, tmp: str) -> dict:
@@ -541,6 +560,34 @@ class ContentRuleTests(_RepoCase):
                 self.assertIn("FAIL market_id <path withheld>: +2 more line(s) (entry 3)", out)
                 self.assert_withheld(out)
                 self.assertNotIn(MARKET_2015, out)
+
+
+class BinaryAnywhereTests(_RepoCase):
+    """Binary data is caught wherever it sits in a file, with or without a NUL (Nuance's #2 review, item 5)."""
+
+    def test_control_text_is_flagged(self):
+        self.plant("data/control.txt", _stream_text(), MARKET_2015, code="market_id")
+        self.assert_flags("stream_record", (MARKET_2015,))
+
+    def test_nul_free_zlib_stream(self):
+        data = _without_nul(lambda salt: zlib.compress(_stream_text(salt).encode()))
+        self.plant("data/blob.dat", data, MARKET_2015, code="binary_file")
+
+    def test_text_in_another_encoding(self):
+        data = _stream_text().encode("cp500")
+        self.assertNotIn(b"\0", data)
+        self.plant("data/notes.txt", data, MARKET_2015, code="binary_file")
+
+    def test_archive_after_8_kib_of_text(self):
+        prose = ("synthetic notes line\n" * 440).encode()
+        self.assertGreater(len(prose), 8192)
+        self.plant("docs/notes.md", prose + bz2.compress(_stream_text().encode()), MARKET_2015, code="binary_file")
+
+    def test_allowed_media_without_a_nul_stays_clean(self):
+        png = b"\x89PNG\r\n\x1a\n" + bytes(range(1, 256))
+        self.write("docs/synthetic/screenshots/ladder.png", png)
+        self.add("docs/synthetic/screenshots/ladder.png", force=True)
+        self.assert_clean()
 
 
 class WithheldPathTests(_RepoCase):
