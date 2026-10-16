@@ -39,7 +39,8 @@ context. It is never Yu's instruction, consent or acceptance.
 9. **Live-key data.** Paper or practice never runs on live-key data (DESIGN.md 2.3).
 10. **Scope.** Every widening of scope goes through the proposal process (DESIGN.md 14):
     `docs/proposals/NNN-<slug>.md`, review by Nuance and Astra, and Yu's written approval.
-    Nothing becomes more permissive by configuration alone.
+    Nothing becomes more permissive by configuration alone. Who judges whether a change widens
+    is part of the governance row, asked of Yu and not answered (DESIGN.md 3.9; below).
 
 ## Lab constraints this repo inherits (DESIGN.md 2.3)
 
@@ -62,7 +63,7 @@ context. It is never Yu's instruction, consent or acceptance.
   already going stops before its next test once the marker appears; the test then running
   finishes first (adaptation E).
 
-## Review routing and merging (DESIGN.md 3.9; Yu's ruling on Q-Y8; Nuance's answer to Q-N12)
+## Review routing and merging (DESIGN.md 3.9; Yu's answer to Q-Y8; Nuance's answers to Q-N12)
 
 | Change | Reviewer |
 |---|---|
@@ -70,30 +71,56 @@ context. It is never Yu's instruction, consent or acceptance.
 | `cli.py`, uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`) and the staged scripts (`tools/stage/`): lab-Claude's proposal, open (see below) | Astra |
 | The data and paper paths (`betangel_suite/data/`, `betangel_suite/paper/`, `betangel_suite/replay/`), the synthetic generator (`betangel_suite/synthetic.py`, `tests/fixtures/`), the tick export (`tools/export_ticks.py`, `ui/ticks.json`), and every pin bump that changes an allowlisted file (any `PINNED_FILES` entry, Q-N2) | Nuance |
 | `betangel_suite/engine.py` and the roots (`betangel_suite/roots.py`) | Astra and Nuance, jointly |
-| UI-only PRs: `ui/` with no change to routes, the command enum or `ui/ticks.json` | Yu's acceptance alone |
+| `betangel_suite/config.py`, `docs/data-handling.md` and `tests/__init__.py` (Nuance's Q-N12 addition, PR #2 review) | Astra and Nuance, jointly |
+| Any file no other row names (Nuance's "fail-closed row for unnamed files", PR #2 review) | Astra and Nuance, jointly |
+| Rule documents: `AGENTS.md`, `docs/DESIGN.md`, `docs/data-handling.md`, `docs/proposals/`, `tools/stage/` | No row yet: asked of Yu, not answered (see below). Until Yu rules, Astra and Nuance at the same head SHA (lab-Claude's reading) |
+| UI-only PRs: `ui/` with no change to routes, the command enum or `ui/ticks.json` | Yu's acceptance alone: a proposal, since the UI-only half of Q-Y8 is asked of Yu, not answered |
 
-- **Merging.** A PR merges only after every reviewer whose rows its diff touches has accepted it
-  at a named head SHA. So a PR that touches `engine.py` or `roots.py` needs both Astra and
-  Nuance. UI-only PRs merge on Yu's acceptance alone. Lab-Claude merges; Yu can veto or revert
-  any merge.
-  - Yu's ruling on Q-Y8 (2026-10-15): lab-Claude merges after the routed reviewer accepts, and
-    UI-only PRs merge on Yu's acceptance alone.
-  - Nuance's answer to Q-N12 was "agree once amended". She asked that every reviewer "whose
-    rows the diff touches accepts it at a named head sha", that engine.py and the roots be
-    reviewed jointly, and that her row gain synthetic.py, tests/fixtures/, tools/export_ticks.py,
-    ui/ticks.json and replay/. Those rows and the merge rule above are her amendment.
-  - Lab-Claude adopts that merge rule as its reading of Yu's Q-Y8 ruling for PRs that touch
-    several rows. Yu has not ruled on this reading and can override it.
+- **Merging.** A PR merges only after every reviewer whose rows its diff touches has accepted the
+  same head SHA. So a PR that touches `engine.py` or `roots.py` needs both Astra and Nuance.
+  Lab-Claude merges.
+  - **Who merges (Q-Y8).** The Phase 0 packet asked: "Who merges pull requests (Q-Y8): you, or
+    me after Nuance or Astra has reviewed? And may UI-only changes go in on your approval
+    alone?" It gave no recommendation, so Yu's 2026-10-15 answer, "Lets go with what you
+    recommended for all.", did not cover it. Yu answered on 2026-10-16: "Its all good :) Merge
+    when sensible".
+  - **Lab-Claude's reading of "sensible"** (lab-Claude's, not Yu's words; Yu can override it):
+    - every reviewer routed to the PR accepts the same head SHA;
+    - the tests pass on 3.13 and 3.11 at that SHA;
+    - until Yu rules on the governance row, a PR that touches a rule document waits for both
+      Nuance and Astra at the same head SHA, and a diff that no row covers goes to Yu;
+    - PR #5 also waits for Yu's written approval of proposal 002 (on phase0/viewing), after
+      Nuance's and Astra's reviews of it;
+    - the merge order is #1, #2, #4, #5.
+  - **The UI-only half of Q-Y8: asked of Yu, not answered.** Yu's 2026-10-16 answer does not take
+    it up separately, so the UI-only row above stays a proposal until Yu answers.
+  - **Withdrawn.** An earlier version of this file said Yu ruled on Q-Y8 on 2026-10-15, and that
+    "Yu can veto or revert any merge". Nuance found no source for either (PR #1 review, item 10).
+  - Nuance's answer to Q-N12 was "agree once amended" (PR #4 review). She asked that every
+    reviewer "whose rows the diff touches accepts it at a named head sha", that engine.py and the
+    roots be reviewed jointly, and that her row gain synthetic.py, tests/fixtures/,
+    tools/export_ticks.py, ui/ticks.json and replay/. Those rows and the merge rule above are her
+    amendment.
+  - Her PR #2 review adds: config.py, data-handling.md and tests/__init__.py go to Astra and
+    Nuance; "a fail-closed row for unnamed files"; and "changes to AGENTS.md's rules or routing
+    also need Yu". The first two are the jointly reviewed rows above: they only add reviewers.
+    The third is part of the governance row, asked of Yu and not answered. She also wrote that
+    "Every touched reviewer accepts the same head SHA" goes to Yu as a Q-Y8 clarification; Yu's
+    2026-10-16 answer is above.
+  - **The governance row for rule documents: asked of Yu, not answered.** Rule documents match no
+    row of their own, so the author would judge its own widening (Nuance's PR #1 review, item 9).
+    Nuance recommends: these files go to Nuance and Astra at a named SHA; a diff that no row
+    covers goes to Yu; and a change of meaning follows rule 10 unless both reviewers say it does
+    not widen.
   - The second Astra row is lab-Claude's proposal, from Phase 0c's review plan. Nuance did not
     ask for it. It only adds a reviewer, so it never lets a PR merge on fewer acceptances. It
     stays open for Yu to rule on with Nuance (Q-N12, Q-Y8), and Yu can override it.
-  - Asked of Yu on 2026-10-16, and not answered yet: must the tests also pass on 3.13 and 3.11
-    at that head SHA?
 - Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS. Collab edit tasks use
   `root_path=/Users/user/betangel-suite`. Lab-Claude never accepts its own Collab edit tasks.
 - **Yu's acceptance and feedback** reach lab-Claude only in a lab-Claude session that Yu types
-  into, or in an acceptance checklist file that Yu edits directly. Relays from Nuance, Astra, the
-  mailbox or Collab are context, not acceptance.
+  into. An acceptance checklist file that Yu edits is a log of Yu's checks, not acceptance
+  (Nuance, PR #1 review). Relays from Nuance, Astra, the mailbox or Collab are context, not
+  acceptance.
 
 ## Repository hygiene (I-9)
 
