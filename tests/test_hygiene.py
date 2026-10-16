@@ -35,6 +35,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SCANNER = REPO / "tools" / "hygiene_scan.py"
 HOOK = REPO / "tools" / "pre-commit"
+HISTORY_HOOKS = {"commit-msg": "--message", "pre-merge-commit": "--staged", "pre-push": "--push"}
+ZERO = "0" * 40
 GITIGNORE = REPO / ".gitignore"
 GIT = "/usr/bin/git"
 PY313 = "/opt/homebrew/bin/python3.13"
@@ -43,7 +45,8 @@ FORBID = {"BETANGEL_BETFAIR_FORBID_NETWORK": "1"}
 FAIL_LINE = re.compile(r"^FAIL (\S+) ")
 # Every finding prints the same placeholder for its path, whatever the rule: no directory, name or suffix.
 WITHHELD = "<path withheld>"
-FINDING_SHAPE = re.compile(r"FAIL [a-z_]+ <path withheld>:(?:[0-9]+| \+[0-9]+ more line\(s\)) \(entry [0-9]+\)")
+FINDING_SHAPE = re.compile(r"FAIL [a-z_]+ <path withheld>:(?:[0-9]+| \+[0-9]+ more line\(s\)) \((?:entry [0-9]+|message"
+                           r"|(?:commit|tag) [0-9a-f]{40} message|commit [0-9a-f]{40} entry [0-9]+)\)")
 
 
 def _j(*parts: str) -> str:
@@ -1028,6 +1031,156 @@ class GitignoreTests(_RepoCase):
                 self.assertFalse(self.ignored(rel))
 
 
+class HistoryTests(_RepoCase):
+    """Commit messages, tag messages and every commit a push publishes (Nuance's #2 review, item 20).
+
+    The test runner's guard lets tests run only a few local git subcommands (no merge, push, tag or
+    update-ref), so refs, HEAD, MERGE_HEAD and a tag object are written into the temporary .git here.
+    """
+
+    def commit(self, message: str) -> str:
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD").stdout.decode().strip()
+
+    def write_ref(self, ref: str, value: str) -> None:
+        self.write(os.path.join(".git", ref), value + "\n")
+
+    def push_scan(self, *lines: str, remote: str = "origin"):
+        return self.scan("--push", remote, stdin="".join(line + "\n" for line in lines).encode())
+
+    def assert_push_flags(self, out: str, *expected: str) -> None:
+        for line in expected:
+            self.assertIn(line, out)
+        self.assert_withheld(out)
+        self.assertNotIn(MARKET_2015, out)
+        self.assertNotIn("notes", out)
+
+    def history_only_file(self):
+        """base, then A adds a file holding an id, then B deletes it: the tip holds nothing."""
+        base = self.commit("base")
+        self.write("notes/a.txt", f"m = '{MARKET_2015}'\n")
+        self.add("notes/a.txt")
+        added = self.commit("add notes")
+        os.unlink(os.path.join(self.repo, "notes", "a.txt"))
+        self.git("add", "-A")
+        return base, added, self.commit("drop notes")
+
+    def test_a_file_only_in_history_is_found(self):
+        base, added, tip = self.history_only_file()
+        self.assert_clean()
+        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}")
+        self.assertEqual(rc, 1, out)
+        self.assert_push_flags(out, f"FAIL market_id {WITHHELD}:1 (commit {added} entry 1)")
+        rc, out = self.scan("--range", f"{base}..{tip}")
+        self.assertEqual(rc, 1, out)
+        self.assert_push_flags(out, f"FAIL market_id {WITHHELD}:1 (commit {added} entry 1)")
+
+    def test_what_the_remote_holds_is_not_scanned_again(self):
+        _base, added, tip = self.history_only_file()
+        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {added}")  # the remote's old value
+        self.assertEqual((rc, out.strip()), (0, "hygiene_scan: OK 1 item(s) scanned [push]"))
+        self.write_ref("refs/remotes/origin/main", added)  # or a tracking ref for this remote
+        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}", remote="elsewhere")
+        self.assertEqual(rc, 1, out)
+
+    def test_commit_and_tag_messages(self):
+        self.commit("base")
+        self.write("pkg/t.py", "x = 1\n")
+        self.add("pkg/t.py")
+        flagged = self.commit(f"note {MARKET_2015}")
+        body = (f"object {flagged}\ntype commit\ntag v-syn\n"
+                f"tagger Synthetic Tester <tester@example.invalid> 1700000000 +0000\n\ntag {MARKET_2015}\n").encode()
+        raw = b"tag " + str(len(body)).encode() + b"\0" + body
+        tag = hashlib.sha1(raw).hexdigest()
+        self.write(os.path.join(".git", "objects", tag[:2], tag[2:]), zlib.compress(raw))
+        rc, out = self.push_scan(f"refs/tags/v-syn {tag} refs/tags/v-syn {ZERO}")
+        self.assertEqual(rc, 1, out)
+        self.assert_push_flags(out, f"FAIL market_id {WITHHELD}:1 (tag {tag} message)",
+                               f"FAIL market_id {WITHHELD}:1 (commit {flagged} message)")
+
+    def test_a_merge_is_scanned_for_what_differs_from_every_parent(self):
+        base = self.commit("base")
+        self.write_ref("refs/heads/side", base)
+        self.write(".git/HEAD", "ref: refs/heads/side\n")
+        self.write("side.txt", f"s = '{MARKET_2015}'\n")
+        self.add("side.txt")
+        side = self.commit("side")
+        self.write(".git/HEAD", "ref: refs/heads/main\n")  # main is still base; the index keeps side.txt
+        self.write(".git/MERGE_HEAD", side + "\n")
+        self.write(".git/MERGE_MODE", "no-ff")  # as `git merge --no-ff` leaves it: keep both parents
+        self.write("pkg/zz.py", f"e = '{MARKET_2015}'\n")
+        self.add("pkg/zz.py")
+        merge = self.commit("merge side")
+        parents = self.git("rev-parse", f"{merge}^1", f"{merge}^2").stdout.decode().split()
+        self.assertEqual(parents, [base, side])
+        rc, out = self.push_scan(f"refs/heads/main {merge} refs/heads/main {ZERO}")
+        self.assertEqual(rc, 1, out)
+        # side.txt is the merge's but equals side's copy, so only the side commit lists it.
+        self.assert_push_flags(out, f"FAIL market_id {WITHHELD}:1 (commit {side} entry 1)",
+                               f"FAIL market_id {WITHHELD}:1 (commit {merge} entry 1)", "market_id=2")
+
+    def test_a_deletion_publishes_nothing_and_bad_input_is_refused(self):
+        tip = self.commit("base")
+        rc, out = self.push_scan(f"(delete) {ZERO} refs/heads/gone {tip}")
+        self.assertEqual((rc, out.strip()), (0, "hygiene_scan: OK 0 item(s) scanned [push]"))
+        blob = self.git("rev-parse", "HEAD:README.md").stdout.decode().strip()
+        for lines, code in (((f"refs/heads/main {tip}",), "push_input"),
+                            ((f"refs/heads/main {blob} refs/heads/main {ZERO}",), "push_object_not_commit")):
+            with self.subTest(code=code):
+                rc, out = self.push_scan(*lines)
+                self.assertEqual((rc, out.strip()), (2, f"hygiene_scan: refused:{code}"))
+        for args in (("--range", "--all"), ("--push", ""), ("--message", "m", "--range", tip),
+                     ("--staged", "--range", tip)):
+            with self.subTest(args=args):
+                rc, out = self.scan(*args)
+                self.assertEqual(rc, 2, out)
+
+    def test_message_files(self):
+        member = bz2.compress(_stream_text().encode())
+        cases = {"market_id": f"synthetic subject\n\nsee {MARKET_2015}\n".encode(),
+                 "binary_file": _stream_text().encode("cp500"),
+                 "encoded_blob": b"synthetic subject\n\n" + base64.encodebytes(member)}
+        for code, data in cases.items():
+            with self.subTest(code=code):
+                self.write(".git/MSG", data)
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertIn(code, self.codes(out))
+                self.assert_withheld(out)
+                self.assertNotIn(MARKET_2015, out)
+        self.write(".git/MSG", "synthetic subject\n\nA clean body.\n")
+        rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+        self.assertEqual((rc, out.strip()), (0, "hygiene_scan: OK 1 message(s) scanned [message]"))
+
+    def test_message_files_that_are_not_plain_files_are_refused(self):
+        fifo = os.path.join(self.tmp, "fifo")
+        os.mkfifo(fifo)
+        link = os.path.join(self.tmp, "link")
+        os.symlink(os.path.join(self.repo, "README.md"), link)
+        inside = os.path.join(self.tmp, _j("betangel", "-data"), "MSG")
+        for path, code in ((fifo, "message_not_regular"), (link, "message_unreadable"), (inside, "data_root")):
+            with self.subTest(code=code):
+                rc, out = self.scan("--message", path)
+                self.assertEqual((rc, out.strip()), (2, f"hygiene_scan: refused:{code}"))
+
+
+class HookScriptTests(unittest.TestCase):
+    """The history hooks: POSIX sh, executable, the scanner mode each needs, and their install line."""
+
+    def test_each_hook_runs_its_scan(self):
+        for name, flag in HISTORY_HOOKS.items():
+            with self.subTest(hook=name):
+                path = REPO / "tools" / name
+                self.assertTrue(os.access(path, os.X_OK), "not executable")
+                text = path.read_text()
+                self.assertTrue(text.startswith("#!/bin/sh\n"))
+                self.assertIn(f'"$PY" -I -S -B "$SCAN" --root "$ROOT" {flag}', text)
+                self.assertIn(f"ln -s ../../tools/{name} .git/hooks/{name}", text)
+                self.assertIn("PY=/opt/homebrew/bin/python3.13", text)
+
+
 @unittest.skipUnless(os.access(PY313, os.X_OK), "the hook needs /opt/homebrew/bin/python3.13")
 class PreCommitHookTests(_RepoCase):
 
@@ -1036,10 +1189,11 @@ class PreCommitHookTests(_RepoCase):
         tools = os.path.join(self.repo, "tools")
         os.makedirs(tools, exist_ok=True)
         shutil.copy(SCANNER, os.path.join(tools, "hygiene_scan.py"))
-        shutil.copy(HOOK, os.path.join(tools, "pre-commit"))
         hooks = os.path.join(self.repo, ".git", "hooks")
         os.makedirs(hooks, exist_ok=True)
-        os.symlink("../../tools/pre-commit", os.path.join(hooks, "pre-commit"))
+        for name in ("pre-commit", *HISTORY_HOOKS):
+            shutil.copy(REPO / "tools" / name, os.path.join(tools, name))
+            os.symlink(f"../../tools/{name}", os.path.join(hooks, name))
 
     def commit(self):
         proc = self.git("commit", "-q", "-m", "synthetic", check=False)
@@ -1060,6 +1214,33 @@ class PreCommitHookTests(_RepoCase):
         head = self.git("rev-parse", "--verify", "-q", "HEAD", check=False)
         self.assertNotEqual(head.returncode, 0, "nothing should have been committed")
 
+    def test_commit_msg_blocks_an_id_in_the_message(self):
+        self.write("pkg/t.py", "x = 1\n")
+        self.add("pkg/t.py")
+        proc = self.git("commit", "-q", "-m", f"synthetic {MARKET_2015}", check=False)
+        out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        self.assertNotEqual(proc.returncode, 0, out)
+        self.assertIn(f"FAIL market_id {WITHHELD}:1 (message)", out)
+        self.assertIn("commit-msg: commit blocked", out)
+        self.assertNotIn(MARKET_2015, out)
+        head = self.git("rev-parse", "--verify", "-q", "HEAD", check=False)
+        self.assertNotEqual(head.returncode, 0, "nothing should have been committed")
+
+    def test_pre_merge_commit_runs_the_staged_scan(self):
+        # git runs pre-merge-commit only for `git merge`, which tests may not run; core.hooksPath gives
+        # `git commit` the script as its pre-commit hook instead, to show it blocks on the staged tree.
+        hooks = os.path.join(self.tmp, "merge-hooks")
+        os.mkdir(hooks)
+        os.symlink(os.path.join(self.repo, "tools", "pre-merge-commit"), os.path.join(hooks, "pre-commit"))
+        with open(os.path.join(self.repo, ".git", "config"), "a") as handle:
+            handle.write(f"[core]\n\thooksPath = {hooks}\n")
+        self.write("pkg/s.py", f"x = '{MARKET_2015}'\n")
+        self.add("pkg/s.py")
+        rc, out = self.commit()
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("pre-merge-commit: merge blocked", out)
+        self.assertNotIn(MARKET_2015, out)
+
     def test_hook_blocks_a_forced_archive(self):
         self.write("data/x.bz2", bz2.compress(b"abc"))
         self.add("data/x.bz2", force=True)
@@ -1072,7 +1253,8 @@ class OwnFilesTests(unittest.TestCase):
     """The scanner passes over its own sources, this file and the governance files."""
 
     def test_own_files_pass(self):
-        names = ["tools/hygiene_scan.py", "tools/pre-commit", "tests/test_hygiene.py",
+        names = ["tools/hygiene_scan.py", "tools/pre-commit", *(f"tools/{name}" for name in HISTORY_HOOKS),
+                 "tests/test_hygiene.py",
                  ".gitignore", "AGENTS.md", "docs/data-handling.md", "docs/DESIGN.md"]
         present = [n for n in names if (REPO / n).is_file()]
         env = {"PATH": "/usr/bin:/bin", "LANG": "en_GB.UTF-8", **FORBID}

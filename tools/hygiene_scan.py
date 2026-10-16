@@ -29,6 +29,16 @@ entry's position, counted from 1, in the list the scan worked through:
                    git work tree: every file under the root, sorted)
   PATH ...         the files under the given paths, sorted
 
+The message and history modes name their items in place of "entry <n>":
+
+  --message        "(message)"
+  --push, --range  "(commit <sha> message)", "(tag <sha> message)", and
+                   "(commit <sha> entry <k>)" for the k-th record of
+                   `git diff-tree -r --no-commit-id --raw --no-renames
+                   --root -c <sha>` (deleted paths count, and publish
+                   nothing; for a merge, -c lists only the paths that
+                   differ from every parent)
+
 docs/data-handling.md shows how Yu maps an entry number to its file
 locally.
 
@@ -37,11 +47,18 @@ Run it with the fixed interpreter, standard library only:
     /opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --staged
     /opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py
     /opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py PATH [PATH ...]
+    /opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --range origin/main..HEAD
 
   --staged         scan every entry of the git index (what a commit would hold);
-                   tools/pre-commit runs this
+                   tools/pre-commit and tools/pre-merge-commit run this
   (no PATH)        scan the working tree: tracked plus untracked, not ignored
   PATH ...         scan these files or directories, relative to --root
+  --message FILE   scan a commit message file; tools/commit-msg runs this
+  --push REMOTE    scan what a push to REMOTE publishes, from git's pre-push
+                   lines on stdin: every commit not known to be on REMOTE
+                   (its message, and each path it adds or changes) and each
+                   annotated tag's message; tools/pre-push runs this
+  --range RANGE    the same for the commits `git rev-list RANGE` gives
   --root DIR       repository root (default: the git toplevel of the cwd, else the cwd)
   --list-rules     print the rule codes and exit
 
@@ -756,8 +773,64 @@ def _read_exact(stream, n: int) -> bytes:
     return b"".join(chunks)
 
 
+class _Objects:
+    """One `git cat-file --batch` for a whole scan: objects are read from git, never from disk."""
+
+    def __init__(self):
+        self.proc = None
+
+    def read(self, sha: bytes, limit: int, sniff: int):
+        """(type, size, data): all of an object up to limit bytes, else its first sniff bytes."""
+        if self.proc is None:
+            self.proc = subprocess.Popen(
+                [GIT, "-C", ROOT, "cat-file", "--batch"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.proc.stdin.write(sha + b"\n")
+        self.proc.stdin.flush()
+        header = self.proc.stdout.readline().split()
+        if len(header) != 3:
+            raise Refusal("git_object")
+        size = int(header[2])
+        keep = size if size <= limit else min(size, sniff)
+        data = _read_exact(self.proc.stdout, keep)
+        rest = size - keep
+        while rest > 0:
+            rest -= len(_read_exact(self.proc.stdout, min(rest, 1 << 16)))
+        self.proc.stdout.read(1)
+        return header[1], size, data
+
+    def close(self):
+        if self.proc is not None:
+            self.proc.stdin.close()
+            self.proc.stdout.close()
+            self.proc.wait()
+
+
+def _object_entry(objects: _Objects, rel: str, mode: bytes, sha: bytes, filtered=frozenset()) -> list:
+    """Findings for one tree or index entry (path, mode, object), reading its blob from git."""
+    found = [(0, c) for c in _path_codes(rel)] + _rel_id_codes(rel)
+    if rel in filtered:
+        found.append((0, "filter_attribute"))
+    if mode == b"160000":
+        found.append((0, "submodule"))
+        return found
+    limit = _size_limit(rel)
+    kind, size, data = objects.read(sha, limit, SNIFF_BYTES)
+    if kind != b"blob":
+        raise Refusal("git_object")
+    codes = {c for _, c in found}
+    if mode == b"120000":
+        found.extend((0, c) for c in _symlink_codes(data.decode("utf-8", "replace")))
+    elif "data_path" not in codes:
+        oversize = size > limit
+        if oversize:
+            found.append((0, "oversize"))
+        found.extend(_content_codes(rel, data, oversize))
+    return found
+
+
 def _staged_entries():
-    """Yield (rel, findings) for every index entry, reading blobs from git."""
+    """Yield (rel, findings, where) for every index entry, reading blobs from git."""
     raw = _git(ROOT, "ls-files", "-s", "-z")
     records = []
     for rec in raw.split(b"\0"):
@@ -768,49 +841,154 @@ def _staged_entries():
         if len(fields) != 3:
             raise Refusal("git_index_format")
         records.append((fields[0], fields[1], path.decode("utf-8", "surrogateescape")))
-    blobs = [r for r in records if r[0] != b"160000"]
     filtered = _filtered(sorted({rel for _mode, _sha, rel in records}))
-    proc = None
-    if blobs:
-        proc = subprocess.Popen(
-            [GIT, "-C", ROOT, "cat-file", "--batch"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    objects = _Objects()
     try:
-        for mode, sha, rel in records:
-            found = [(0, c) for c in _path_codes(rel)] + _rel_id_codes(rel)
-            if rel in filtered:
-                found.append((0, "filter_attribute"))
-            if mode == b"160000":
-                found.append((0, "submodule"))
-                yield rel, found
-                continue
-            proc.stdin.write(sha + b"\n")
-            proc.stdin.flush()
-            header = proc.stdout.readline().split()
-            if len(header) != 3 or header[1] != b"blob":
-                raise Refusal("git_object")
-            size = int(header[2])
-            limit = _size_limit(rel)
-            keep = size if size <= limit else min(size, SNIFF_BYTES)
-            data = _read_exact(proc.stdout, keep)
-            rest = size - keep
-            while rest > 0:
-                rest -= len(_read_exact(proc.stdout, min(rest, 1 << 16)))
-            proc.stdout.read(1)
-            codes = {c for _, c in found}
-            if mode == b"120000":
-                found.extend((0, c) for c in _symlink_codes(data.decode("utf-8", "replace")))
-            elif "data_path" not in codes:
-                oversize = size > limit
-                if oversize:
-                    found.append((0, "oversize"))
-                found.extend(_content_codes(rel, data, oversize))
-            yield rel, found
+        for index, (mode, sha, rel) in enumerate(records, 1):
+            yield rel, _object_entry(objects, rel, mode, sha, filtered), f"entry {index}"
     finally:
-        if proc is not None:
-            proc.stdin.close()
-            proc.stdout.close()
-            proc.wait()
+        objects.close()
+
+# --------------------------------------------------------- messages, history
+#
+# Nuance's #2 review, item 20: commit messages, and the history a push publishes, were never
+# scanned; a file that one commit adds and a later one deletes passed every tree scan.
+
+_OBJECT_ID = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
+MAX_OBJECT_BYTES = 2 * MAX_FILE_BYTES  # a commit or tag object read whole: headers and message
+
+
+def _message_findings(message: bytes) -> list:
+    """A commit or tag message gets the content rules of a file: binary, oversize and text."""
+    oversize = len(message) > MAX_FILE_BYTES
+    found = [(0, "oversize")] if oversize else []
+    return found + _content_codes("", message[:SNIFF_BYTES] if oversize else message, oversize)
+
+
+def _message_of(data: bytes) -> bytes:
+    """The message of a raw commit or tag object: everything after the first blank line."""
+    _headers, blank, message = data.partition(b"\n\n")
+    return message if blank else b""
+
+
+def _read_message_file(path: str) -> bytes:
+    """The message file git hands commit-msg, read with no link followed and never blocking."""
+    _check_lexical(os.path.abspath(path))
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        raise Refusal("message_unreadable") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Refusal("message_not_regular")
+        chunks, left = [], MAX_FILE_BYTES + 1
+        while left > 0:
+            chunk = os.read(fd, min(left, 1 << 16))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _is_commit(sha: str) -> bool:
+    proc = subprocess.run(
+        [GIT, "-C", ROOT, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{sha}^{{commit}}"],
+        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+    return proc.returncode == 0
+
+
+def _push_targets(remote: str, lines: bytes):
+    """(rev-list arguments, tag objects) for what a push publishes, from git's pre-push lines.
+
+    Each line is "<local ref> <local object> <remote ref> <remote object>". A deletion (local
+    object all zeros) publishes nothing. The commits published are those reachable from the
+    local objects but from neither the remote's old objects (when this clone has them) nor any
+    of this clone's tracking refs for the remote (refs/remotes/<remote>/*): what the remote is
+    known to hold already is not scanned again. A remote given as a URL has no tracking refs,
+    so everything not reachable from the old objects is scanned.
+    """
+    tips, known = [], []
+    for line in lines.splitlines():
+        fields = line.split(b" ")
+        if len(fields) != 4 or not (_OBJECT_ID.fullmatch(fields[1]) and _OBJECT_ID.fullmatch(fields[3])):
+            raise Refusal("push_input")
+        local, old = fields[1].decode(), fields[3].decode()
+        if local.strip("0"):
+            tips.append(local)
+        if old.strip("0") and _is_commit(old):
+            known.append(old)
+    if not tips:
+        return None, []
+    return [*tips, "--not", *known, f"--remotes={remote}"], tips
+
+
+def _peel_tags(objects: _Objects, tips) -> list:
+    """The annotated tag objects among tips (and the tags they point at), each read once."""
+    tags, seen = [], set()
+    for sha in tips:
+        while sha not in seen:
+            seen.add(sha)
+            kind, _size, data = objects.read(sha.encode(), MAX_OBJECT_BYTES, MAX_OBJECT_BYTES)
+            if kind != b"tag":
+                if kind != b"commit":
+                    raise Refusal("push_object_not_commit")
+                break
+            tags.append((sha, data))
+            target = data.split(b"\n", 1)[0].split(b" ")
+            if len(target) != 2 or target[0] != b"object" or not _OBJECT_ID.fullmatch(target[1]):
+                raise Refusal("git_object")
+            sha = target[1].decode()
+    return tags
+
+
+def _diff_records(raw: bytes):
+    """(mode, object, path) of each record of `git diff-tree -r -z --raw -c`: the result side.
+
+    A record is ":<modes> <objects> <status>" (one colon per parent) then the path. Deleted
+    paths have mode 000000.
+    """
+    fields = raw.split(b"\0")
+    if fields[-1]:
+        raise Refusal("git_diff_format")
+    for meta, path in zip(fields[0:-1:2], fields[1:-1:2]):
+        parents = len(meta) - len(meta.lstrip(b":"))
+        parts = meta[parents:].split(b" ")
+        if parents < 1 or len(parts) != 2 * parents + 3:
+            raise Refusal("git_diff_format")
+        yield parts[parents], parts[2 * parents + 1], path.decode("utf-8", "surrogateescape")
+
+
+def _history_entries(revisions, tips=()):
+    """Yield (rel, findings, where) for every commit rev-list gives for revisions, oldest first.
+
+    Each commit's message is one item, then each path it adds or changes, numbered as
+    `git diff-tree -r --no-commit-id --raw --no-renames --root -c <commit>` lists them (deleted
+    paths count but publish nothing). For a merge, -c lists only paths that differ from every
+    parent: whatever came from a parent was scanned in that parent's commit, or is on the remote
+    already. Annotated tags among the pushed objects come first, as their messages.
+    """
+    objects = _Objects()
+    try:
+        for sha, data in _peel_tags(objects, tips):
+            yield "", _message_findings(_message_of(data)), f"tag {sha} message"
+        if revisions is None:
+            return
+        commits = _git(ROOT, "rev-list", "--reverse", "--topo-order", *revisions).decode().split()
+        for sha in commits:
+            kind, _size, data = objects.read(sha.encode(), MAX_OBJECT_BYTES, MAX_OBJECT_BYTES)
+            if kind != b"commit":
+                raise Refusal("git_object")
+            yield "", _message_findings(_message_of(data)), f"commit {sha} message"
+            raw = _git(ROOT, "diff-tree", "-r", "-z", "--no-commit-id", "--raw", "--no-renames", "--root", "-c", sha)
+            for index, (mode, blob, rel) in enumerate(_diff_records(raw), 1):
+                if mode != b"000000":
+                    yield rel, _object_entry(objects, rel, mode, blob), f"commit {sha} entry {index}"
+    finally:
+        objects.close()
 
 # ------------------------------------------------------------- tree I/O
 
@@ -984,13 +1162,15 @@ def _default_root() -> str:
 
 # ----------------------------------------------------------------- output
 
-def _report(results, mode: str) -> int:
-    """Print the findings. Every path shows as WITHHELD, whatever the rule."""
+def _report(results, mode: str, noun: str = "file(s)") -> int:
+    """Print the findings of (rel, findings, where) results. Every path shows as WITHHELD, whatever the rule;
+    where says which item it is: "entry <n>", "message", "commit <sha> message", "commit <sha> entry <k>" or
+    "tag <sha> message"."""
     total = 0
     per_code = {}
     files_with = 0
     scanned = 0
-    for index, (_rel, found) in enumerate(results, 1):
+    for _rel, found, where in results:
         if found is None:
             continue
         scanned += 1
@@ -1005,14 +1185,14 @@ def _report(results, mode: str) -> int:
             per_code[code] = per_code.get(code, 0) + len(lines)
             total += len(lines)
             for line in lines[:MAX_REPORTED_LINES]:
-                print(f"FAIL {code} {WITHHELD}:{line} (entry {index})")
+                print(f"FAIL {code} {WITHHELD}:{line} ({where})")
             if len(lines) > MAX_REPORTED_LINES:
-                print(f"FAIL {code} {WITHHELD}: +{len(lines) - MAX_REPORTED_LINES} more line(s) (entry {index})")
+                print(f"FAIL {code} {WITHHELD}: +{len(lines) - MAX_REPORTED_LINES} more line(s) ({where})")
     if total:
         summary = ", ".join(f"{code}={n}" for code, n in sorted(per_code.items()))
-        print(f"hygiene_scan: FAIL {total} finding(s) in {files_with} file(s) [{mode}]: {summary}")
+        print(f"hygiene_scan: FAIL {total} finding(s) in {files_with} {noun} [{mode}]: {summary}")
         return EXIT_FINDINGS
-    print(f"hygiene_scan: OK {scanned} file(s) scanned [{mode}]")
+    print(f"hygiene_scan: OK {scanned} {noun} scanned [{mode}]")
     return EXIT_CLEAN
 
 # ------------------------------------------------------------------- main
@@ -1031,6 +1211,9 @@ def _main(argv) -> int:
     global ROOT
     parser = _Parser(prog="hygiene_scan.py", add_help=True)
     parser.add_argument("--staged", action="store_true")
+    parser.add_argument("--message")
+    parser.add_argument("--push")
+    parser.add_argument("--range", dest="revisions")
     parser.add_argument("--root")
     parser.add_argument("--list-rules", action="store_true")
     parser.add_argument("paths", nargs="*")
@@ -1041,17 +1224,32 @@ def _main(argv) -> int:
         return EXIT_CLEAN
     if args.staged and args.paths:
         raise Refusal("staged_with_paths")
+    history = [m for m in (args.message, args.push, args.revisions) if m is not None]
+    if len(history) > 1 or (history and (args.staged or args.paths)):
+        raise Refusal("one_mode_only")
+    if any(not m or m.startswith("-") for m in history):
+        raise Refusal("usage")
     root = args.root if args.root else _default_root()
     _check_lexical(os.path.abspath(root))
     ROOT = _safe_resolve(root)
-    if args.staged:
+    if args.message is not None:
+        found = _message_findings(_read_message_file(args.message))
+        return _report([("", found, "message")], "message", "message(s)")
+    if args.staged or history:
         if not _is_git_worktree(ROOT):
             raise Refusal("not_a_git_worktree")
+    if args.staged:
         return _report(_staged_entries(), "staged")
+    if args.push is not None:
+        revisions, tips = _push_targets(args.push, sys.stdin.buffer.read(1 << 20))
+        return _report(_history_entries(revisions, tips), "push", "item(s)")
+    if args.revisions is not None:
+        return _report(_history_entries([args.revisions]), "range", "item(s)")
     rels = _tree_rels(args.paths)
     filtered = _filtered(rels) if _is_git_worktree(ROOT) else set()
     results = (_with_filter(_tree_entry(rel), filtered) for rel in rels)
-    return _report(results, "paths" if args.paths else "tree")
+    return _report(((rel, found, f"entry {index}") for index, (rel, found) in enumerate(results, 1)),
+                   "paths" if args.paths else "tree")
 
 
 def main(argv=None) -> int:
