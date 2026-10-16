@@ -176,7 +176,8 @@ function marketOk(market) {
 function runnerOk(runner) {
   return hasKeys(runner, RUNNER_KEYS) && isInt(runner.id) && isText(runner.name, 200)
     && isText(runner.status, 32) && isIntOrNull(runner.ltp_h) && (runner.ltp_h === null || runner.ltp_h > 0)
-    && isInt(runner.tv_p) && runner.tv_p >= 0 && isLevels(runner.back) && isLevels(runner.lay);
+    && isIntOrNull(runner.tv_p) && (runner.tv_p === null || runner.tv_p >= 0)
+    && isLevels(runner.back) && isLevels(runner.lay);
 }
 
 // null when msg is a well-formed stream message, else a code. Unknown message types are "unknown_type"

@@ -8,7 +8,9 @@ with fixed header fields, so equal inputs give equal bytes and equal archive has
 standard_archive() is the one the data tests ingest and index: four markets in 2015-05 (the engineering year), one
 each with no option, suspension plus removal, nonfinite_sp, and no_market_time. gated_archive() adds the months the
 month gate refuses (DESIGN.md I-11: 2026-01, 2026-09, 2026-10, 2027-01) and a member whose path says 2015-05 while
-its marketTime says 2026-01 (refused by archive.py's content scan).
+its marketTime says 2026-01 (refused by archive.py's content scan). escaped_archive() holds the 2015-05 market and a
+2026-01 market under a 2015-05 path whose "marketTime" keys are written with a JSON escape: archive.py's byte scan
+misses it (archive.py:48-51), so ingest stores it, and only market_index's parsed check refuses the market.
 
 Callers own the directory: make it with tempfile under TMPDIR (bin/suite test points TMPDIR at the state root's
 tmp/) and remove it afterwards. Nothing here reads or writes anywhere else, and nothing here imports upstream.
@@ -129,6 +131,33 @@ def gated_markets():
     gated = tuple(synthetic.generate(spec(202 + i, month)) for i, month in enumerate(GATED_MONTHS))
     content = synthetic.generate(spec(209, GATED_MONTHS[0]))
     return kept, gated, content
+
+
+def escape_market_time_keys(line):
+    """line with every "marketTime" key written as "market\\u0054ime": json.loads reads the same message, but
+    archive.py's byte scan for "marketTime" values does not see it."""
+    return line.replace(b'"marketTime":', b'"market\\u0054ime":')
+
+
+def escaped_member(market, *, date):
+    """market's member at the path for date (YYYY-MM-DD), with its "marketTime" keys escaped."""
+    text = b"".join(escape_market_time_keys(line) + b"\n" for line in market.lines())
+    return Member(member_path(market, date=date), market, bz2.compress(text, 9))
+
+
+def escaped_markets():
+    """(the 2015-05 market, a 2026-01 market), both small; the second is the one escaped_archive() escapes."""
+    kept, _gated, _content = gated_markets()
+    escaped = synthetic.generate(synthetic.Spec(seed=210, runners=5, pre_off_s=60, inplay_s=10,
+                                                market_time="2015-05-09T16:20:00.000Z",
+                                                options=frozenset({"month:" + GATED_MONTHS[0]})))
+    return kept, escaped
+
+
+def escaped_archive(directory, *, name="escaped.tar"):
+    """The 2015-05 market, and the 2026-01 market at a 2015-05 path with its "marketTime" keys escaped."""
+    kept, escaped = escaped_markets()
+    return build_archive(directory, [member(kept), escaped_member(escaped, date=STANDARD_MONTH + "-09")], name=name)
 
 
 def gated_archive(directory, *, name="gated.tar"):

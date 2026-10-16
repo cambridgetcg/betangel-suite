@@ -603,6 +603,57 @@ attempt("inherited_stub_path", lambda: run(None))
         self.assertFalse(ok(["/usr/bin/open", "http://127.0.0.1:8765/x" + code], (state,), {8765}))
         self.assertFalse(ok(["/usr/bin/open", "-a", "Safari", "http://127.0.0.1:8765/" + code], (state,), {8765}))
 
+    def test_engine_git_probe_containment_follows_links(self):
+        # Astra's re-review of #4: the git probe's directory must lie in a root as text and with its links resolved,
+        # as runner_git_ok checks, because git -C follows links. Pure predicate, on real links in a temporary HOME.
+        home = make_home(self)
+        root = os.path.join(home, "root")
+        os.makedirs(os.path.join(root, "real"))
+        os.makedirs(os.path.join(home, "outside", "sub"))
+        os.symlink(os.path.join(home, "outside"), os.path.join(root, "link"))
+        os.symlink(home, os.path.join(home, "via"))            # a linked ancestor of a root is fine
+
+        def ok(directory, write_roots=(root,), real_roots=None):
+            argv = ["git", "-C", directory, "rev-parse", "--is-inside-work-tree"]
+            return guard.engine_argv_ok(argv, write_roots, set(), real_roots)
+
+        self.assertTrue(ok(os.path.join(root, "real")))
+        self.assertTrue(ok(root))
+        self.assertFalse(ok(os.path.join(root, "link")))
+        self.assertFalse(ok(os.path.join(root, "link", "sub")))
+        self.assertFalse(ok(os.path.join(home, "via", "outside")))  # text outside the root
+        via_root = os.path.join(home, "via", "root")
+        self.assertTrue(ok(os.path.join(via_root, "real"), (via_root,)))
+        self.assertFalse(ok(os.path.join(via_root, "link"), (via_root,)))
+        # The hook passes the real roots fixed at arm(); they are what the resolved directory is compared with.
+        self.assertTrue(ok(os.path.join(root, "real"), (root,), (root,)))
+        self.assertFalse(ok(os.path.join(root, "real"), (root,), (os.path.join(home, "outside"),)))
+
+    def test_engine_git_probe_through_a_link_is_refused(self):
+        home = make_home(self)
+        setup = """
+state = roots.state_dir()
+os.makedirs(os.path.join(state, "real"), exist_ok=True)
+outside = os.path.join(os.environ["HOME"], "outside")
+os.makedirs(os.path.join(outside, "sub"))
+os.symlink(outside, os.path.join(state, "link"))
+os.symlink(state, os.path.join(os.environ["HOME"], "alias"))
+"""
+        results = checks(self, home, setup=setup, body="""
+import subprocess
+state = roots.state_dir()
+def probe(*parts):
+    subprocess.run(["git", "-C", os.path.join(*parts), "rev-parse", "--is-inside-work-tree"], capture_output=True,
+                   timeout=30)
+attempt("real", lambda: probe(state, "real"))
+attempt("link", lambda: probe(state, "link"))
+attempt("through_link", lambda: probe(state, "link", "sub"))
+attempt("alias_into_root", lambda: probe(os.environ["HOME"], "alias", "real"))
+""")
+        self.assertEqual(results["real"], "ok")
+        for name in ("link", "through_link", "alias_into_root"):
+            self.assertEqual(results[name], "subprocess_refused", name)
+
     def test_vendor_argv_shapes(self):
         research, deps = "/h/betangel-research", "/h/.local/share/betangel-suite/deps"
         sha = "0123456789abcdef0123456789abcdef01234567"
@@ -702,7 +753,10 @@ attempt("plain_git", lambda: subprocess.run(["/usr/bin/git", "-C", roots.researc
 
 
 class WriteTests(unittest.TestCase):
-    """I-6: writes stay inside the roots; nothing under ~/betangel-data while the suite root is not agreed."""
+    """I-6: writes stay inside the roots; nothing under ~/betangel-data while the suite root is not agreed.
+
+    roots.STATE_ROOT_AGREED is True since Q-N3; the flag-off tests set it to False in the child before arming.
+    """
 
     SETUP = """
 home = os.environ["HOME"]
@@ -720,7 +774,7 @@ with open(os.path.join(state, "tree", "a", "b"), "w") as handle:
 
     def test_writes_with_the_suite_root_not_agreed(self):
         home = make_home(self)
-        results = checks(self, home, setup=self.SETUP, body="""
+        results = checks(self, home, setup=self.SETUP + "roots.STATE_ROOT_AGREED = False\n", body="""
 import shutil, sqlite3, tempfile
 def write(path):
     with open(path, "w") as handle:
@@ -846,9 +900,15 @@ attempt("remove_the_link_itself", lambda: os.remove(os.path.join(state, "empty")
 
     def test_calls_without_their_own_audit_event(self):
         # CPython raises no audit event for os.mkfifo or os.mknod; arm() wraps them so that they do.
+        for agreed, data_code in ((False, "state_root_not_agreed"), (True, "write_outside_roots")):
+            with self.subTest(agreed=agreed):
+                self.fifo_and_node_calls(agreed, data_code)
+
+    def fifo_and_node_calls(self, agreed, data_code):
         home = make_home(self)
         os.makedirs(roots.data_home(home), mode=0o700)      # a synthetic ~/betangel-data in the temporary HOME
-        results = checks(self, home, setup=self.SETUP, body="""
+        setup = self.SETUP + "roots.STATE_ROOT_AGREED = %r\n" % agreed
+        results = checks(self, home, setup=setup, body="""
 import posix
 data = roots.data_home()
 def mkfifo_dir_fd():
@@ -869,7 +929,7 @@ results["wrapped"] = os.mkfifo is posix.mkfifo and os.mkfifo.__module__ == "beta
         for name in ("mkfifo_outside", "posix_mkfifo_outside", "mkfifo_dir_fd_outside", "mknod_outside"):
             self.assertEqual(results[name], "write_outside_roots", name)
         for name in ("mkfifo_data_home", "mknod_data_home"):
-            self.assertEqual(results[name], "state_root_not_agreed", name)
+            self.assertEqual(results[name], data_code, name)
         self.assertEqual(results["mkfifo_inside"], "ok")
         self.assertTrue(results["wrapped"])
         self.assertEqual(os.listdir(roots.data_home(home)), [])
@@ -940,6 +1000,27 @@ attempt("write_outside", lambda: write(os.path.join(home, "outside.txt")))
         for name in ("write_data_home", "mkdir_data_root", "write_outside"):
             self.assertEqual(results[name], "write_outside_roots", name)
         self.assertEqual(os.listdir(roots.data_home(home)), ["suite.noindex"])
+
+    def test_only_engine_mode_writes_the_agreed_suite_root(self):
+        # The test runner runs with the real HOME, so with the flag on it must still never reach a real
+        # ~/betangel-data/suite.noindex; vendor, uisnap (synthetic PNGs) and release (its copies under app/) have
+        # no use for it either.
+        for mode in ("test", "vendor", "uisnap", "release"):
+            with self.subTest(mode=mode):
+                home = make_home(self)
+                os.makedirs(roots.data_home(home), mode=0o700)
+                results = checks(self, home, mode=mode, setup=self.SETUP + "roots.STATE_ROOT_AGREED = True\n", body="""
+suite = roots.suite_root()
+def write(path):
+    with open(path, "w") as handle:
+        handle.write("x")
+attempt("mkdir_suite_root", lambda: os.mkdir(suite, 0o700))
+attempt("write_suite_root", lambda: write(os.path.join(suite, "x")))
+attempt("write_state", lambda: write(os.path.join(state, "ok.txt")))
+""")
+                self.assertEqual(results, {"mkdir_suite_root": "write_outside_roots",
+                                           "write_suite_root": "write_outside_roots", "write_state": "ok"})
+                self.assertEqual(os.listdir(roots.data_home(home)), [])
 
 
 
@@ -1061,7 +1142,7 @@ attempt("git_after_seal", lambda: run(prefix + ["-C", guard.REPO_ROOT, "archive"
             self.assertEqual(results[name], "ok", name)
         for name in ("write_share", "write_deps", "rename_into_deps", "write_outside"):
             self.assertEqual(results[name], "write_outside_roots", name)
-        self.assertEqual(results["write_data_home"], "state_root_not_agreed")
+        self.assertEqual(results["write_data_home"], "write_outside_roots")      # the flag is on; outside every root
         for name in ("git_without_prefix", "git_fetch", "git_other_repo", "git_research", "git_inherited_env", "shell",
                      "git_after_seal"):
             self.assertEqual(results[name], "subprocess_refused", name)

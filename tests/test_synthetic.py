@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from collections import Counter
+from unittest import mock
 
 from betangel_suite import rx, synthetic
 from betangel_suite.synthetic import Spec, generate
@@ -283,6 +284,41 @@ class StreamTests(unittest.TestCase):
         self.assertGreater(trades, 1000)
 
 
+class TradedBasisTests(unittest.TestCase):
+    """trd and tv on the PRO historical basis, backer's stake x 2 (F60), as upstream paper and the engine read them
+    (Nuance's PR #4 review, item 1)."""
+
+    def test_a_trade_adds_twice_the_stake_it_takes_to_trd_and_tv(self):
+        real = synthetic._Simulation._trade
+        seen = []
+
+        def spy(sim, r, field, index, size):
+            level, trd, tv = getattr(r, field).get(index, 0), r.trd.get(index, 0), r.tv
+            done = real(sim, r, field, index, size)
+            seen.append((done, level - getattr(r, field).get(index, 0), r.trd.get(index, 0) - trd, r.tv - tv))
+            return done
+
+        with mock.patch.object(synthetic._Simulation, "_trade", spy):
+            for _line in generate(Spec(seed=48, options={"suspension", "removal"}, **SMALL)).lines():
+                pass
+        trades = [entry[1:] for entry in seen if entry[0]]
+        self.assertGreater(len(trades), 100)
+        for taken, trd_added, tv_added in trades:
+            self.assertGreater(taken, 0)
+            self.assertEqual((trd_added, tv_added), (2 * taken, 2 * taken))
+        self.assertEqual({entry[1:] for entry in seen if not entry[0]} - {(0, 0, 0)}, set())
+
+    def test_the_volume_cap_counts_the_doubled_stake(self):
+        sim = synthetic._Simulation(generate(Spec(seed=49, **SMALL)))
+        r, index = sim.runners[0], 100
+        r.atb[index] = 10_00
+        r.tv = synthetic.TV_CAP_P - 5                       # room for 2 pence of stake, counted as 4
+        self.assertTrue(sim._trade(r, "atb", index, 10_00))
+        self.assertEqual((r.atb[index], r.tv), (10_00 - 2, synthetic.TV_CAP_P - 1))
+        self.assertFalse(sim._trade(r, "atb", index, 10_00))   # no room for a whole doubled penny
+        self.assertEqual((r.atb[index], r.tv), (10_00 - 2, synthetic.TV_CAP_P - 1))
+
+
 class BookTests(unittest.TestCase):
 
     def test_every_message_applies_and_every_snapshot_before_the_off_is_valid(self):
@@ -302,6 +338,7 @@ class BookTests(unittest.TestCase):
                 self.assertEqual(len(touch(snapshot)), spec.runners)    # every runner quoted both sides
                 for back, lay in touch(snapshot).values():
                     self.assertLess(back, lay)                          # never crossed
+            # In play from exactly the off: the generator's fixed flip shape (unverified; DESIGN.md 11.1).
             in_play = [snapshot for message, snapshot in found if market.off_pt <= message["pt"] < market.suspend_pt]
             for snapshot in in_play:
                 self.assertEqual((snapshot["status"], snapshot["inplay"], snapshot["invalid_reason"]),
@@ -408,6 +445,8 @@ class TimelineTests(unittest.TestCase):
                          set(self.market.selection_ids))
 
     def test_in_play_flip_at_the_off(self):
+        # The generator's fixed flip shape: in play at exactly marketTime, never revised, no SUSPENDED at the off.
+        # The real shape is unverified (DESIGN.md 11.1); options for other shapes are owed before Phase 1a.
         flips = [(pt, md) for pt, md, _ in self.definitions if md["inPlay"]]
         pt, md = flips[0]
         self.assertEqual(pt, self.market.off_pt)
@@ -496,6 +535,27 @@ class OptionTests(unittest.TestCase):
         self.assertTrue(after and all(len(touch(s)) == SMALL["runners"] for s in after))
         self.assert_pre_off_open_snapshots_valid(market, found)    # the image clears ladder_partial_after_suspension
 
+    def test_the_removed_runners_adjustment_factor_is_its_chance_at_removal(self):
+        # Nuance's PR #4 review, item 4: it used to keep its opening value. Betfair's real semantics are unverified.
+        real = synthetic._Simulation._removal_message
+        seen = []
+
+        def spy(sim, t):
+            r = sim.runners[sim.p.removed]
+            expected = round(max(0.01, 100 * sim._q(r)), 2)
+            line = real(sim, t)
+            seen.append((expected, json.loads(line)["mc"][0]["marketDefinition"]["runners"][r.i]))
+            return line
+
+        with mock.patch.object(synthetic._Simulation, "_removal_message", spy):
+            for seed in (62, 63, 64):
+                for _line in generate(Spec(seed=seed, options={"removal"}, **SMALL)).lines():
+                    pass
+        self.assertEqual(len(seen), 3)
+        for expected, runner in seen:
+            self.assertEqual(runner["status"], "REMOVED")
+            self.assertEqual(runner["adjustmentFactor"], expected)
+
     def test_removal(self):
         market = generate(Spec(seed=62, options={"removal"}, **SMALL))
         (removed,) = market.removed_ids
@@ -514,6 +574,7 @@ class OptionTests(unittest.TestCase):
         self.assertEqual(md["numberOfActiveRunners"], SMALL["runners"] - 1)
         others = sum(r["adjustmentFactor"] for r in md["runners"] if r["status"] == "ACTIVE")
         self.assertAlmostEqual(others, 100.0, delta=0.5)
+        self.assertNotEqual(runner["adjustmentFactor"], round(100 * market.plan.q0[index], 2))   # not the opening one
         self.assertEqual((defs[position + 1][0], defs[position + 1][1]["status"], defs[position + 1][2]),
                          (reopen, "OPEN", True))
         for pt, later, _img in defs[position:]:

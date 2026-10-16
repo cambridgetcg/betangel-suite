@@ -31,11 +31,12 @@ import time
 import unittest
 
 from betangel_suite import roots
-from tests import HEAVY, HEAVY_ONLY, PYTHON, ROOT, child_env, rmtree, run_relayed, run_suite
+from tests import (HEAVY, HEAVY_ONLY, PYTHON, ROOT, child_env, require_no_run_marker, rmtree, run_relayed, run_suite,
+                   tree_listing)
 from tests import test_http_support as support
 from tests.test_release import Repo, launch, writable
-from tests.test_session_process import (SSH, URL_RE, AsyncClient, PipeChild, assert_code_lines, shape, wait_path,
-                                        write_private)
+from tests.test_session_process import (SSH, SUITE_TMP_ONLY, URL_RE, AsyncClient, PipeChild, assert_code_lines, shape,
+                                        wait_path, write_private)
 
 SOURCES = ("bin", "betangel_suite", "pin", "ui")
 SOURCE_FILES = ("AGENTS.md",)
@@ -158,6 +159,7 @@ results["controller"] = query(token)[1]["controller"]
             with open(victim, "a", encoding="utf-8") as handle:
                 handle.write("# tampered\n")
         suite = os.path.join(roots.app_dir(home), "current", "bin", "suite")
+        require_no_run_marker()                 # its own check looks at the temporary HOME
         refused = run_relayed(["/bin/sh", suite, "ssh-session", "--port", "0"], child_env(home, SSH_CONNECTION=SSH),
                               home)
         # Redacted before comparing: a failure message must never carry a code (rule 11, I-16).
@@ -176,7 +178,7 @@ results["controller"] = query(token)[1]["controller"]
         self.assertRegex(rest, r"\A(heartbeat [0-9:]+\n)*ended reason=stopped\n\Z")
         assert_code_lines(self, first.stderr(), {"http:401:bad_code", "http:401:unauthorized"})   # I-16
         self.assertFalse(os.path.lexists(support.control_path(home)))
-        self.assertFalse(os.path.lexists(roots.data_home(home)))
+        self.assertEqual(tree_listing(roots.data_home(home)), SUITE_TMP_ONLY)     # its TMPDIR only, left empty
 
     @unittest.skipUnless(HEAVY, HEAVY_ONLY + " (waits out the 60 s minimum watch_grace_s)")
     def test_stdin_eof_with_nobody_watching_ends_as_abandoned_after_the_grace(self):

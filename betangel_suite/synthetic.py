@@ -23,8 +23,14 @@ What a market holds (times are pt, integer ms; T is the scheduled off, the publi
   500-750 book entries at 5 runners and 5,000-5,500 at 44; real: 721-6,166); trades take the best price and move
   ltp, trd and tv (tv is always the sum of trd); spreads tighten and sizes grow towards the off. Every definition
   carries priceLadderDefinition {"type": "CLASSIC"} (validate's V9 refuses any other ladder type).
+- trd and tv are on the PRO historical basis, backer's stake x 2 (upstream docs/betfair-facts.md F60), which
+  upstream paper (traded_volume_divisor 2) and the engine (engine.TV_DIVISOR) read: a trade that takes s pence
+  off atb or atl adds 2 * s to trd at that price and to tv. That atb and atl sizes are backer's stakes is
+  unverified.
 - T: the in-play flip (one definition: OPEN, inPlay true, betDelay 1, bspReconciled true, every runner's bsp); all
-  unmatched offers lapse and thin in-play ladders replace them.
+  unmatched offers lapse and thin in-play ladders replace them. The flip always comes at exactly the published
+  marketTime, which is never revised, with no SUSPENDED at the off. That shape is this generator's choice: the real
+  flip shape is unverified (DESIGN.md 11.1, owed before Phase 1a).
 - In play for inplay_s: faster, wider markets converging on the winner.
 - T + inplay_s: SUSPENDED; then CLOSED, with WINNER, LOSER (and REMOVED) statuses and settledTime, in the final
   definition.
@@ -36,7 +42,9 @@ Options (Spec.options, a frozenset of strings; anything else is refused):
 
   suspension      the market is SUSPENDED for a few seconds pre-off, then reopened by a fresh image;
   removal         a runner (never the favourite or the winner) is REMOVED pre-off: a SUSPENDED definition with its
-                  removalDate and adjustmentFactor, then an image reopening the market with the rest repriced;
+                  removalDate and adjustmentFactor, then an image reopening the market with the rest repriced.
+                  Every adjustmentFactor is a market chance in percent: the removed runner's is its chance at
+                  removal, and the rest are renormalised without it. Betfair's real semantics are unverified;
   nonfinite_sp    pre-off, one runner's spn and spf become the quoted strings "NaN" and "Infinity" and its spl
                   carries a size "Infinity" at 1000 (snapshots in that window are invalid: non_finite_size), until a
                   later message deletes that point and restores the projections;
@@ -504,14 +512,17 @@ class _Simulation:
         return True
 
     def _trade(self, r, field, index, size):
-        """Someone takes size at the best price index of field (atb: a back bet, atl: a lay bet)."""
+        """Someone takes size at the best price index of field (atb: a back bet, atl: a lay bet).
+
+        trd and tv count it twice: the PRO historical basis is backer's stake x 2 (F60; module docstring).
+        """
         level = getattr(r, field).get(index, 0)
-        size = min(size, level, TV_CAP_P - r.tv)
+        size = min(size, level, (TV_CAP_P - r.tv) // 2)
         if size <= 0:
             return False
         self._set(r, field, index, level - size)
-        r.trd[index] = r.trd.get(index, 0) + size
-        r.tv += size
+        r.trd[index] = r.trd.get(index, 0) + 2 * size
+        r.tv += 2 * size
         r.ltp = index
         found = self._touch(r)
         found["trd"][index] = r.trd[index]
@@ -805,6 +816,7 @@ class _Simulation:
         r = self.runners[self.p.removed]
         r.removed = True
         r.removal_date = iso_ms(t)
+        r.af = round(max(0.01, 100 * self._q(r)), 2)       # its chance at removal (real semantics unverified)
         self.total -= math.exp(r.u)
         for other in self._active():
             other.af = round(max(0.01, 100 * self._q(other)), 2)

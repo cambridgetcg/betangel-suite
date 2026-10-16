@@ -18,7 +18,11 @@ and losing the watcher pauses with reason not_watched. The replay stops at the l
 
 Frames (section 6.5, the Phase 0b subset) are built at most frame_hz times a second and only when
 something changed. Every number in a frame is an integer: prices in hundredths and sizes in pence through
-rx.ticks, traded volume in pence on the repo's PRO basis (divided by 2, paper.py:1016).
+rx.ticks, traded volume in pence on the repo's PRO basis (divided by 2; TV_DIVISOR says why, and that the
+halving is unverified for tv). A runner whose tv is
+unknown has tv_p null, never 0: the cache resets tv to None on every image (book.py:111, :239-240), and BASIC
+data has no tv at all (upstream docs/data-audit.md:38). Each frame takes tv from the snapshot afresh, so no tv
+is carried across an image (data-audit.md:40).
 
 The run marker (section 6.8, I-17) is checked on every tick and again before each command runs. When it
 appears, the engine freezes: the clock pauses with reason run_marker, no message is applied, every command is
@@ -46,7 +50,12 @@ DEFAULT_SPEED_X100 = 100
 TICK_S = 0.025                      # the actor wakes at least every 25 ms (section 3.2: 20-50 ms)
 MARKER_GRACE_S = 30                 # section 6.8
 LADDER_DEPTH = 3                    # best 3 back and lay in the Phase 0b frame
-TV_DIVISOR = 2                      # PRO historical basis (paper.py traded_volume_divisor)
+# Traded volume (tv_p) is the runner's tv divided by 2. Upstream docs/betfair-facts.md F60: PRO historical data
+# counts traded volume as backer's stake x 2, and Betfair says API totalMatched uses a different calculation.
+# F60 gives the x2 basis for the traded ladder (trd); that it holds for tv is unverified, and upstream passes tv
+# through raw (book.py:491). Synthetic tv is always the sum of trd, so no synthetic test can catch a wrong basis.
+# A constant on purpose: paper's traded_volume_divisor is a fill-model parameter, not a display basis.
+TV_DIVISOR = 2
 COMMAND_TIMEOUT_S = 5.0
 SEED_MAX = 2 ** 31 - 1
 PAUSE_REASONS = ("ready", "user", "stop", "not_watched", "run_marker", "end_of_market", "takeover", "control")
@@ -404,10 +413,17 @@ class Engine:
             except SuiteError as exc:
                 market.error = exc.code
                 break
-            for change in message.get("mc") or ():
-                if change.get("id") == market.market_id and isinstance(change.get("marketDefinition"), dict):
-                    market.definition = change["marketDefinition"]        # replaced whole, as book.py does
-                    market.market_time_ms = market_time_ms(market.definition)
+            try:
+                for change in message.get("mc") or ():
+                    if change.get("id") == market.market_id and isinstance(change.get("marketDefinition"), dict):
+                        market.definition = change["marketDefinition"]        # replaced whole, as book.py does
+                        market.market_time_ms = market_time_ms(market.definition)
+            except OverflowError:
+                # A marketTime whose offset takes it out of datetime's range ("0001-01-01T00:00:00.000+23:59"):
+                # replay_market_time catches only ValueError (book.py:68-79). Stop the replay here, as for a
+                # message the cache refuses, rather than end the engine (Nuance's PR #4 review, item 9).
+                market.error = "value_error"
+                break
         market.next += 1
         market.v = max(market.v, pt)
         self._dirty = True
@@ -463,7 +479,8 @@ def market_time_ms(definition):
 def price_h(value):
     """An int price in hundredths inside the CLASSIC ladder's range (1.01 to 1000), or None for a missing,
     non-finite, out-of-range or more-than-2-dp price. It need not be a tick of the ladder: the LTP keeps such a
-    price as it is, because a BSP-matched trade can be off the ladder. ladder() drops off-ladder levels."""
+    price as it is. Whether a real LTP can be off the ladder (after a BSP-matched trade, say) is unverified; no
+    upstream source says so. ladder() drops off-ladder levels."""
     from . import rx
     if value is None or isinstance(value, bool):
         return None
@@ -558,7 +575,7 @@ def build_frame(seq, clock, market, snapshot_and_error):
             total = pence(entry.get("total_matched"))
             runners.append((rank[:2], {
                 "id": selection_id, "name": name, "status": _text(entry.get("status"), "UNKNOWN"),
-                "ltp_h": price_h(entry.get("ltp")), "tv_p": 0 if total is None else total // TV_DIVISOR,
+                "ltp_h": price_h(entry.get("ltp")), "tv_p": None if total is None else total // TV_DIVISOR,
                 "back": ladder(entry.get("back")), "lay": ladder(entry.get("lay")),
             }))
         runners = [runner for _rank, runner in sorted(runners, key=lambda item: item[0])]

@@ -39,7 +39,8 @@ import unittest
 import zlib
 
 from betangel_suite import cli, errors, guard, roots, uisnap
-from tests import HEAVY, HEAVY_ONLY, PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_suite
+from tests import (HEAVY, HEAVY_ONLY, PRELUDE, PYTHON, ROOT, child_env, make_home, require_no_run_marker, run_python,
+                   run_suite, stand_in_marker)
 from tests.test_http_support import control_path, secret_shaped, secrets_in, short_home
 
 SWIFT = os.path.join(ROOT, "tools", "uisnap", "uisnap.swift")
@@ -112,7 +113,9 @@ class ArgumentTests(unittest.TestCase):
         for path, code in ((inside, "uisnap_out_not_empty"), (os.path.join(inside, "x.png"), "not_a_directory"),
                            (os.path.join(home, "elsewhere"), "write_outside_roots"),
                            (os.path.join(ROOT, "docs", "synthetic"), "write_outside_roots"),
-                           (os.path.join(roots.data_home(home), "shots"), "state_root_not_agreed")):
+                           (os.path.join(roots.data_home(home), "shots"), "write_outside_roots"),
+                           # The suite root is a write root of the engine only (guard.py), never of uisnap.
+                           (os.path.join(roots.suite_root(home), "shots"), "write_outside_roots")):
             with self.assertRaises(errors.SuiteError) as caught:
                 uisnap.check_out(path, home)
             self.assertEqual(caught.exception.code, code, path)
@@ -705,6 +708,7 @@ class CommandTests(unittest.TestCase):
 
     def run_command(self, mode, *, out=None, timeout_s=30, grace_s=5, marker_grace_s=None):
         """(home, CompletedProcess); out is None or a function of the new HOME giving the --out path."""
+        require_no_run_marker()                 # the engine runs in this child, under the temporary HOME
         home = short_home(self)
         out = None if out is None else out(home)
         fake = os.path.join(home, "fake_uisnap.py")
@@ -732,6 +736,7 @@ class CommandTests(unittest.TestCase):
         from betangel_suite.api import control
         self.assertFalse(os.path.lexists(control_path(home)))
         self.assertFalse(control.engine_running(home))
+        self.assertEqual(os.listdir(roots.data_home(home)), [])     # uisnap's engine never makes the suite root
 
     def assert_codes_only(self, result, secrets=()):
         for line in result.stdout.splitlines(keepends=True):
@@ -824,6 +829,16 @@ class CommandTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(uisnap.out_root(home)))
         self.assert_engine_gone(home)
 
+    def test_no_engine_child_starts_while_the_real_marker_exists(self):
+        # Nuance's PR #4 review, item 14: the child's engine checks only its temporary HOME's marker, so run_command
+        # checks the runner's own first. A stand-in takes the real marker's place (tests.stand_in_marker).
+        for present, code in ((True, "run_marker_present"), (False, "run_marker_unreadable")):
+            with self.subTest(code):
+                stand_in_marker(self, present)
+                with self.assertRaises(errors.SuiteError) as caught:
+                    self.run_command("ok")
+                self.assertEqual(caught.exception.code, code)
+
 
 class LauncherRefusalTests(unittest.TestCase):
     """bin/suite uisnap refuses before building or starting anything."""
@@ -861,7 +876,8 @@ class LauncherRefusalTests(unittest.TestCase):
                            (["--seed", "1", "--seed", "2"], "bad_arguments"),
                            (["--out", os.path.join(home, "elsewhere")], "write_outside_roots"),
                            (["--out", os.path.join(ROOT, "docs", "synthetic")], "write_outside_roots"),
-                           (["--out", os.path.join(roots.data_home(home), "x")], "state_root_not_agreed")):
+                           (["--out", os.path.join(roots.data_home(home), "x")], "write_outside_roots"),
+                           (["--out", os.path.join(roots.suite_root(home), "x")], "write_outside_roots")):
             self.assertEqual(self.suite(home, *args), (2, "", "refused:%s\n" % code), args)
         self.assert_nothing_made(home)
 
@@ -959,6 +975,7 @@ class RealRunTests(unittest.TestCase):
         for name, script in NAVIGATIONS.items():
             with self.subTest(navigation=name):
                 ui = probe_ui(os.path.join(home, "probe-" + name), script)
+                require_no_run_marker()
                 result = subprocess.run([PYTHON, "-I", "-S", "-B", "-c", PROBE % (binary, ui)], env=child_env(home),
                                         cwd=home, capture_output=True, text=True, timeout=300)
                 self.assertEqual((result.returncode, result.stderr), (2, "refused:uisnap_navigation_refused\n"),

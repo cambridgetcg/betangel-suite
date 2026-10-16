@@ -108,6 +108,17 @@ test('row cells: backs run worst to best, lays best to worst, texts from integer
   assert.equal(removed.ltp, '');
 });
 
+test('an unknown traded volume shows blank, never £0, and a known one is not carried into it', () => {
+  assert.equal(rowCells(runner(1, { tv_p: null })).tv, '');
+  assert.equal(rowCells(runner(1, { tv_p: 0 })).tv, '£0');
+  const tbody = new FakeElement('tbody');
+  const grid = createGrid(tbody, doc);
+  grid.update([runner(1, { tv_p: 123400 })], null);
+  assert.ok(tbody.children[0].textContent.includes('£1,234'));
+  grid.update([runner(1, { tv_p: null })], null);
+  assert.ok(!tbody.children[0].textContent.includes('£'));
+});
+
 test('rows are created once per runner and patched in place', () => {
   const tbody = new FakeElement('tbody');
   const grid = createGrid(tbody, doc);

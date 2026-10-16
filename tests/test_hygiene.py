@@ -3,7 +3,8 @@
 Each test builds its own temporary git repository (git init in a temp dir),
 plants one forbidden thing, and runs the scanner as a subprocess with the
 interpreter running the tests (-I -S -B). It asserts the exit status, the rule
-code, and that the planted text never appears in the scanner's output.
+code, that every finding line shows "<path withheld>" in place of the path, and
+that the planted text never appears in the scanner's output.
 
 Every planted value is assembled at runtime from fragments, so no line of this
 file matches a scanner rule: the scanner passes over this file too. Planted
@@ -38,6 +39,9 @@ PY313 = "/opt/homebrew/bin/python3.13"
 # The test runner's guard starts a child only with the network switch kept on (betangel_suite/guard.py).
 FORBID = {"BETANGEL_BETFAIR_FORBID_NETWORK": "1"}
 FAIL_LINE = re.compile(r"^FAIL (\S+) ")
+# Every finding prints the same placeholder for its path, whatever the rule: no directory, name or suffix.
+WITHHELD = "<path withheld>"
+FINDING_SHAPE = re.compile(r"FAIL [a-z_]+ <path withheld>:(?:[0-9]+| \+[0-9]+ more line\(s\)) \(entry [0-9]+\)")
 
 
 def _j(*parts: str) -> str:
@@ -68,6 +72,7 @@ GH_TOKEN = _j("gh", "p_", TOKEN_BODY, "Ab12Cd34Ef")
 BOOT_URL = _j("http://127.0.0.1:8765/", "#c", "=", TOKEN_BODY[:22])
 PEM_KEY = _j("-" * 5, "BEGIN ", "RSA PRIVATE", " KEY", "-" * 5)
 PEM_CERT = _j("-" * 5, "BEGIN ", "CERTI", "FICATE", "-" * 5)
+TOKEN_DIR = _j("Vq7", "Lm2", "Rz9", "Kt4", "Wx6", "Pb")  # a token-like directory name: no rule matches it
 
 
 def _git_env(home: str, tmp: str) -> dict:
@@ -131,12 +136,19 @@ class _RepoCase(unittest.TestCase):
     def codes(out: str) -> set:
         return {m.group(1) for m in map(FAIL_LINE.match, out.splitlines()) if m}
 
+    def assert_withheld(self, out: str) -> None:
+        """Each line is a finding with the path withheld, or the scanner's own summary or refusal."""
+        for line in out.splitlines():
+            if not line.startswith("hygiene_scan: "):
+                self.assertIsNotNone(FINDING_SHAPE.fullmatch(line), f"not a withheld finding: {line}")
+
     def assert_flags(self, code: str, secrets=(), modes=("--staged", None)) -> None:
         for mode in modes:
             with self.subTest(mode=mode or "tree", code=code):
                 rc, out = self.scan(*([mode] if mode else []))
                 self.assertEqual(rc, 1, f"expected findings, got rc={rc}: {out}")
                 self.assertIn(code, self.codes(out), out)
+                self.assert_withheld(out)
                 for secret in secrets:
                     self.assertNotIn(secret, out, "scanner echoed planted text")
 
@@ -311,7 +323,9 @@ class FileRuleTests(_RepoCase):
                 rc, out = self.scan(name)
                 self.assertEqual(rc, 1, out)
                 self.assertIn("data_path", self.codes(out), out)
-                self.assertIn("<name withheld>", out)
+                self.assertIn(WITHHELD, out)
+                self.assert_withheld(out)
+                self.assertNotIn(name, out)
 
     def test_upstream_copy(self):
         self.plant("vendor/betangel-research-copy/x.py", "x = 1\n", code="upstream_copy")
@@ -354,12 +368,12 @@ class FileRuleTests(_RepoCase):
             handle.write("x\n")
         self.assert_flags("submodule", modes=(None,))
 
-    def test_file_name_with_market_id_is_redacted(self):
+    def test_file_name_with_market_id_is_withheld(self):
         rel = f"notes/{MARKET_2015}-{EVENT}.txt"
         self.plant(rel, "nothing here\n", MARKET_2015, EVENT, code="market_id")
         rc, out = self.scan("--staged")
         self.assertIn("event_id", self.codes(out))
-        self.assertIn("<name withheld>", out)
+        self.assertIn(WITHHELD, out)
 
 
 class ContentRuleTests(_RepoCase):
@@ -453,7 +467,7 @@ class ContentRuleTests(_RepoCase):
                 self.setUp()
                 self.plant(rel, content, name, code=code)
                 rc, out = self.scan("--staged")
-                self.assertIn("<name withheld>", out)
+                self.assertIn(WITHHELD, out)
 
     def test_withheld_path_hides_runner_named_directories_and_id_files(self):
         # Any component may carry data: the whole path is withheld, and identifier or data-path content
@@ -468,26 +482,24 @@ class ContentRuleTests(_RepoCase):
                 self.setUp()
                 self.plant(rel, content, name, MARKET_2015, EVENT, DATA_SHA, code=code)
 
-    def test_withheld_path_shows_only_a_listed_suffix(self):
-        # A name can end in a word rather than a file type (a runner name with a dot for the space). A
-        # withheld path shows a suffix only from the scanner's short list, compared exactly, so a suffix
-        # off that list does not print, in the tree scan or the staged one. File types that are also
-        # English words (.swift, .key, .tar, .sh) are off the list too; the previous list showed them.
+    def test_withheld_path_shows_no_suffix(self):
+        # A name can end in a word rather than a file type (a runner name with a dot for the space), and a
+        # file type can be a word too (.swift, .key, .tar). No suffix prints, whatever it is, in the tree
+        # scan or the staged one; the finding line is the same for every one of these names.
         name = RUNNER_NAMES[1]
         word = name.split()[-1]
         content = f'row = {{"runnerName": "{name}"}}\n'
-        cases = ((name.replace(" ", "."), ""), (f"card.{word.lower()}", ""), (f"{name}.MD", ""),
-                 ("card.swift", ""), ("card.key", ""), ("card.tar", ""), ("card.sh", ""),
-                 (f"{name}.md", ".md"), (f"{name}.csv", ".csv"), ("card.json", ".json"), ("card.bz2", ".bz2"))
-        for base, suffix in cases:
+        for base in (name.replace(" ", "."), f"card.{word.lower()}", f"{name}.MD", "card.swift", "card.key",
+                     "card.tar", "card.sh", f"{name}.md", f"{name}.csv", "card.json", "card.bz2"):
+            suffix = os.path.splitext(base)[1]
             with self.subTest(base=base):
                 self.setUp()
-                self.plant(f"notes/{base}", content, name, word, word.lower(), code="runner_record",
+                self.plant(f"notes/{base}", content, name, word, word.lower(), suffix, code="runner_record",
                            force=True)
                 for mode in ("--staged", None):
                     rc, out = self.scan(*([mode] if mode else []))
                     # Index entries: README.md, notes/<base>, pkg/module.py.
-                    self.assertIn(f"FAIL runner_record <name withheld>{suffix}:1 (entry 2)", out)
+                    self.assertIn("FAIL runner_record <path withheld>:1 (entry 2)", out)
 
     def test_private_key_header(self):
         self.plant("conf/notes.txt", PEM_KEY + "\nAAAA\n", PEM_KEY, code="private_key")
@@ -514,9 +526,83 @@ class ContentRuleTests(_RepoCase):
         rc, out = self.scan("--staged")
         self.assertEqual(rc, 1)
         # Index entries: README.md, pkg/module.py, pkg/p.py; the entry number identifies the withheld path.
-        self.assertIn("FAIL market_id <name withheld>.py:7 (entry 3)", out)
+        self.assertIn("FAIL market_id <path withheld>:7 (entry 3)", out)
         self.assertNotIn(MARKET_2015, out)
-        self.assertNotIn("pkg/p.py", out)
+        self.assertNotIn("p.py", out)
+
+    def test_lines_past_the_limit_are_counted_with_the_path_withheld(self):
+        body = "".join(f"m{i} = '{MARKET_2015}'\n" for i in range(12))
+        self.write("pkg/p.py", body)
+        self.add("pkg/p.py")
+        for mode in ("--staged", None):
+            with self.subTest(mode=mode or "tree"):
+                rc, out = self.scan(*([mode] if mode else []))
+                self.assertEqual(rc, 1, out)
+                self.assertIn("FAIL market_id <path withheld>:10 (entry 3)", out)
+                self.assertIn("FAIL market_id <path withheld>: +2 more line(s) (entry 3)", out)
+                self.assert_withheld(out)
+                self.assertNotIn(MARKET_2015, out)
+
+
+class WithheldPathTests(_RepoCase):
+    """Secret, symlink, submodule and special-file findings withhold the whole path too (Astra's re-review
+    of #2). Every name is invented; each test checks that no part of the path prints."""
+
+    def assert_paths_scan(self, args, line: str, hidden) -> None:
+        rc, out = self.scan(*args)
+        self.assertEqual(rc, 1, out)
+        self.assertIn(line, out)
+        self.assert_withheld(out)
+        for text in hidden:
+            self.assertNotIn(text, out, "scanner echoed part of the path")
+
+    def test_secret_value_under_a_token_named_directory(self):
+        # The directory name alone is no finding; the content's secret_value is, and the name stays hidden.
+        hidden = (TOKEN_DIR, "conf", "settings", TOKEN_BODY[:20])
+        self.plant(f"conf/{TOKEN_DIR}/settings.py", SECRET_LINE + "\n", *hidden, code="secret_value")
+        self.assert_paths_scan(("conf",), "FAIL secret_value <path withheld>:1 (entry 1)", hidden)
+
+    def test_secret_findings_under_a_runner_named_path(self):
+        name = RUNNER_NAMES[2]
+        cases = (("private_key", PEM_KEY + "\nAAAA\n", PEM_KEY), ("pem_block", PEM_CERT + "\nAAAA\n", PEM_CERT),
+                 ("bearer_token", BEARER_LINE + "\n", TOKEN_BODY),
+                 ("secret_value", SECRET_LINE + "\n", TOKEN_BODY[:20]),
+                 ("known_token", f"token: {GH_TOKEN}\n", GH_TOKEN), ("bootstrap_code", BOOT_URL + "\n", TOKEN_BODY[:22]))
+        for code, content, secret in cases:
+            with self.subTest(code=code):
+                self.setUp()
+                self.plant(f"notes/{name}/{name}.txt", content, name, name.split()[0], secret, code=code)
+
+    def test_dangling_symlink(self):
+        name = RUNNER_NAMES[0]
+        os.mkdir(os.path.join(self.repo, "links"))
+        os.symlink(os.path.join("missing.invalid", TOKEN_DIR), os.path.join(self.repo, "links", name))
+        self.add(f"links/{name}")
+        hidden = (name, name.split()[0], "links", TOKEN_DIR)
+        self.assert_flags("symlink", hidden)
+        self.assert_paths_scan((f"links/{name}",), "FAIL symlink <path withheld>:0 (entry 1)", hidden)
+
+    def test_gitlink_and_nested_repository(self):
+        name = RUNNER_NAMES[1]
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        self.git("update-index", "--add", "--cacheinfo", f"160000,{sha},vendor/{name}")
+        os.makedirs(os.path.join(self.repo, "vendor", name))      # so the tree scan finds the gitlink too
+        self.assert_flags("submodule", (name, name.split()[0], "vendor"))
+        self.setUp()                                               # a fresh repository: no gitlink in it
+        nested = os.path.join(self.repo, "nested", TOKEN_DIR)
+        os.makedirs(nested)
+        subprocess.run([GIT, "-C", nested, "init", "-q", "--template="], env=self.env, check=True,
+                       capture_output=True)
+        self.assert_flags("submodule", ("nested", TOKEN_DIR), modes=(None,))
+
+    def test_fifo_named_by_path(self):
+        # Explicit-path mode: git lists no FIFO, and the scanner never opens one.
+        name = RUNNER_NAMES[2]
+        os.mkdir(os.path.join(self.repo, "notes"))
+        os.mkfifo(os.path.join(self.repo, "notes", name))
+        hidden = (name, name.split()[0], "notes")
+        self.assert_paths_scan((f"notes/{name}",), "FAIL special_file <path withheld>:0 (entry 1)", hidden)
+        self.assert_paths_scan(("notes",), "FAIL special_file <path withheld>:0 (entry 1)", hidden)
 
 
 class ModeTests(_RepoCase):
@@ -616,7 +702,7 @@ class UrlExemptionTests(_RepoCase):
     """The event_id rule's one exemption: 8-digit runs inside https URLs on the exact hosts of URL_HOST_ALLOWLIST."""
 
     def lines_by_code(self, rel: str, mode):
-        # An id finding withholds the whole path ("FAIL event_id <name withheld>.md:2 (entry 2)"), so a file's
+        # Every finding withholds the whole path ("FAIL event_id <path withheld>:2 (entry 2)"), so a file's
         # lines are told apart by its entry number. The scanner sorts its file list in both modes, and every file
         # these tests write is staged, so the index and the tree list the same files: the entry is rel's place in
         # the sorted tree (walked here, since the test guard allows no git ls-files).

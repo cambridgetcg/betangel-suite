@@ -8,9 +8,9 @@ most 64 KB of strict JSON (duplicate keys and NaN or Infinity refused).
 Phase 0: no command reads a data root, and the repo's own config.validate_config is not called yet; the
 paper config and cap profiles arrive with Phase 1b. Nothing here can weaken the guard: no key names the
 network switch, the audit hook or the write roots, state_root accepts only the value of R-4, and
-run_marker accepts only the proposed marker path (a configurable marker would let a config edit point the
-I-17 start check somewhere that never exists). When Nuance answers Q-N3, a reviewed change updates the
-default; configuration alone never moves it.
+run_marker accepts only the marker path agreed with Nuance (Q-N3; a configurable marker would let a
+config edit point the I-17 start check somewhere that never exists). Only a reviewed change moves either;
+configuration alone never does.
 Standard library only.
 """
 
@@ -25,13 +25,13 @@ from .errors import SuiteError
 
 DEFAULTS = {
     "data_roots": [],                                   # until Nuance names the PRO root (Q-N4)
-    "state_root": "~/betangel-data/suite.noindex",      # R-4; written only once roots.STATE_ROOT_AGREED
+    "state_root": "~/betangel-data/suite.noindex",      # R-4, Q-N3; written only while roots.STATE_ROOT_AGREED
     "port": 8765,                                       # loopback only
     "frame_hz": 10,                                     # 5-20
     "cap_profile": "v1-live-mirror",                    # R-7: practise live v1 by default
     "commission_source": "user_package_unverified",     # R-3
     "research_months_ruling": None,                     # research months hidden while null
-    "run_marker": "~/.local/state/lab-runs/ACTIVE",     # section 6.8; proposal pending Q-N3
+    "run_marker": "~/.local/state/lab-runs/ACTIVE",     # section 6.8; agreed with Nuance (Q-N3)
     "watch_grace_s": 600,                               # section 8.6
     "max_session_s": 14400,                             # section 8.6: a maximum session time of 4 h (Phase 0c)
 }

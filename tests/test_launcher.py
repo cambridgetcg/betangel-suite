@@ -14,10 +14,11 @@ import subprocess
 import sys
 import types
 import unittest
+from unittest import mock
 
 from betangel_suite import cli, guard, pin, roots
 from betangel_suite.errors import SuiteError
-from tests import ARM_ENGINE, PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_relayed, run_suite, tree_listing
+from tests import PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_relayed, run_suite, tree_listing
 
 LAUNCH_PY = os.path.join(ROOT, "bin", "_launch.py")
 SSH = "192.0.2.10 50000 192.0.2.20 22"         # TEST-NET addresses: the checks only test presence
@@ -187,20 +188,30 @@ class LauncherTests(unittest.TestCase):
 
     def test_main_creates_tmpdir_0700_before_any_handler(self):
         # DESIGN.md 3.6 and 6.8: TMPDIR exists before a command does any work, so SQLite never falls back to a
-        # system temp directory. A stand-in handler reports what it finds, in a fresh engine-mode child.
-        home = make_home(self, deps=True)
-        tmp = roots.tmp_dir("selfcheck", home)
-        os.rmdir(tmp)
-        code = ARM_ENGINE + (
-            "import os, stat\nfrom betangel_suite import cli\n"
-            "def handler(args):\n"
-            "    info = os.lstat(os.environ['TMPDIR'])\n"
-            "    print(stat.S_ISDIR(info.st_mode), oct(stat.S_IMODE(info.st_mode)))\n"
-            "    return 0\n"
-            "cli._HANDLERS['selfcheck'] = handler\n"
-            "sys.exit(cli.main(['selfcheck']))\n")
-        result = run_python(code, home)
-        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "True 0o700\n", ""))
+        # system temp directory. A stand-in handler reports what it finds, in a fresh engine-mode child. With
+        # the suite root agreed (the default since Q-N3) TMPDIR is its tmp/, made with the suite root itself;
+        # with the flag off it is the state root's tmp/, and ~/betangel-data stays empty.
+        for agreed in (True, False):
+            home = make_home(self, deps=True)
+            os.makedirs(roots.data_home(home), mode=0o700)      # a synthetic ~/betangel-data in the temporary HOME
+            with mock.patch.object(roots, "STATE_ROOT_AGREED", agreed):
+                tmp = roots.tmp_dir("selfcheck", home)
+            if not agreed:
+                os.rmdir(tmp)
+            code = PRELUDE + (
+                "from betangel_suite import roots\nroots.STATE_ROOT_AGREED = %r\n"
+                "from betangel_suite import guard\nguard.arm('engine')\n"
+                "import os, stat\nfrom betangel_suite import cli\n"
+                "def handler(args):\n"
+                "    info = os.lstat(os.environ['TMPDIR'])\n"
+                "    print(stat.S_ISDIR(info.st_mode), oct(stat.S_IMODE(info.st_mode)))\n"
+                "    return 0\n"
+                "cli._HANDLERS['selfcheck'] = handler\n"
+                "sys.exit(cli.main(['selfcheck']))\n") % agreed
+            result = run_python(code, home, env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp))
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "True 0o700\n", ""), agreed)
+            listing = [(path, mode) for path, mode in tree_listing(roots.data_home(home))]
+            self.assertEqual(listing, [("suite.noindex", 0o700), ("suite.noindex/tmp", 0o700)] if agreed else [], agreed)
 
     def test_vendor_creates_no_tmpdir(self):
         home = make_home(self)
@@ -210,16 +221,17 @@ class LauncherTests(unittest.TestCase):
 
 
 class StateRootFlagTests(unittest.TestCase):
-    """Adaptation A with the flag on, in a child whose roots.STATE_ROOT_AGREED is set before _launch.main.
+    """Adaptation A in both settings, in a child whose roots.STATE_ROOT_AGREED is set before _launch.main.
 
-    Turning the flag on is a two-line change (roots.py and bin/suite's TMP line). A half flip fails closed.
+    The flag is on since Q-N3: roots.py and bin/suite's default TMP branch changed together. Each setting
+    accepts only its own TMPDIR for an engine command, so a half flip either way fails closed.
     """
 
-    def launch(self, home, tmp, *args):
-        code = (PRELUDE + "import importlib.util\nfrom betangel_suite import roots\nroots.STATE_ROOT_AGREED = True\n"
+    def launch(self, home, agreed, tmp, *args):
+        code = (PRELUDE + "import importlib.util\nfrom betangel_suite import roots\nroots.STATE_ROOT_AGREED = %r\n"
                 "spec = importlib.util.spec_from_file_location('launch_under_test', %r)\n"
                 "launch = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(launch)\n"
-                "sys.exit(launch.main(%r))\n") % (LAUNCH_PY, list(args))
+                "sys.exit(launch.main(%r))\n") % (agreed, LAUNCH_PY, list(args))
         result = run_python(code, home, env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp))
         return result.returncode, result.stderr
 
@@ -227,15 +239,31 @@ class StateRootFlagTests(unittest.TestCase):
         home = make_home(self)
         os.makedirs(roots.data_home(home), mode=0o700)
         state_tmp = roots.tmp_dir("test", home)
-        self.assertEqual(self.launch(home, state_tmp, "selfcheck"), (2, "refused:tmpdir_mismatch\n"))
+        suite_tmp = os.path.join(roots.suite_root(home), "tmp")
+        self.assertEqual(self.launch(home, True, state_tmp, "selfcheck"), (2, "refused:tmpdir_mismatch\n"))
+        self.assertEqual(self.launch(home, False, suite_tmp, "selfcheck"), (2, "refused:tmpdir_mismatch\n"))
         self.assertEqual(os.listdir(roots.data_home(home)), [])
 
     def test_full_flip_uses_the_suite_root_tmp(self):
         home = make_home(self)
         os.makedirs(roots.data_home(home), mode=0o700)
         suite_tmp = os.path.join(roots.suite_root(home), "tmp")
-        self.assertEqual(self.launch(home, suite_tmp, "selfcheck"), (2, "refused:not_implemented\n"))
-        self.assertEqual(self.launch(home, roots.tmp_dir("test", home), "vendor"), (2, "refused:bad_arguments\n"))
+        state_tmp = roots.tmp_dir("test", home)
+        self.assertEqual(self.launch(home, True, suite_tmp, "selfcheck"), (2, "refused:not_implemented\n"))
+        self.assertEqual(self.launch(home, False, state_tmp, "selfcheck"), (2, "refused:not_implemented\n"))
+        for agreed in (True, False):
+            self.assertEqual(self.launch(home, agreed, state_tmp, "vendor"), (2, "refused:bad_arguments\n"), agreed)
+        self.assertEqual(os.listdir(roots.data_home(home)), [])
+
+    def test_bin_suite_matches_the_flag(self):
+        # The shell cannot read roots.py, so its TMP branches are pinned here; _launch.py refuses a mismatch.
+        state = "|".join(roots.STATE_TMP_COMMANDS) + ")"
+        with open(os.path.join(ROOT, "bin", "suite"), encoding="utf-8") as handle:
+            lines = [line.strip() for line in handle if line.strip().startswith((state, "*)"))]
+        self.assertEqual(lines, [state + ' TMP="$HOME/.local/state/betangel-suite/tmp" ;;',
+                                 '*)                          TMP="$HOME/betangel-data/suite.noindex/tmp" ;;'])
+        self.assertEqual(roots.STATE_TMP_COMMANDS, ("test", "uisnap", "release", "vendor"))
+        self.assertIs(roots.STATE_ROOT_AGREED, True)
 
 
 class ParallelRunnerTests(unittest.TestCase):

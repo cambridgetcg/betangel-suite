@@ -5,8 +5,10 @@
 The launcher arms the guard in mode uisnap (guard.py) and checks the run marker first. Then, in order:
 
 1. Refuse any configured data root (synthetic_only) and a running engine (engine_running), and check --out,
-   before anything is built or created. --out must be an absolute path inside the suite's write roots that is
-   missing or an empty directory; the default is <state>/uisnap/out/<UTC yyyymmdd.hhmmss>[.n].
+   before anything is built or created. --out must be an absolute path inside the state root
+   (~/.local/state/betangel-suite) that is missing or an empty directory; the default is
+   <state>/uisnap/out/<UTC yyyymmdd.hhmmss>[.n]. The suite root is the engine's alone: guard mode uisnap never
+   writes there, so an --out under it is refused here (write_outside_roots), before anything starts.
 2. Build tools/uisnap/uisnap.swift when needed. The source is copied to <state>/uisnap/build/<its sha256>/ and
    compiled there by the Command Line Tools' swiftc with guard.uisnap_build_argv (the one argv the uisnap guard
    mode allows before seal()), with the clang module cache beside the build directories. build.json records
@@ -120,7 +122,7 @@ def out_root(home_dir=None):
 
 
 def check_out(path, home_dir=None):
-    """The output directory to use: path (inside the write roots, missing or empty) or a fresh default one."""
+    """The output directory to use: path (inside the state root, missing or empty) or a fresh default one."""
     if path is None:
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d.%H%M%S")
         base = os.path.join(out_root(home_dir), stamp)
@@ -129,7 +131,9 @@ def check_out(path, home_dir=None):
             n += 1
             candidate = "%s.%d" % (base, n)
         return candidate
-    path, _root = roots.place(path, home_dir)            # write_outside_roots, state_root_not_agreed, ...
+    path, root = roots.place(path, home_dir)             # write_outside_roots, state_root_not_agreed, ...
+    if root != roots.state_dir(home_dir):                # the suite root: guard mode uisnap may not write there
+        raise SuiteError("write_outside_roots")
     try:
         info = os.lstat(path)
     except FileNotFoundError:

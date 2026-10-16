@@ -5,6 +5,7 @@ it. Markets come from betangel_suite.synthetic, sized down (5 runners, 2 minutes
 tier fast; every frame is compared with a reference book.MarketBookCache fed the same messages.
 """
 
+import copy
 import os
 import threading
 import unittest
@@ -12,7 +13,7 @@ from unittest import mock
 
 from betangel_suite import config, engine, rx, runmarker, synthetic
 from betangel_suite.errors import SuiteError
-from tests import make_home
+from tests import make_home, require_no_run_marker
 
 START_NS = 5_000_000_000_000
 
@@ -75,6 +76,7 @@ def floats_in(value):
 class EngineCase(unittest.TestCase):
 
     def make(self, cfg=None, synthetic_module=SmallSynthetic, marker=None, grace_s=30, tick_s=engine.TICK_S):
+        require_no_run_marker()             # the actor below watches only its temporary HOME's marker
         self.home = make_home(self)
         self.clock = FakeClock()
         self.marker = marker or runmarker.marker_path(None, self.home)
@@ -275,7 +277,7 @@ class ClockAndFrameTests(EngineCase):
             self.assertEqual(runner["status"], entry["status"])
             self.assertEqual(runner["ltp_h"], None if entry["ltp"] is None else rx.ticks.to_hundredths(entry["ltp"]))
             total = entry["total_matched"]
-            self.assertEqual(runner["tv_p"], 0 if total is None else rx.ticks.to_pence(total) // 2)
+            self.assertEqual(runner["tv_p"], None if total is None else rx.ticks.to_pence(total) // 2)
             for side in ("back", "lay"):
                 expected = [[rx.ticks.to_hundredths(p), rx.ticks.to_pence(s)] for p, s in entry[side][:3]]
                 self.assertEqual(runner[side], expected, side)
@@ -351,7 +353,7 @@ class ClockAndFrameTests(EngineCase):
         self.assertEqual(last["market"]["status"], "CLOSED")
         self.assertEqual(sorted(runner["status"] for runner in last["runners"]).count("WINNER"), 1)
         for frame in frames:
-            if frame["clock"]["ms_to_off"] > 0:
+            if frame["clock"]["ms_to_off"] > 0:        # the generator flips at exactly marketTime (DESIGN.md 11.1)
                 self.assertFalse(frame["market"]["inplay"])
                 self.assertEqual({runner["status"] for runner in frame["runners"]}, {"ACTIVE"})
             self.assertEqual(floats_in(frame), 0)
@@ -360,6 +362,73 @@ class ClockAndFrameTests(EngineCase):
                 self.assertNotIn(word, text)
         self.assertTrue(any(frame["market"]["inplay"] for frame in frames))
         self.assertEqual(actor.command("play", {}), {"ok": False, "code": "end_of_market"})
+
+    def test_an_unknown_traded_volume_is_null_and_never_carried_across_an_image(self):
+        # Nuance's PR #4 review, item 2. The cache resets tv to None on every image (book.py:111, :239-240). Here
+        # the opening image comes again 1 s later with no tv: every runner then has tv_p null, never 0 and never
+        # the earlier value.
+        class Reimaged(SmallSynthetic):
+            @staticmethod
+            def generate(spec):
+                market = synthetic.generate(spec)
+                first = next(market.messages())
+                again = copy.deepcopy(first)
+                again["pt"] += 1000
+                for entry in again["mc"][0]["rc"]:
+                    entry.pop("tv", None)
+
+                class Wrapped:
+                    market_id = market.market_id
+                    selection_ids = market.selection_ids
+                    runner_names = market.runner_names
+
+                    @staticmethod
+                    def messages():
+                        return iter([copy.deepcopy(first), copy.deepcopy(again)])
+                return Wrapped
+
+        actor = self.make(synthetic_module=Reimaged)
+        first = self.open_and_play(actor)
+        before = [runner["tv_p"] for runner in first.frame["runners"]]
+        self.assertTrue(any(type(value) is int and value > 0 for value in before), before)
+        self.clock.advance_ms(1000)
+        pt = first.frame["clock"]["pt"] + 1000
+        after = self.frame(actor, first.seq, lambda frame: frame["clock"]["pt"] == pt)
+        self.assertEqual([runner["tv_p"] for runner in after.frame["runners"]], [None] * len(before))
+
+    def test_a_market_time_out_of_range_stops_the_replay_not_the_engine(self):
+        # Nuance's PR #4 review, item 9. replay_market_time catches only ValueError (book.py:68-79), so this
+        # marketTime raised OverflowError and ended the engine with engine_failed. Now the replay stops at that
+        # message with value_error, and the engine stays up. Spec takes only Z times: only a crafted stream has one.
+        class Overflowing(SmallSynthetic):
+            @staticmethod
+            def generate(spec):
+                market = synthetic.generate(spec)
+                stream = list(market.messages())
+                bad = {"op": "mcm", "clk": stream[1]["clk"], "pt": stream[0]["pt"] + 1000, "mc": [{
+                    "id": market.market_id, "marketDefinition": dict(stream[0]["mc"][0]["marketDefinition"],
+                                                                     marketTime="0001-01-01T00:00:00.000+23:59")}]}
+                later = dict(copy.deepcopy(stream[1]), pt=stream[0]["pt"] + 2000)
+
+                class Wrapped:
+                    market_id = market.market_id
+                    selection_ids = market.selection_ids
+                    runner_names = market.runner_names
+
+                    @staticmethod
+                    def messages():
+                        return iter([copy.deepcopy(stream[0]), copy.deepcopy(bad), copy.deepcopy(later)])
+                return Wrapped
+
+        actor = self.make(synthetic_module=Overflowing)
+        first = self.open_and_play(actor)
+        self.clock.advance_ms(2000)
+        stopped = self.frame(actor, first.seq, lambda frame: frame["clock"]["paused"], step_ms=100)
+        self.assertEqual((stopped.frame["clock"]["pause_reason"], stopped.frame["clock"]["pt"]),
+                         ("end_of_market", first.frame["clock"]["pt"] + 1000))
+        self.assertEqual((stopped.frame["market"]["invalid_reason"], stopped.frame["runners"]), ("value_error", []))
+        self.assertEqual(actor.command("play", {}), {"ok": False, "code": "end_of_market"})
+        self.assertIsNone(actor.ended())
 
     def test_opening_another_market_replaces_the_first(self):
         actor = self.make()
@@ -446,8 +515,8 @@ class ConversionTests(unittest.TestCase):
                          [[460, 13963], [420, 200], [410, 300]])
 
     def test_off_ladder_prices(self):
-        # The LTP keeps a price that is off the tick ladder (a BSP-matched trade can be), within 1.01 to 1000;
-        # a ladder level off the CLASSIC ladder is dropped.
+        # The LTP keeps a price that is off the tick ladder, within 1.01 to 1000 (whether a real LTP can be off it,
+        # after a BSP-matched trade say, is unverified); a ladder level off the CLASSIC ladder is dropped.
         self.assertEqual(engine.price_h(2.03), 203)
         self.assertEqual(engine.price_h(4.15), 415)
         self.assertEqual(engine.price_h(1.01), 101)

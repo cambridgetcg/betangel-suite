@@ -310,6 +310,43 @@ results["running_after"] = control.engine_running()
         self.assertEqual(results["calls"], ["stop"])
         self.assertFalse(results["running_after"])
 
+    def test_a_lock_that_cannot_be_checked_counts_as_held(self):
+        # Nuance's PR #4 review: engine_running "treats errors as free". Only a missing lock file is free; any other
+        # error counts as held, so stop never prints not_running, or stopped, while the lock may still be held.
+        home = support.short_home(self)
+        results = checks(self, home, setup="", body=SERVER + """
+import io
+def stop(name):
+    out = io.StringIO()
+    attempt(name, lambda: control.stop_main(out=out, wait_s=0.3))
+    results[name + "_out"] = out.getvalue()
+results["missing"] = control.engine_running()
+lock = control.acquire_lock()
+os.chmod(control.lock_path(), 0)                # held, and unreadable
+results["unreadable_lock"] = control.engine_running()
+stop("stop_unreadable_lock")
+os.chmod(control.lock_path(), 0o600)
+os.chmod(roots.run_dir(), 0)                    # held, in an unsearchable run directory
+results["unsearchable_run"] = control.engine_running()
+stop("stop_unsearchable_run")
+os.chmod(roots.run_dir(), 0o700)
+server = control.ControlServer(path, lambda command: {"ok": True})     # answers stop, but keeps the lock
+server.start()
+os.chmod(control.lock_path(), 0)
+stop("stop_answered")
+os.chmod(control.lock_path(), 0o600)
+server.close()
+os.close(lock)
+results["released"] = control.engine_running()
+""")
+        self.maxDiff = None
+        self.assertEqual(results, {
+            "missing": False, "unreadable_lock": True, "unsearchable_run": True, "released": False,
+            "stop_unreadable_lock": "control_failed", "stop_unreadable_lock_out": "",
+            "stop_unsearchable_run": "control_failed", "stop_unsearchable_run_out": "",
+            "stop_answered": "control_failed", "stop_answered_out": "",
+        })
+
     def test_peer_credentials_name_this_uid(self):
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         self.addCleanup(left.close)

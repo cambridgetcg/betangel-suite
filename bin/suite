@@ -18,13 +18,13 @@ esac
 for a in "$@"; do
   [ "$a" != "--print-url" ] || [ -z "${SSH_CONNECTION:-}" ] || { echo "refused:print_url_over_ssh" >&2; exit 2; }
 done
-# Phase 0: betangel_suite/roots.py has STATE_ROOT_AGREED = False, so every command uses the state root's
-# tmp/ and nothing is created under ~/betangel-data. When the flag flips, the default branch becomes
-# "$HOME/betangel-data/suite.noindex/tmp" (created 0700 after the run-marker check); _launch.py refuses
-# a TMPDIR that does not match roots.tmp_dir() (tmpdir_mismatch), so the two cannot drift apart.
+# betangel_suite/roots.py has STATE_ROOT_AGREED = True (R-4, Q-N3), so every command but test, uisnap,
+# release and vendor uses the suite root's tmp/, which cli.main creates 0700 after the run-marker check.
+# With the flag False this branch would be the state root's tmp/. _launch.py refuses a TMPDIR that does
+# not match roots.tmp_dir() (tmpdir_mismatch), so the two cannot drift apart.
 case "${1:-}" in
-  test|uisnap|vendor) TMP="$HOME/.local/state/betangel-suite/tmp" ;;
-  *)                  TMP="$HOME/.local/state/betangel-suite/tmp" ;;
+  test|uisnap|release|vendor) TMP="$HOME/.local/state/betangel-suite/tmp" ;;
+  *)                          TMP="$HOME/betangel-data/suite.noindex/tmp" ;;
 esac
 # Python 3.13 is primary; `bin/suite test --py311` runs the same tests on the 3.11 floor.
 PY=/opt/homebrew/bin/python3.13

@@ -1,8 +1,9 @@
 """State roots and the single writer helper (DESIGN.md 3.7; Phase 0 adaptations A and B).
 
-Both settings of roots.STATE_ROOT_AGREED are tested against a temporary HOME. With the flag off, a
-write under ~/betangel-data is refused on the path text alone: the tests make that directory unreadable
-first, so any file-system access there would surface as a different error.
+The flag roots.STATE_ROOT_AGREED is on since Nuance agreed the suite root (Q-N3). Both settings are still
+tested, against a temporary HOME, with mock.patch for the setting that is not the default. With the flag
+off, a write under ~/betangel-data is refused on the path text alone: the tests make that directory
+unreadable first, so any file-system access there would surface as a different error.
 """
 
 import os
@@ -21,8 +22,8 @@ def mode(path):
 
 class RootPathTests(unittest.TestCase):
 
-    def test_phase_0_flag_is_off(self):
-        self.assertIs(roots.STATE_ROOT_AGREED, False)
+    def test_flag_is_on_since_q_n3(self):
+        self.assertIs(roots.STATE_ROOT_AGREED, True)
 
     def test_root_locations(self):
         home = "/h"
@@ -34,28 +35,39 @@ class RootPathTests(unittest.TestCase):
         self.assertEqual(roots.research_clone(home), "/h/betangel-research")
 
     def test_flag_off_every_command_uses_the_state_tmp(self):
-        for command in cli.COMMANDS:
-            self.assertEqual(roots.tmp_dir(command, "/h"), "/h/.local/state/betangel-suite/tmp", command)
-        self.assertEqual(roots.write_roots("/h"), ("/h/.local/state/betangel-suite",))
+        with mock.patch.object(roots, "STATE_ROOT_AGREED", False):
+            for command in cli.COMMANDS:
+                self.assertEqual(roots.tmp_dir(command, "/h"), "/h/.local/state/betangel-suite/tmp", command)
+            self.assertEqual(roots.write_roots("/h"), ("/h/.local/state/betangel-suite",))
 
     def test_flag_on_restores_the_design(self):
         with mock.patch.object(roots, "STATE_ROOT_AGREED", True):
             self.assertEqual(roots.write_roots("/h"), ("/h/.local/state/betangel-suite", "/h/betangel-data/suite.noindex"))
-            for command in ("test", "uisnap", "vendor"):
-                self.assertEqual(roots.tmp_dir(command, "/h"), "/h/.local/state/betangel-suite/tmp", command)
-            for command in ("serve", "open", "catalogue", "selfcheck"):
-                self.assertEqual(roots.tmp_dir(command, "/h"), "/h/betangel-data/suite.noindex/tmp", command)
+            for command in cli.COMMANDS:
+                # release, like uisnap, never gets the suite root (guard.py), so its TMPDIR cannot lie there.
+                expected = "/h/.local/state/betangel-suite/tmp" if command in ("test", "uisnap", "release", "vendor") \
+                    else "/h/betangel-data/suite.noindex/tmp"
+                self.assertEqual(roots.tmp_dir(command, "/h"), expected, command)
 
     def test_place_is_text_only(self):
-        self.assertEqual(roots.place("/h/.local/state/betangel-suite/a/../b", "/h"),
-                         ("/h/.local/state/betangel-suite/b", "/h/.local/state/betangel-suite"))
-        for path, code in (("relative/x", "path_not_absolute"), ("/h/.local/state/betangel-suite/../x", "write_outside_roots"),
-                           ("/h/.local/state/betangel-suite-other/x", "write_outside_roots"),
-                           ("/h/betangel-data/suite.noindex/x", "state_root_not_agreed"),
-                           ("/h/Betangel-Data/x", "state_root_not_agreed"), ("/h/betangel-data", "state_root_not_agreed")):
-            with self.assertRaises(SuiteError, msg=path) as caught:
-                roots.place(path, "/h")
-            self.assertEqual(caught.exception.code, code, path)
+        for agreed in (False, True):
+            with mock.patch.object(roots, "STATE_ROOT_AGREED", agreed):
+                self.assertEqual(roots.place("/h/.local/state/betangel-suite/a/../b", "/h"),
+                                 ("/h/.local/state/betangel-suite/b", "/h/.local/state/betangel-suite"))
+                data = "write_outside_roots" if agreed else "state_root_not_agreed"
+                for path, code in (("relative/x", "path_not_absolute"),
+                                   ("/h/.local/state/betangel-suite/../x", "write_outside_roots"),
+                                   ("/h/.local/state/betangel-suite-other/x", "write_outside_roots"),
+                                   ("/h/betangel-data/suite.noindex.other/x", data), ("/h/betangel-data/historic/x", data),
+                                   ("/h/Betangel-Data/x", data), ("/h/betangel-data", data),
+                                   ("/h/BETANGEL-DATA/suite.noindex/x", data),
+                                   ("/h/betangel-data/suite.noindex/x", None if agreed else data)):
+                    if code is None:
+                        self.assertEqual(roots.place(path, "/h"), (path, "/h/betangel-data/suite.noindex"))
+                        continue
+                    with self.assertRaises(SuiteError, msg=(agreed, path)) as caught:
+                        roots.place(path, "/h")
+                    self.assertEqual(caught.exception.code, code, (agreed, path))
 
 
 class WriterTests(unittest.TestCase):
@@ -161,9 +173,10 @@ class WriterTests(unittest.TestCase):
         os.chmod(data_home, 0)
         self.addCleanup(os.chmod, data_home, 0o700)
         suite = roots.suite_root(self.home)
-        self.refused("state_root_not_agreed", roots.ensure_dir, suite)
-        self.refused("state_root_not_agreed", roots.write_new, os.path.join(suite, "x"), b"x")
-        self.refused("state_root_not_agreed", roots.write_new, os.path.join(self.home, "BETANGEL-DATA", "x"), b"x")
+        with mock.patch.object(roots, "STATE_ROOT_AGREED", False):
+            self.refused("state_root_not_agreed", roots.ensure_dir, suite)
+            self.refused("state_root_not_agreed", roots.write_new, os.path.join(suite, "x"), b"x")
+            self.refused("state_root_not_agreed", roots.write_new, os.path.join(self.home, "BETANGEL-DATA", "x"), b"x")
         self.assertEqual(mode(data_home), 0)
 
     def test_agreed_suite_root_is_writable_and_data_roots_are_not(self):

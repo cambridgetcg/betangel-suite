@@ -2,13 +2,14 @@
 ssh-session, uisnap and release (Phase 0c); catalogue, selfcheck, diagnose and ledger-summary refuse with
 not_implemented.
 
-bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop, test and
-vendor, checked the run marker before main() is called. main() checks the command's arguments first, then
-creates TMPDIR (0700, through the writer helper) before any handler runs (DESIGN.md 3.6, 6.8), so SQLite
-never falls back to a system temp directory. vendor and stop are the exceptions: vendor must work before
-the deps clone exists and never imports upstream (which the writer helper's path_guard needs); stop only
-talks to the control socket. Neither makes temporary files. release is the third: it writes only the
-release copy (guard mode release) and never needs upstream. Output is codes and counts only.
+bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop and vendor,
+checked the run marker before main() is called (test is checked too: Nuance's answer to Q-N14). main()
+checks the command's arguments first, then creates TMPDIR (0700, through the writer helper) before any
+handler runs (DESIGN.md 3.6, 6.8), so SQLite never falls back to a system temp directory. vendor and stop
+are the exceptions: vendor must work before the deps clone exists and never imports upstream (which the
+writer helper's path_guard needs); stop only talks to the control socket. Neither makes temporary files.
+release is the third: it writes only the release copy (guard mode release) and never needs upstream.
+Output is codes and counts only.
 
     serve [--port N]   the engine in synthetic mode on 127.0.0.1 (config port; N = 0 picks a free port);
                        prints "serving port=<n>", never a bootstrap code or token
@@ -33,8 +34,8 @@ release copy (guard mode release) and never needs upstream. Output is codes and 
     test [--py311] [--heavy] [-v] [-k PATTERN] [-j N]
                        the unittest suite (DESIGN.md 11): the fast tier, plus the heavy tier with --heavy; the test
                        modules run in N worker interpreters (default TEST_JOBS, -j 1 none), whole modules each.
-                       The fast tier runs while the run marker exists (adaptation E); --heavy refuses then
-                       (run_marker_present or run_marker_unreadable), before any test is loaded
+                       Both tiers refuse while the run marker exists (run_marker_present or
+                       run_marker_unreadable; Nuance's answer to Q-N14), before any test is loaded
 
 serve, open, ssh-session and stop import socket and http only inside their handlers (test loads the control
 socket's module for its engine-lock check), so no other command loads them.
@@ -50,7 +51,9 @@ from .errors import SuiteError
 
 COMMANDS = ("serve", "open", "ssh-session", "stop", "catalogue", "selfcheck", "diagnose", "ledger-summary",
             "release", "test", "uisnap", "vendor")
-NO_RUN_MARKER_CHECK = ("stop", "test", "vendor")  # adaptation E; stop only reduces activity (DESIGN 3.9 rule 6)
+# Adaptation E. stop only reduces activity (DESIGN 3.9 rule 6). vendor starts no engine and writes nothing
+# under ~/betangel-data. test refuses during a run like the other commands (Nuance's answer to Q-N14).
+NO_RUN_MARKER_CHECK = ("stop", "vendor")
 NO_TMPDIR = ("stop", "vendor", "release")         # they create no temporary files and must not need upstream
 REPO_ROOT = guard.REPO_ROOT
 VIA_SSH_ENV = "SUITE_VIA_SSH"                     # set by bin/suite: "1" for ssh-session after its SSH checks, else "0"
@@ -193,9 +196,6 @@ def _test(args):
     import unittest
     global _test_tier
     verbosity, pattern, _test_tier, jobs = parse_test_args(args, sys.version_info)
-    if _test_tier == "heavy":           # DESIGN.md 11: never while the run marker exists
-        from . import config, runmarker
-        runmarker.require_absent(runmarker.marker_path(config.load()))
     from . import rx    # noqa: F401  (verifies the pin and imports upstream under the armed guard)
     from .api import control
     before, running_before = state_listing(), control.engine_running()

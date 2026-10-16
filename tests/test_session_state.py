@@ -19,7 +19,7 @@ import unittest
 
 from betangel_suite import cli, roots
 from betangel_suite.api import control
-from tests import LAUNCHER, child_env, run_suite
+from tests import LAUNCHER, child_env, require_no_run_marker, run_suite
 from tests import test_http_support as support
 
 HOLD = "hold-test-run"          # in the inner run's TMPDIR (outside the listing): its own switch, never the real one
@@ -53,6 +53,7 @@ class StateRootTests(unittest.TestCase):
 
     def inner_run(self, home, during):
         """(exit status, stderr) of an inner bin/suite test held open while during() runs."""
+        require_no_run_marker()                 # the inner run's launcher checks only the temporary HOME's marker
         tmp = roots.tmp_dir("test", home)
         open(os.path.join(tmp, HOLD), "w").close()
         err_path = os.path.join(home, "inner.err")

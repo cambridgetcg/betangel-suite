@@ -114,9 +114,12 @@ def new_home(base, name):
 
 
 def launch(home, root, *args):
-    """root's bin/_launch.py with args, as bin/suite runs it (env of child_env(home)); (code, stdout, stderr)."""
+    """root's bin/_launch.py with args, as bin/suite runs it (child_env(home) with the TMPDIR bin/suite gives the
+    command, roots.tmp_dir); (code, stdout, stderr)."""
+    tmp = roots.tmp_dir(args[0] if args else "", home)
     result = subprocess.run([PYTHON, "-I", "-S", "-B", os.path.join(root, "bin", "_launch.py"), *args],
-                            env=child_env(home), cwd=home, capture_output=True, text=True, timeout=120)
+                            env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp), cwd=home, capture_output=True,
+                            text=True, timeout=120)
     return result.returncode, result.stdout, result.stderr
 
 
@@ -269,11 +272,14 @@ class ReleaseCommandTests(ReleaseTestCase):
         # Phase 0: the release status enables nothing; serve from a copy refuses a configured data root.
         home = make_home(self, deps=True)
         os.makedirs(roots.share_dir(home), exist_ok=True)
+        os.makedirs(roots.data_home(home), mode=0o700)          # as on the lab: serve's TMPDIR is the suite root's
         target = self.place_copy(home)
         with open(roots.config_path(home), "w", encoding="ascii") as handle:
             json.dump({"data_roots": ["~/betangel-data/historic-pro"]}, handle)
         self.assertRefused(launch(home, target, "serve", "--port", "0"), "synthetic_only")
-        self.assertFalse(os.path.lexists(roots.data_home(home)))
+        # Under ~/betangel-data only the suite root's tmp/ (0700) was made, before the refusal, and it is empty.
+        self.assertEqual(tree_listing(roots.data_home(home)), [("suite.noindex", 0o700),
+                                                               (os.path.join("suite.noindex", "tmp"), 0o700)])
 
     def test_launch_refuses_a_tampered_copy(self):
         home = self.fresh_home()

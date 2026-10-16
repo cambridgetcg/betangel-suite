@@ -35,11 +35,15 @@ What the hook refuses, in every mode and phase:
        os.forkpty always; subprocess.Popen and os.posix_spawn except as below;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
        link (both paths: a hard link would alias an outside inode inside the roots), symlink, truncate,
-       chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. While roots.STATE_ROOT_AGREED is
-       False a write under ~/betangel-data is refused as state_root_not_agreed, judged on the path text
-       alone. A relative path in a write open is refused too: the open event does not say which dir_fd it
-       is relative to (the other events do, and a dir_fd is resolved with F_GETPATH). The roots check
-       resolves the path as given, as the OS does: "link/.." and a final "/" follow the link.
+       chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. The write roots are the state
+       root in every mode; the suite root only in engine mode, and only while roots.STATE_ROOT_AGREED is
+       True; in vendor mode also the deps clone and this checkout's pin/; and in release mode also the
+       release copies (app/). So the test runner, uisnap and release never write under ~/betangel-data,
+       whatever the flag says: the tests use temporary HOMEs. While the flag is False a write under
+       ~/betangel-data is refused as state_root_not_agreed, judged on the path text alone. A relative
+       path in a write open is refused too: the open event does not say which dir_fd it is relative to
+       (the other events do, and a dir_fd is resolved with F_GETPATH). The roots check resolves the path
+       as given, as the OS does: "link/.." and a final "/" follow the link.
        CPython raises no audit event for os.mkfifo and os.mknod, so arm() replaces them (in os and posix)
        with wrappers that raise one ("os.mkfifo", "os.mknod") before calling the original.
        The sqlite3.connect event covers only the main database file. ATTACH DATABASE and VACUUM INTO create
@@ -50,7 +54,8 @@ What the hook refuses, in every mode and phase:
 Subprocesses by mode (the launcher picks the mode from the command name; nothing else can):
 
   engine  before seal(), exactly two argv shapes: git -C <dir in the write roots> rev-parse
-          --is-inside-work-tree (paths.is_inside_git_worktree, used by config.validate_config) and
+          --is-inside-work-tree (paths.is_inside_git_worktree, used by config.validate_config), its dir in a
+          root as text and, links resolved, in that root's real path from arm(), and
           /usr/bin/open http://127.0.0.1:<permitted port>/#c=<code>; after seal(), none. A bare "git"
           must come through subprocess with a search path of /usr/bin and /bin only.
   vendor  before seal(), exactly the four git argvs tools/vendor_research.py runs; after, none. Its writes may
@@ -194,7 +199,8 @@ class _State:
 
     def __init__(self, mode, tmp_root):
         home = roots.home()
-        found = list(roots.write_roots(home))
+        # The suite root holds licensed derivatives and belongs to the engine alone (DESIGN.md 3.7).
+        found = list(roots.write_roots(home)) if mode == "engine" else [roots.state_dir(home)]
         if mode == "vendor":                # deps/ and the pin, not the share dir: its app/ is release's alone
             found += [roots.deps_root(home), os.path.join(REPO_ROOT, "pin")]
         # vendor may also create the share dir itself, with one os.mkdir of exactly that path (_check).
@@ -540,7 +546,7 @@ def _check_spawn(state, event, args):
                 not state.sealed or _uisnap_binary_ok(state, argv[0])):
             return
     elif not state.sealed:
-        if state.mode == "engine" and engine_argv_ok(argv, state.roots, state.ports):
+        if state.mode == "engine" and engine_argv_ok(argv, state.roots, state.ports, state.real_roots):
             return
         if state.mode == "vendor" and vendor_argv_ok(argv, state.research, state.deps_root):
             return
@@ -557,12 +563,21 @@ def _child_env_ok(names):
     return not any(_stray(key) for key in names) and names.get(FORBID_NETWORK_ENV) == "1"
 
 
-def engine_argv_ok(argv, write_roots, ports):
-    """The two argvs an engine may start before seal() (DESIGN.md I-5)."""
+def engine_argv_ok(argv, write_roots, ports, real_roots=None):
+    """The two argvs an engine may start before seal() (DESIGN.md I-5).
+
+    The git probe's directory must lie in a write root as text and, with its links resolved, in that root's
+    real path, as runner_git_ok checks its -C directory: git -C follows links, so the text alone would let a
+    link inside a root point the probe elsewhere (Astra's re-review of #4). real_roots are the roots' real
+    paths; the hook passes the ones fixed at arm(), and None resolves them now.
+    """
     if len(argv) == 5 and argv[:2] == ["git", "-C"] and argv[3:] == ["rev-parse", "--is-inside-work-tree"]:
         directory = argv[2]
+        if real_roots is None:
+            real_roots = tuple(os.path.realpath(root) for root in write_roots)
         return (os.path.isabs(directory) and os.path.normpath(directory) == directory
-                and any(roots.within(directory, root) for root in write_roots))
+                and any(roots.within(directory, root) and roots.within(os.path.realpath(directory), real)
+                        for root, real in zip(write_roots, real_roots)))
     if len(argv) == 2 and argv[0] == OPEN:
         match = _URL_RE.fullmatch(argv[1])
         return bool(match) and int(match.group(1)) != 0 and int(match.group(1)) in ports

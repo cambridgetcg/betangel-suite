@@ -24,10 +24,15 @@ import time
 import unittest
 
 from betangel_suite import roots
-from tests import LAUNCHER, PYTHON, ROOT, child_env, run_suite
+from betangel_suite.errors import SuiteError
+from tests import (LAUNCHER, PYTHON, ROOT, child_env, require_no_run_marker, run_suite, stand_in_marker,
+                   tree_listing)
 from tests import test_http_support as support
+from tests import test_session_state
 
 URL_RE = re.compile(r"http://127\.0\.0\.1:([0-9]+)/#c=([A-Za-z0-9_-]{22})\n")
+# tree_listing of ~/betangel-data once an engine command has made its TMPDIR, the suite root's tmp/, and left it empty.
+SUITE_TMP_ONLY = [("suite.noindex", 0o700), (os.path.join("suite.noindex", "tmp"), 0o700)]
 SSH = "192.0.2.10 50000 192.0.2.20 22"         # TEST-NET addresses: only the variable's presence matters
 LAUNCH_PY = os.path.join(ROOT, "bin", "_launch.py")
 
@@ -144,13 +149,21 @@ def wait_path(path, timeout=30.0):
 
 class PipeChild:
     """An engine-mode python child set up like support.run_child, with a stdin pipe this test holds, stdout to a
-    0600 file in its HOME (or a pipe, or the stdout_fd given), stderr to a file. Always stopped in cleanup."""
+    0600 file in its HOME (or a pipe, or the stdout_fd given), stderr to a file. Always stopped in cleanup.
+
+    It starts only after the real run marker is checked (tests.require_no_run_marker), like support.run_child:
+    the child's own check looks at its temporary HOME. The python child gets the TMPDIR bin/suite gives
+    ssh-session, the suite root's tmp/, as support.run_child does for serve and open."""
 
     def __init__(self, case, home, body, *, name, stdout_pipe=False, stdout_fd=None, argv=None, env=None):
+        require_no_run_marker()
         self.home = home
         self.out_path = os.path.join(home, name + ".out")
         self.err_path = os.path.join(home, name + ".err")
-        argv = argv or [PYTHON, "-I", "-S", "-B", "-c", support.RUN_CHILD + body + support.RUN_TAIL]
+        if argv is None:
+            argv = [PYTHON, "-I", "-S", "-B", "-c", support.RUN_CHILD + body + support.RUN_TAIL]
+            tmp = roots.tmp_dir("ssh-session", home)
+            env = child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp) if env is None else env
         with open(self.out_path, "w") as out, open(self.err_path, "w") as err:
             os.chmod(self.out_path, 0o600)
             self.process = subprocess.Popen(argv, env=child_env(home) if env is None else env, cwd=home,
@@ -418,6 +431,7 @@ def write_config(home, values):
 def viewing_refusals(case, home, open_args):
     """(exit, stdout, stderr), redacted, of bin/suite ssh-session (in the fake SSH environment) and of open through
     cli.main with each of open_args, all started at once; with a data root configured each must be REFUSED."""
+    require_no_run_marker()                     # support.run_child checks it too; support.Child does not
     children = [support.Child(case, home, ["/bin/sh", LAUNCHER, "ssh-session", "--port", "0"],
                               env=child_env(home, SSH_CONNECTION=SSH), name="ssh-refused")]
     children += [support.run_child(case, home, OPEN_CLI % (args,), name="open-refused-%d" % index)
@@ -438,7 +452,8 @@ class SyntheticOnlyTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(os.path.join(roots.run_dir(home), "engine.lock")))
         self.assertFalse(os.path.lexists(support.control_path(home)))
         self.assertFalse(os.path.lexists(os.path.join(roots.state_dir(home), "opener-called")))
-        self.assertFalse(os.path.lexists(roots.data_home(home)))
+        # Under ~/betangel-data only the suite root's tmp/ (0700) was made, before the refusal, and it is empty.
+        self.assertEqual(tree_listing(roots.data_home(home)), SUITE_TMP_ONLY)
 
 
 class AttachedTests(unittest.TestCase):
@@ -639,9 +654,11 @@ results["controller"] = query(open(os.path.join(HOME, "token-1")).read())[1]["co
         # serve is refused (open's refusal is checked in process: tests/test_session_lifetime.py, never by running
         # open). No deps clone in this HOME: a check that let them through would stop at deps_missing first.
         home = support.short_home(self, deps=False)
-        for args, env, code in ((["ssh-session"], child_env(home), "ssh_session_outside_ssh"),
-                                (["ssh-session"], child_env(home, SUITE_VIA_SSH="0"), "ssh_session_outside_ssh"),
-                                (["serve"], child_env(home, SUITE_VIA_SSH="1"), "open_over_ssh")):
+        tmp = roots.tmp_dir("ssh-session", home)                # serve's too: the TMPDIR bin/suite gives both
+        for args, env, code in ((["ssh-session"], {}, "ssh_session_outside_ssh"),
+                                (["ssh-session"], {"SUITE_VIA_SSH": "0"}, "ssh_session_outside_ssh"),
+                                (["serve"], {"SUITE_VIA_SSH": "1"}, "open_over_ssh")):
+            env = child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp, **env)
             result = subprocess.run([PYTHON, "-I", "-S", "-B", LAUNCH_PY, *args], env=env, cwd=home,
                                     capture_output=True, text=True, timeout=60)
             self.assertEqual((result.returncode, result.stdout, result.stderr), (2, "", "refused:%s\n" % code), args)
@@ -650,6 +667,38 @@ results["controller"] = query(open(os.path.join(HOME, "token-1")).read())[1]["co
                                 (["ssh-session", "--port", "0"], {}, "ssh_session_outside_ssh")):
             result = run_suite(args, home, env=child_env(home, **env))
             self.assertEqual((result.returncode, result.stdout, result.stderr), (2, "", "refused:%s\n" % code), args)
+
+
+class RunnerMarkerTests(unittest.TestCase):
+    """Nuance's PR #4 review, item 14, for the launch paths Phase 0c's tests add: an ssh-session child, bin/suite
+    ssh-session, the viewing refusals and the inner bin/suite test runs check the runner's own marker first
+    (tests.require_no_run_marker). test_engine_process.RunnerMarkerTests covers serve, the python engine child and
+    the in-process actor; test_uisnap covers uisnap's engine child. A stand-in takes the real marker's place."""
+
+    def check_nothing_starts(self, present, code):
+        stand_in_marker(self, present)
+        home = support.short_home(self)
+        before = tree_listing(home)
+        ssh = ["/bin/sh", LAUNCHER, "ssh-session", "--port", "0"]
+        attempts = (
+            ("ssh-session child", lambda: PipeChild(self, home, SESSION % 1.5, name="ssh")),
+            ("bin/suite ssh-session", lambda: PipeChild(self, home, "", name="ssh-launcher", argv=ssh,
+                                                        env=child_env(home, SSH_CONNECTION=SSH))),
+            ("viewing refusals", lambda: viewing_refusals(self, home, (["open", "--port", "0", "--print-url"],))),
+            ("inner bin/suite test", lambda: test_session_state.StateRootTests.inner_run(self, home, lambda: None)),
+        )
+        for name, attempt in attempts:
+            with self.subTest(name):
+                with self.assertRaises(SuiteError) as caught:
+                    attempt()
+                self.assertEqual(caught.exception.code, code)
+        self.assertEqual(tree_listing(home), before)
+
+    def test_nothing_starts_while_the_real_marker_exists(self):
+        self.check_nothing_starts(True, "run_marker_present")
+
+    def test_nothing_starts_while_the_real_marker_is_unreadable(self):
+        self.check_nothing_starts(False, "run_marker_unreadable")
 
 
 if __name__ == "__main__":

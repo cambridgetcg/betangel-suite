@@ -199,6 +199,28 @@ class ActivationTests(unittest.TestCase):
                 code = ARM_ENGINE + "sys.path.append(%r)\n" % entry + TRY_RX
                 self.assertEqual(outcome(self, home, code).splitlines(), ["research_clone_on_path", "upstream_absent"])
 
+    def test_entry_with_dotdot_after_a_link_into_the_research_clone_is_refused(self):
+        # The kernel follows a link before it applies "..": with safe/alias -> clone/sub, safe/alias/../sub
+        # opens clone/sub. Folding "alias/.." first would judge safe/sub, a real directory outside the clone.
+        # Refused when absolute and when relative (the child's cwd is HOME). The controls keep the same
+        # shape but land outside the clone, through a real directory and through a link, and are allowed.
+        home = make_home(self, deps=True)
+        research = roots.research_clone(home)
+        os.makedirs(os.path.join(research, "sub"))
+        safe = os.path.join(home, "safe")
+        for name in ("sub", "real", os.path.join("outside", "deep")):
+            os.makedirs(os.path.join(safe, name))
+        os.symlink(os.path.join(research, "sub"), os.path.join(safe, "alias"))
+        os.symlink(os.path.join(safe, "outside", "deep"), os.path.join(safe, "elsewhere"))
+        cases = ((os.path.join(safe, "alias", "..", "sub"), ["research_clone_on_path", "upstream_absent"]),
+                 (os.path.join("safe", "alias", "..", "sub"), ["research_clone_on_path", "upstream_absent"]),
+                 (os.path.join(safe, "real", "..", "sub"), ["imported", "upstream_loaded"]),
+                 (os.path.join("safe", "elsewhere", "..", "deep"), ["imported", "upstream_loaded"]))
+        for entry, expected in cases:
+            with self.subTest(entry=entry):
+                code = ARM_ENGINE + "sys.path.append(%r)\n" % entry + TRY_RX
+                self.assertEqual(outcome(self, home, code).splitlines(), expected)
+
     def test_deps_reached_through_a_link_into_the_research_clone_is_refused(self):
         # The deps directory itself is real, but an ancestor links into the deploy clone (I-13): refused
         # before its files are read or it is appended, however the link spells its target. (A link to a

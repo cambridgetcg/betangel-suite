@@ -39,7 +39,7 @@ import re
 import unittest
 
 from betangel_suite import engine, roots, rx, synthetic
-from tests import LAUNCHER, ROOT, child_env, run_relayed
+from tests import LAUNCHER, ROOT, child_env, run_relayed, tree_listing
 from tests import test_http_support as support
 from tests.test_ui_assets import without_comments
 
@@ -611,7 +611,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertTrue(NAME_RE.fullmatch(runner["name"]))
             self.assertIn(runner["status"], RUNNER_STATUSES)
             self.assertTrue(runner["ltp_h"] is None or (is_int(runner["ltp_h"]) and runner["ltp_h"] in ladder))
-            self.assertTrue(is_int(runner["tv_p"]) and runner["tv_p"] >= 0)
+            self.assertTrue(runner["tv_p"] is None or (is_int(runner["tv_p"]) and runner["tv_p"] >= 0))
             for side in ("back", "lay"):
                 levels = runner[side]
                 self.assertIs(type(levels), list)
@@ -647,6 +647,7 @@ class EndToEndTests(unittest.TestCase):
         for frame in pre_off:
             self.assertEqual((frame["market"]["status"], frame["market"]["inplay"], frame["market"]["invalid_reason"]),
                              ("OPEN", False, None))
+        # The generator flips at exactly marketTime (unverified for real markets; DESIGN.md 11.1).
         self.assertTrue(all(frame["clock"]["ms_to_off"] <= 0 for frame in in_play))
         self.assertTrue(any(frame["market"]["status"] == "OPEN" for frame in in_play))
         for frame in self.frames:
@@ -680,7 +681,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self.child.stderr(), "http:404:not_found\n" * 6 + "http:401:bad_code\n")
         self.assertEqual(support.secret_shaped(self.child.stdout() + self.child.stderr()), [])
         self.assertFalse(os.path.lexists(support.control_path(self.home)))
-        self.assertFalse(os.path.lexists(os.path.join(roots.data_home(self.home))))
+        # Under ~/betangel-data the engine made only its TMPDIR, the suite root's tmp/ (0700), and left it empty.
+        self.assertEqual(tree_listing(roots.data_home(self.home)), [("suite.noindex", 0o700),
+                                                                    (os.path.join("suite.noindex", "tmp"), 0o700)])
 
     # --- the UI's frame code on these frames ------------------------------------------------------------------
 

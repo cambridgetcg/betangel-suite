@@ -12,10 +12,13 @@ import json
 import os
 import time
 import unittest
+from unittest import mock
 
 from betangel_suite import pin, roots, runmarker
 from betangel_suite.api import control
-from tests import LAUNCHER, child_env, run_suite, tree_listing
+from betangel_suite.errors import SuiteError
+from tests import LAUNCHER, child_env, make_home, run_suite, tree_listing
+from tests import test_engine
 from tests import test_http_support as support
 
 # sealed_probe(): what a sealed engine must refuse (I-5), tried in the child itself. Only harmless spawns.
@@ -355,11 +358,9 @@ results["eof"] = stream.next(5)
         before = tree_listing(home)
         result = run_suite(["serve", "--port", "0"], home)
         self.assertEqual((result.returncode, result.stdout, result.stderr), (2, "", "refused:synthetic_only\n"))
-        after = [entry for entry in tree_listing(home) if not entry[0].startswith(os.path.join(".local", "state",
-                                                                                                "betangel-suite", "tmp"))]
-        self.assertEqual(after, [entry for entry in before if not entry[0].startswith(os.path.join(
-            ".local", "state", "betangel-suite", "tmp"))])
-        self.assertFalse(os.path.lexists(os.path.join(home, "betangel-data")))
+        # serve made only its TMPDIR, the suite root's tmp/ (0700, empty), before the engine refused the data root.
+        tmp = os.path.relpath(roots.tmp_dir("serve", home), home)
+        self.assertEqual(tree_listing(home), sorted(before + [(os.path.dirname(tmp), 0o700), (tmp, 0o700)]))
 
     def test_bad_arguments(self):
         home = support.short_home(self, deps=False)
@@ -506,6 +507,53 @@ def main():
         result = run_suite(["serve", "--port", "0"], home)
         self.assertEqual((result.returncode, result.stderr), (2, "refused:run_marker_present\n"))
         self.assertEqual(tree_listing(home), before)
+
+
+class RunnerMarkerTests(test_engine.EngineCase):
+    """Nuance's PR #4 review, item 14: an engine a test starts runs under a temporary HOME, whose marker never
+    exists, so the test helpers check the runner's own (real) marker before each launch. Here a stand-in in a
+    temporary HOME takes the real marker's place (tests.RUN_MARKER, patched); the real one is never touched."""
+
+    CHILD = "def main():\n    return server.run(cfg, command='serve', port=0)\n"
+
+    def stand_in(self, present):
+        place = make_home(self)
+        path = os.path.join(place, ".local", "state", "lab-runs", "ACTIVE")
+        os.makedirs(os.path.dirname(path), mode=0o700)
+        if present:
+            open(path, "w").close()
+        else:
+            os.chmod(os.path.dirname(path), 0)
+            self.addCleanup(os.chmod, os.path.dirname(path), 0o700)
+        patcher = mock.patch("tests.RUN_MARKER", path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def check_no_engine_starts(self, code):
+        home = support.short_home(self)
+        before = tree_listing(home)
+        attempts = (
+            ("bin/suite serve", lambda: support.serve(self, home)),
+            ("python engine child", lambda: support.run_child(self, home, self.CHILD)),
+            ("run_suite serve", lambda: run_suite(["serve", "--port", "80"], home)),   # bad port: it never binds
+            ("in-process actor", lambda: self.make()),
+        )
+        for name, attempt in attempts:
+            with self.subTest(name):
+                with self.assertRaises(SuiteError) as caught:
+                    attempt()
+                self.assertEqual(caught.exception.code, code)
+        self.assertEqual(tree_listing(home), before)
+        stop = run_suite(["stop"], home)              # stop stays exempt: it only reduces activity
+        self.assertEqual((stop.returncode, stop.stdout, stop.stderr), (0, "not_running\n", ""))
+
+    def test_no_engine_starts_while_the_real_marker_exists(self):
+        self.stand_in(present=True)
+        self.check_no_engine_starts("run_marker_present")
+
+    def test_no_engine_starts_while_the_real_marker_is_unreadable(self):
+        self.stand_in(present=False)
+        self.check_no_engine_starts("run_marker_unreadable")
 
 
 if __name__ == "__main__":
