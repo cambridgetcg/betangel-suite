@@ -70,6 +70,7 @@ reviews the scanner, DESIGN.md 3.9). There is no inline suppression comment.
 from __future__ import annotations
 
 import argparse
+import binascii
 import os
 import re
 import shutil
@@ -77,6 +78,7 @@ import stat
 import subprocess
 import sys
 import unicodedata
+import zlib
 
 EXIT_CLEAN, EXIT_FINDINGS, EXIT_REFUSED = 0, 1, 2
 
@@ -118,6 +120,8 @@ RULES = {
     "secret_value": "secret-looking value assigned to a key, token, password or session field",
     "known_token": "token with a known provider prefix (GitHub, AWS, Slack, JWT, ...)",
     "bootstrap_code": "suite bootstrap-code URL fragment",
+    "encoded_blob": "base64, hex or \\xNN-escaped data that decodes to an archive, a zlib stream, "
+                    "96+ bytes of binary, or text another rule flags",
 }
 
 # Identifier codes that are also checked on the path text itself.
@@ -406,9 +410,17 @@ def _lines(text: str):
 
 def _text_findings(text: str) -> list:
     """Return (line, code) pairs for one decoded text file."""
+    lines = list(_lines(text))
+    found = _plain_findings(lines)
+    found.extend((number, "encoded_blob") for number in _encoded_blob_lines(lines))
+    return found
+
+
+def _plain_findings(lines) -> list:
+    """The line rules and runner_table over (line number, line) pairs."""
     found = []
     rows = []  # (position among the split lines, line number, name)
-    for position, (number, line) in enumerate(_lines(text)):
+    for position, (number, line) in enumerate(lines):
         for code in _line_codes(line):
             found.append((number, code))
         name = _table_row_name(line)
@@ -426,6 +438,196 @@ def _text_findings(text: str) -> list:
         else:
             i += 1
     return found
+
+# ------------------------------------------------------------ encoded data
+#
+# encoded_blob (Nuance's #2 review, item 5): data hidden in text as base64, as hex, or as \xNN
+# escapes in a string literal. A token is one of:
+#   b64  a run of 16+ base64 characters (standard or URL-safe alphabet), with its padding;
+#   hex  8+ hex byte pairs, bare or split by single spaces or colons, or 0x-prefixed and
+#        comma-separated, or the hex columns of an xxd or `hexdump -C` line;
+#   esc  a quoted string literal holding at least one \xNN escape.
+# A token that ends its line (only a closing quote, bracket, `;`, `+` or `\` after it) runs on
+# into each next line that holds nothing but one token of the same kind: a wrapped dump, or
+# implicit string concatenation. A comma ends a run, except after a 0x token, so a list of
+# hashes is never joined into one. Each run is decoded and flagged, at its first line, when it
+#   - is 24+ bytes that start with an archive or SQLite magic (gzip needs its method byte and
+#     clear reserved flags, not just 1f 8b) or form a whole zlib stream;
+#   - is 96+ bytes holding a NUL or not UTF-8 (binary data: compressed, encrypted or packed);
+#   - is 16+ bytes of UTF-8 text that the line rules or runner_table flag.
+# The last two need a base64 run to mix upper case, lower case and digits, and a hex run to
+# hold a letter, as encoded binary does; names, paths and decimal numbers do not.
+
+ENCODED_MIN_MAGIC = 24
+ENCODED_MIN_BINARY = 96
+ENCODED_MIN_TEXT = 16
+
+# The token patterns, by kind: for any token, and for the short last line of a run.
+_B64_TOKEN = {False: re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}"), True: re.compile(r"[A-Za-z0-9+/_-]{2,}={0,2}")}
+_HEX_TOKEN = {short: re.compile(
+    r"(?<![0-9A-Za-z])(?:0[xX][0-9a-fA-F]{2}(?:[ \t]*,[ \t]*0[xX][0-9a-fA-F]{2}){%s}"
+    r"|[0-9a-fA-F]{2}(?:[ :]?[0-9a-fA-F]{2}){%s})(?![0-9A-Za-z])" % (count, count))
+    for short, count in ((False, "7,"), (True, "0,"))}
+_HEX_DUMP = {short: re.compile(
+    r"\s*[0-9a-fA-F]{6,10}:?\s+(?P<hex>[0-9a-fA-F]{2}(?: {0,2}[0-9a-fA-F]{2}){%s})(?:\s{2,}.*)?\s*" % count)
+    for short, count in ((False, "3,"), (True, "0,"))}
+_HEX_DROP = re.compile(r"0[xX]|[^0-9a-fA-F]")
+_ESC_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+_HAS_XNN = re.compile(r"\\x[0-9a-fA-F]{2}")
+_ESC = re.compile(r"\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|.)", re.S)
+_ESC_SIMPLE = {"n": 10, "r": 13, "t": 9, "a": 7, "b": 8, "f": 12, "v": 11, "\\": 92, "'": 39, '"': 34}
+_PURE_BEFORE = {"b64": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
+                "hex": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
+                "esc": re.compile(r"\s*(?:\+\s*)?[bBrRuU]{0,2}")}
+_ENDS_LINE = re.compile(r"[\"'`]?\s*[)\]\\;+]*\s*")
+_ENDS_LINE_0X = re.compile(r"\s*,?\s*[)\]\\;+]*\s*")
+_ENDS_LINE_ESC = re.compile(r"\s*[)\]\\;+]*\s*")
+_URLSAFE = str.maketrans("-_", "+/")
+
+
+def _unescape(body: str) -> bytes:
+    """The bytes a string literal's body stands for: \\xNN, octal and one-letter escapes."""
+    out = bytearray()
+    pos = 0
+    for m in _ESC.finditer(body):
+        out += body[pos:m.start()].encode("utf-8")
+        esc = m.group(1)
+        if esc[0] == "x":
+            out.append(int(esc[1:], 16))
+        elif esc[0] in "01234567":
+            out.append(int(esc, 8) & 0xFF)
+        elif esc in _ESC_SIMPLE:
+            out.append(_ESC_SIMPLE[esc])
+        else:
+            out += ("\\" + esc).encode("utf-8")
+        pos = m.end()
+    out += body[pos:].encode("utf-8")
+    return bytes(out)
+
+
+def _segments(kind: str, line: str, short: bool = False) -> list:
+    """[(start, end, payload, ends_line, pure)] for one kind of token on one line.
+
+    payload is the token text (b64), its hex digits (hex) or the bytes it stands for (esc).
+    short: also tokens below the minimum length (the last line of a wrapped dump).
+    """
+    if kind == "hex":
+        dump = _HEX_DUMP[short].fullmatch(line)
+        if dump:  # xxd or hexdump -C: the offset and the character column are not data
+            return [(dump.start("hex"), dump.end("hex"), _HEX_DROP.sub("", dump.group("hex")), True, True)]
+        matches = list(_HEX_TOKEN[short].finditer(line))
+    elif kind == "b64":
+        matches = list(_B64_TOKEN[short].finditer(line))
+    else:
+        if "\\x" not in line:
+            return []
+        matches = [m for m in _ESC_LITERAL.finditer(line) if _HAS_XNN.search(m.group())]
+    segments = []
+    for m in matches:
+        token = m.group()
+        if kind == "hex":
+            payload = _HEX_DROP.sub("", token)
+            ends = (_ENDS_LINE_0X if token[:2] in ("0x", "0X") else _ENDS_LINE).fullmatch(line, m.end())
+        else:
+            payload = token if kind == "b64" else _unescape(token[1:-1])
+            ends = (_ENDS_LINE if kind == "b64" else _ENDS_LINE_ESC).fullmatch(line, m.end())
+        pure = bool(ends) and len(matches) == 1 and bool(_PURE_BEFORE[kind].fullmatch(line, 0, m.start()))
+        segments.append((m.start(), m.end(), payload, bool(ends), pure))
+    return segments
+
+
+def _runs(kind: str, lines) -> list:
+    """[(first line number, [payload, ...])]: the tokens of one kind, joined across lines as above."""
+    runs = []
+    current = None
+    for number, line in lines:
+        segments = _segments(kind, line)
+        if current is not None:
+            if len(segments) == 1 and segments[0][4]:
+                current[1].append(segments[0][2])
+                continue
+            if not segments:
+                tail = _segments(kind, line, short=True)
+                if len(tail) == 1 and tail[0][4]:  # a short last line ends the run
+                    current[1].append(tail[0][2])
+            runs.append(current)
+            current = None
+        for _start, _end, payload, _ends, _pure in segments[:-1]:
+            runs.append((number, [payload]))
+        if segments:
+            last = segments[-1]
+            if last[3]:
+                current = (number, [last[2]])
+            else:
+                runs.append((number, [last[2]]))
+    if current is not None:
+        runs.append(current)
+    return runs
+
+
+def _decode_run(kind: str, payloads: list):
+    """(bytes, mixed) for one run, or (None, False) if it does not decode. mixed: it looks like encoded data."""
+    if kind == "esc":
+        return b"".join(payloads), True
+    text = "".join(payloads)
+    if kind == "hex":
+        mixed = any(c in "abcdefABCDEF" for c in text)
+        return bytes.fromhex(text[: len(text) // 2 * 2]), mixed
+    mixed = (any(c.isupper() for c in text) and any(c.islower() for c in text)
+             and any(c.isdigit() for c in text))
+    bare = text.replace("=", "").translate(_URLSAFE)
+    if len(bare) % 4 == 1:
+        bare = bare[:-1]
+    try:
+        return binascii.a2b_base64((bare + "=" * (-len(bare) % 4)).encode("ascii")), mixed
+    except (binascii.Error, ValueError):
+        return None, False
+
+
+def _blob_magic(blob: bytes) -> bool:
+    if blob[:2] == b"\x1f\x8b":  # gzip: also the deflate method byte and clear reserved flags
+        return blob[2] == 8 and blob[3] & 0xE0 == 0
+    return _magic_code(blob[:SNIFF_BYTES]) is not None
+
+
+def _zlib_stream(blob: bytes) -> bool:
+    """True for a whole zlib stream (header, deflate data, Adler-32), or one that inflates past 1 MiB."""
+    if blob[0] & 0x0F != 8 or blob[0] >> 4 > 7 or blob[1] & 0x20 or (blob[0] << 8 | blob[1]) % 31:
+        return False
+    inflater = zlib.decompressobj()
+    try:
+        inflater.decompress(blob, 1 << 20)
+    except zlib.error:
+        return False
+    return inflater.eof or bool(inflater.unconsumed_tail)
+
+
+def _is_utf8(blob: bytes) -> bool:
+    try:
+        blob.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _encoded_blob_lines(lines) -> list:
+    """The first line number of every encoded run that decodes to something flagged."""
+    flagged = []
+    for kind in ("b64", "hex", "esc"):
+        for number, payloads in _runs(kind, lines):
+            blob, mixed = _decode_run(kind, payloads)
+            if blob is None:
+                continue
+            if len(blob) >= ENCODED_MIN_MAGIC and (_blob_magic(blob) or _zlib_stream(blob)):
+                flagged.append(number)
+            elif not mixed:
+                continue
+            elif len(blob) >= ENCODED_MIN_BINARY and (b"\0" in blob or not _is_utf8(blob)):
+                flagged.append(number)
+            elif (len(blob) >= ENCODED_MIN_TEXT and b"\0" not in blob and _is_utf8(blob)
+                    and _plain_findings(list(_lines(blob.decode("utf-8"))))):
+                flagged.append(number)
+    return flagged
 
 # ------------------------------------------------------------- scan an entry
 

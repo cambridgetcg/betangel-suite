@@ -14,8 +14,10 @@ Nothing in this file imports betangel_suite.
 
 from __future__ import annotations
 
+import base64
 import bz2
 import gzip
+import hashlib
 import io
 import os
 import re
@@ -82,6 +84,36 @@ def _stream_text(salt: int = 0, lines: int = 30) -> str:
         _j('{"op":"mcm","pt":', str(1431000000000 + 250 * i + salt), ',"mc":[{"id":"', MARKET_2015,
            '","rc":[{"at', 'b":[[', f"{2 + i % 7}.{i % 10}", ',10.0]],"id":', runner_id, "}]}]}\n")
         for i in range(lines))
+
+
+def _wrap(text: str, width: int, fmt: str = "{}\n") -> str:
+    return "".join(fmt.format(text[i:i + width]) for i in range(0, len(text), width))
+
+
+def _escaped(data: bytes) -> str:
+    return "".join(f"\\x{b:02x}" for b in data)
+
+
+def _xxd(data: bytes) -> str:
+    """xxd's default layout: offset, eight groups of four hex digits, the printable characters."""
+    lines = []
+    for off in range(0, len(data), 16):
+        chunk = data[off:off + 16]
+        groups = " ".join(chunk.hex()[i:i + 4] for i in range(0, 2 * len(chunk), 4))
+        shown = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        lines.append(f"{off:08x}: {groups:<39}  {shown}\n")
+    return "".join(lines)
+
+
+def _hexdump_c(data: bytes) -> str:
+    """`hexdump -C`'s layout: offset, two halves of eight pairs, the printable characters in bars."""
+    lines = []
+    for off in range(0, len(data), 16):
+        chunk = data[off:off + 16]
+        left, right = (" ".join(f"{b:02x}" for b in half) for half in (chunk[:8], chunk[8:]))
+        shown = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        lines.append(f"{off:08x}  {left:<23}  {right:<23}  |{shown}|\n")
+    return "".join(lines)
 
 
 def _without_nul(make) -> bytes:
@@ -627,6 +659,109 @@ class BinaryAnywhereTests(_RepoCase):
         png = b"\x89PNG\r\n\x1a\n" + bytes(range(1, 256))
         self.write("docs/synthetic/screenshots/ladder.png", png)
         self.add("docs/synthetic/screenshots/ladder.png", force=True)
+        self.assert_clean()
+
+
+class EncodedDataTests(_RepoCase):
+    """Data hidden in text as base64, hex or \\xNN escapes (Nuance's #2 review, item 5). Every payload is
+    built here from invented stream lines; none is written into this file."""
+
+    def plant_shapes(self, shapes: dict) -> None:
+        for name, text in shapes.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.plant("pkg/blob.py", text, MARKET_2015, code="encoded_blob")
+
+    def test_base64_of_an_archive_member(self):
+        member = bz2.compress(_stream_text().encode())
+        text = base64.b64encode(member).decode()
+        self.plant_shapes({
+            "wrapped at 76": base64.encodebytes(member).decode(),
+            "one line": f'DATA = "{text}"\n',
+            "implicit concatenation": "DATA = (\n" + _wrap(text, 60, '    "{}"\n') + ")\n",
+            "URL-safe": base64.urlsafe_b64encode(member).decode() + "\n",
+            "a JSON value": '{"payload": "' + text + '", "n": 1}\n',
+        })
+
+    def test_hex_of_an_archive_member(self):
+        member = bz2.compress(_stream_text().encode())
+        text = member.hex()
+        pairs = [text[i:i + 2] for i in range(0, len(text), 2)]
+        self.plant_shapes({
+            "one line": text + "\n",
+            "wrapped at 60": _wrap(text, 60),
+            "spaced pairs": "".join(" ".join(pairs[i:i + 16]) + "\n" for i in range(0, len(pairs), 16)),
+            "C array": "const unsigned char d[] = {\n"
+                       + "".join("    " + ", ".join("0x" + p for p in pairs[i:i + 12]) + ",\n"
+                                 for i in range(0, len(pairs), 12)) + "};\n",
+            "xxd": _xxd(member),
+            "hexdump -C": _hexdump_c(member),
+        })
+
+    def test_escaped_bytes_of_an_archive_member(self):
+        member = bz2.compress(_stream_text().encode())
+        pieces = [member[i:i + 16] for i in range(0, len(member), 16)]
+        self.plant_shapes({
+            "bytes repr": f"DATA = {member!r}\n",
+            "wrapped repr": "DATA = (\n" + "".join(f"    {piece!r}\n" for piece in pieces) + ")\n",
+            "C string": f'const char d[] = "{_escaped(member)}";\n',
+        })
+
+    def test_runs_joined_across_lines(self):
+        # No single line here decodes to anything flagged: each run needs all its lines, and a zlib stream
+        # needs its short last line too (the Adler-32 check), so these test the joining.
+        text = _stream_text(lines=3).encode()
+        stream = zlib.compress(text)
+        noise = bytes((i * 131 + 7) % 251 for i in range(150))  # no magic, not UTF-8, 150 bytes
+        shapes = {}
+        for label, data in (("zlib", stream), ("binary", noise), ("text", text)):
+            shapes[f"base64 {label}"] = _wrap(base64.b64encode(data).decode(), 20)
+            shapes[f"hex {label}"] = _wrap(data.hex(), 20)
+            shapes[f"escapes {label}"] = "D = (\n" + "".join(
+                f"    b'{_escaped(data[i:i + 10])}'\n" for i in range(0, len(data), 10)) + ")\n"
+        self.plant_shapes(shapes)
+
+    def test_a_short_last_line_closes_a_run(self):
+        # A zlib stream under 96 bytes is flagged only whole, and its Adler-32 check sits on the last line,
+        # which here is shorter than a token on its own (16 base64 characters, or 8 hex pairs).
+        stream = zlib.compress(_j('{"op":"mcm","id":"', MARKET_2015, '"}').encode())
+        self.assertLess(len(stream), 96)
+        shapes = {}
+        for label, text in (("base64", base64.b64encode(stream).decode()), ("hex", stream.hex())):
+            width = next(w for w in range(16, 40, 2) if 2 <= len(text) % w < 16)
+            shapes[label] = _wrap(text, width)
+        self.plant_shapes(shapes)
+
+    def test_small_zlib_stream_and_gzip(self):
+        record = _j('{"op":"mcm","id":"', MARKET_2015, '"}').encode()
+        self.plant_shapes({
+            "zlib": f'x = "{base64.b64encode(zlib.compress(record)).decode()}"\n',
+            "gzip": f'x = "{base64.b64encode(gzip.compress(record)).decode()}"\n',
+        })
+
+    def test_near_misses_stay_clean(self):
+        hashes = [hashlib.sha256(f"synthetic {i}".encode()).hexdigest() for i in range(12)]
+        magic = (b"\x1f\x8b", b"PK\x03\x04", b"PK\x05\x06", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd")
+        reserved = _j('{"op":"mcm","id":"', SYN_MARKET, '","rc":[{"id":', SYN_SELECTION, "}]}").encode()
+        files = {
+            "pkg/hashes.py": "HASHES = [\n" + "".join(f'    "{h}",\n' for h in hashes) + "]\n",
+            "pkg/pins.json": "{\n" + "".join(f'  "pkg/m{i}.py": "{h}",\n' for i, h in enumerate(hashes)) + "}\n",
+            "pkg/magic.py": "".join(f'    or head[:4] in (b"{_escaped(m)}", b"{_escaped(m)}")\n' for m in magic),
+            "pkg/short.py": "MAGIC = (\n" + "".join(f'    b"{_escaped(m)}"\n' for m in magic[:2]) + ")\n",
+            "pkg/names.py": "".join(f"    def test_a_rather_long_name_number_{i}(self):\n        pass\n"
+                                    for i in range(30)),
+            "docs/names.md": "".join(f"some_long_identifier_name_{i}\n" for i in range(40)),
+            "docs/paths.md": "".join(f"docs/proposals/section{i}/appendix\n" for i in range(40)),
+            "docs/numbers.md": "".join(", ".join(str(10 + (i * 7 + k) % 89) for k in range(16)) + ",\n"
+                                       for i in range(20)),
+            "docs/words.md": "we add a bad bed to the cafe; dead beef faced a decade\n" * 10,
+            "pkg/ids.py": f"sha = '{hashes[0][:40]}'\nrun = '12345678-5ec0-40c0-93f4-4adfd5acd836'\n" * 5,
+            "pkg/png.py": f'PNG = b"{_escaped(bytes([0x89]))}PNG\\r\\n{_escaped(bytes([0x1a]))}\\n"\n',
+            "docs/reserved.md": base64.b64encode(reserved).decode() + "\n",
+        }
+        for rel, text in files.items():
+            self.write(rel, text)
+        self.add(*files)
         self.assert_clean()
 
 
