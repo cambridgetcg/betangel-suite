@@ -10,8 +10,8 @@ for a writer (Nuance's PR #2 review, item 22).
 Phase 0: no command reads a data root, and the repo's own config.validate_config is not called yet; the
 paper config and cap profiles arrive with Phase 1b. Nothing here can weaken the guard: no key names the
 network switch, the audit hook or the write roots, state_root accepts only the value of R-4,
-run_marker accepts only the marker path agreed with Nuance (Q-N3; a configurable marker would let a
-config edit point the I-17 start check somewhere that never exists), and research_months_ruling accepts
+run_marker accepts only the marker path of Q-N3 (DESIGN.md 3.8 gives its status; a configurable marker
+would let a config edit point the I-17 start check somewhere that never exists), and research_months_ruling accepts
 only null or an id in ACCEPTED_RULINGS, which is empty. Only a reviewed change moves any of them;
 configuration alone never does.
 Standard library only.
@@ -26,14 +26,14 @@ from . import roots
 from .errors import SuiteError
 
 DEFAULTS = {
-    "data_roots": [],                                   # until Nuance names the PRO root (Q-N4)
+    "data_roots": [],                                   # until the PRO index exists (Nuance named historic-pro, Q-N4)
     "state_root": "~/betangel-data/suite.noindex",      # R-4, Q-N3; written only while roots.STATE_ROOT_AGREED
     "port": 8765,                                       # loopback only
     "frame_hz": 10,                                     # 5-20
     "cap_profile": "v1-live-mirror",                    # R-7: practise live v1 by default
     "commission_source": "user_package_unverified",     # R-3
     "research_months_ruling": None,                     # research months hidden while null
-    "run_marker": "~/.local/state/lab-runs/ACTIVE",     # section 6.8; agreed with Nuance (Q-N3)
+    "run_marker": "~/.local/state/lab-runs/ACTIVE",     # section 6.8; Q-N3
     "watch_grace_s": 600,                               # section 8.6
 }
 CAP_PROFILES = ("v1-live-mirror", "practice")
