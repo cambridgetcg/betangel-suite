@@ -192,6 +192,36 @@ class WriterTests(unittest.TestCase):
         self.assertEqual(mode(os.path.join(suite, "x")), 0o600)
         self.assertEqual(os.listdir(data_home), ["suite.noindex"])
 
+    def test_writer_refuses_a_root_that_a_link_puts_in_the_data_home(self):
+        # Nuance's PR #2 review, item 1: with ~/.local/state linked to betangel-data/lab-state, write_new wrote
+        # there. The writer helper now runs check_placement on the root of every path it writes.
+        lab = os.path.join(roots.data_home(self.home), "lab-state")
+        os.makedirs(lab, mode=0o700)
+        rmtree(os.path.join(self.home, ".local", "state"))
+        os.symlink(lab, os.path.join(self.home, ".local", "state"))
+        for agreed in (False, True):
+            with self.subTest(agreed=agreed), mock.patch.object(roots, "STATE_ROOT_AGREED", agreed):
+                self.refused("root_overlaps_data_home", roots.write_new, os.path.join(self.state, "x"), b"x")
+                self.refused("root_overlaps_data_home", roots.ensure_dir, os.path.join(self.state, "sub"))
+                self.refused("root_overlaps_data_home", roots.check_placement, self.state)
+        self.assertEqual(os.listdir(lab), [])
+
+    def test_writer_refuses_a_suite_root_that_is_not_a_real_directory_in_place(self):
+        historic = os.path.join(roots.data_home(self.home), "historic-pro")
+        os.makedirs(historic, mode=0o700)
+        suite = roots.suite_root(self.home)
+        os.symlink(historic, suite)
+        with mock.patch.object(roots, "STATE_ROOT_AGREED", True):
+            self.refused("suite_root_misplaced", roots.write_new, os.path.join(suite, "x"), b"x")
+            self.refused("suite_root_misplaced", roots.ensure_dir, os.path.join(suite, "tmp"))
+            self.refused("suite_root_misplaced", roots.check_placement, os.path.join(suite, "tmp"))
+            os.remove(suite)
+            os.makedirs(suite)
+            roots.check_placement(os.path.join(suite, "tmp"), home_dir=self.home)     # a real directory: fine
+            os.symlink(historic, os.path.join(suite, "tmp"))                          # in it, but resolving out
+            self.refused("suite_root_misplaced", roots.check_placement, os.path.join(suite, "tmp"))
+        self.assertEqual(os.listdir(historic), [])
+
     def test_agreed_suite_root_must_pass_check_data_root(self):
         # DESIGN.md 3.7: the suite root lies outside the repository and every Git worktree
         # (upstream archive.check_data_root), checked before anything is created in it.

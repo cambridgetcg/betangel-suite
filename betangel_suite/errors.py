@@ -51,7 +51,8 @@ CODES = frozenset({
     "partial_exists", "git_failed",
     # roots and the writer helper
     "path_not_absolute", "already_exists", "not_a_directory", "symlink_refused", "wrong_owner",
-    "root_parent_missing", "write_failed", "salt_invalid", "suite_root_invalid",
+    "root_parent_missing", "write_failed", "salt_invalid", "suite_root_invalid", "suite_root_misplaced",
+    "root_overlaps_data_home",
     # upstream exception kinds mapped at the rx boundary, and rx's own argument checks
     "index_problem", "archive_problem", "path_denied", "journal_error", "value_error", "rng_required",
     # a code that is not listed here is reported as this

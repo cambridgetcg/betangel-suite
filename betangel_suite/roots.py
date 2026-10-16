@@ -22,6 +22,11 @@ symlink below a root, refuses any path outside the roots, and passes each new pa
 path_guard.guard_path (through rx, imported only when a write happens). Before it creates or enters the
 suite root it runs the root through upstream archive.check_data_root (DESIGN.md 3.7: outside the repository
 and every Git worktree).
+
+Path text is not enough for the roots themselves: a link on an ancestor (~/.local/state pointing into
+~/betangel-data/lab-state, say) or a suite.noindex that is a link to a data root would put every write there.
+So check_placement() judges each root on the file system, with stat calls only (Nuance's PR #2 review, item 1).
+guard.arm() runs it on every write root and TMPDIR, and the writer helper on the root of every path it writes.
 """
 
 import os
@@ -36,6 +41,7 @@ SUITE_ROOT_PARTS = ("betangel-data", "suite.noindex")
 STATE_DIR_PARTS = (".local", "state", "betangel-suite")
 SHARE_DIR_PARTS = (".local", "share", "betangel-suite")
 STATE_TMP_COMMANDS = ("test", "uisnap", "vendor")   # commands whose TMPDIR is always the state root's tmp/
+_MAX_ANCESTORS = 256                                 # deeper than any real tree: past it, fail closed
 
 
 def home():
@@ -124,15 +130,124 @@ def place(path, home_dir=None):
     raise SuiteError("write_outside_roots")
 
 
+# --- where the roots really are ------------------------------------------------------------------
+
+def check_placement(path, home_dir=None):
+    """Refuse a write root, or a path in one (TMPDIR), that the file system puts in the wrong place relative to
+    ~/betangel-data (Nuance's PR #2 review, item 1; DESIGN.md 3.7, I-6). Stat calls only: realpath's lstat and
+    readlink, and os.stat. Nothing is opened, read or listed.
+
+    While STATE_ROOT_AGREED, the suite root and every path in it (by text): the suite root must be a real
+    directory, or missing, at exactly realpath(data home)/suite.noindex, and path must resolve inside it. A
+    suite.noindex that is a link, to historic-pro say, is refused, so no write can be steered into a data root.
+    SuiteError(suite_root_misplaced) otherwise.
+
+    Any other path must not equal, lie in or contain the data home: root_overlaps_data_home otherwise, and also
+    when that cannot be judged. Two comparisons, each both ways:
+      - text: path and the data home, each as written and with its links resolved (realpath), casefolded
+        (the lab's APFS volume folds case);
+      - identity: the data home's (st_dev, st_ino) must not be that of path or of any directory above it, and
+        path's must not be that of the data home or of any directory above it. Directories above are found with
+        "..", as the kernel resolves it, so spellings that realpath leaves alone (the /System/Volumes/Data
+        firmlink prefix, /.vol/<dev>/<ino>) and links on any ancestor are seen. Nothing inside the data home is
+        looked up: its own walk starts at its parent, so a data home spelt through /.vol (whose parent only a
+        lookup inside it could find) is refused.
+    """
+    path = os.path.normpath(path)
+    suite = suite_root(home_dir)
+    if STATE_ROOT_AGREED and within(path, suite):
+        expected = os.path.join(os.path.realpath(data_home(home_dir)), SUITE_ROOT_PARTS[-1])
+        if not (_real_dir_or_missing(expected) and os.path.realpath(suite) == expected
+                and within(os.path.realpath(path), expected)):
+            raise SuiteError("suite_root_misplaced")
+        return
+    if _overlaps_data_home(path, home_dir):
+        raise SuiteError("root_overlaps_data_home")
+
+
+def _overlaps_data_home(path, home_dir):
+    data = data_home(home_dir)
+    real_data = os.path.realpath(data)
+    real = os.path.realpath(path)
+    for mine in (path.casefold(), real.casefold()):
+        for theirs in (data.casefold(), real_data.casefold()):
+            if within(mine, theirs) or within(theirs, mine):
+                return True
+    if real_data.casefold().startswith("/.vol/"):
+        return True
+    data_id = _identity(data)
+    if data_id is not None and data_id in _lineage(real):
+        return True
+    path_id = _identity(real)
+    return path_id is not None and (path_id == data_id or path_id in _lineage(os.path.dirname(real_data)))
+
+
+def _real_dir_or_missing(path):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return stat.S_ISDIR(info.st_mode)
+
+
+def _identity(path):
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return info.st_dev, info.st_ino
+
+
+def _directory(path):
+    """os.stat(path) when it is a directory, else None."""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return info if stat.S_ISDIR(info.st_mode) else None
+
+
+def _lineage(path):
+    """The (st_dev, st_ino) of the nearest existing directory at or above path (by text) and of every directory
+    above that one, as the kernel resolves ".." (so through a firmlink or /.vol spelling too). If ".." cannot be
+    looked up (no search permission, a name too long), the step falls back to the text parent, which is the same
+    directory for a path realpath has resolved. SuiteError(root_overlaps_data_home) when nothing can be judged.
+    """
+    current, info = path, _directory(path)
+    while info is None:
+        parent = os.path.dirname(current)
+        if parent == current:
+            raise SuiteError("root_overlaps_data_home")
+        current, info = parent, _directory(parent)
+    found = set()
+    for _ in range(_MAX_ANCESTORS):
+        found.add((info.st_dev, info.st_ino))
+        above_path = os.path.join(current, os.pardir)
+        above = _directory(above_path)
+        if above is None:
+            above_path = os.path.dirname(os.path.normpath(current))
+            above = _directory(above_path)
+            if above is None:
+                raise SuiteError("root_overlaps_data_home")
+        if (above.st_dev, above.st_ino) == (info.st_dev, info.st_ino):
+            return found
+        current, info = above_path, above
+    raise SuiteError("root_overlaps_data_home")
+
+
 # --- the writer helper ---------------------------------------------------------------------------
 
 def ensure_dir(path, *, home_dir=None):
     """Create path and every missing directory between its root and it, each 0700; return path.
 
-    The root's parent must already exist. The root and everything below it must be real directories
+    The root's parent must already exist, and the root must pass check_placement() (no link on an ancestor
+    may put it in, around or onto ~/betangel-data). The root and everything below it must be real directories
     owned by this user (no symlinks); an existing one with group or other bits is tightened to 0700.
     """
     path, root = place(path, home_dir)
+    check_placement(root, home_dir)
     parent = os.path.dirname(root)
     try:
         info = os.stat(parent)

@@ -13,7 +13,7 @@ import subprocess
 import unittest
 
 from betangel_suite import config, guard, roots
-from tests import FORBID, PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_relayed
+from tests import FORBID, PRELUDE, PYTHON, ROOT, child_env, make_home, rmtree, run_python, run_relayed, run_suite
 
 ATTEMPT = """
 import json, os
@@ -909,6 +909,179 @@ attempt("write_state", lambda: write(os.path.join(state, "ok.txt")))
             self.assertEqual(results, {"mkdir_suite_root": "write_outside_roots",
                                        "write_suite_root": "write_outside_roots", "write_state": "ok"}, mode)
             self.assertEqual(os.listdir(roots.data_home(home)), [], mode)
+
+
+FIRMLINK = "/System/Volumes/Data"       # macOS: the data volume, under which /Users is a firmlink
+
+PLACEMENT = ATTEMPT + """
+import sqlite3
+roots.STATE_ROOT_AGREED = %(agreed)r
+attempt("arm", lambda: guard.arm(%(mode)r))
+def write(path):
+    with open(path, "w") as handle:
+        handle.write("synthetic")
+if results["arm"] == "ok":
+    attempt("mkdir_state", lambda: os.makedirs(roots.state_dir(), exist_ok=True))
+    for label, path in %(writes)r:
+        attempt("open:" + label, lambda: write(path))
+        attempt("sqlite:" + label, lambda: sqlite3.connect(path + ".sqlite").close())
+print(json.dumps(results))
+"""
+
+
+def spellings(target):
+    """{name: path} for the existing directory target: as written, and every other spelling this machine resolves to
+    the same directory that realpath leaves as it is (the data-volume firmlink, /.vol/<dev>/<ino>, another case)."""
+    info = os.stat(target)
+    real = os.path.realpath(target)
+    found = {"plain": target}
+    for name, spelling in (("firmlink", FIRMLINK + real), ("vol", "/.vol/%d/%d" % (info.st_dev, info.st_ino)),
+                           ("case", target.replace("betangel-data", "BETANGEL-DATA"))):
+        try:
+            if spelling != target and os.path.samestat(os.stat(spelling), info):
+                found[name] = spelling
+        except OSError:
+            pass
+    return found
+
+
+class RootPlacementTests(unittest.TestCase):
+    """I-6: arm() refuses a write root that the file system puts in, around or onto ~/betangel-data.
+
+    Nuance's PR #2 review, item 1: with ~/.local/state linked to betangel-data/lab-state, open, sqlite3.connect and
+    write_new landed there and bin/suite test made lab-state/betangel-suite/tmp; with suite.noindex linked to
+    historic-pro, writes landed in historic-pro. Every case here uses a temporary HOME and a synthetic data home.
+    The other spellings (firmlink, /.vol, another case) defeat a text check, so the identity walk must see them.
+    """
+
+    def placement(self, home, *, agreed, mode="engine", writes=()):
+        result = run_python(PLACEMENT % {"agreed": agreed, "mode": mode, "writes": list(writes)}, home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout.strip().splitlines()[-1])
+
+    def data_dir(self, home, name):
+        path = os.path.join(roots.data_home(home), name)
+        os.makedirs(path, mode=0o700)
+        return path
+
+    def replace_with_link(self, path, target):
+        rmtree(path)
+        os.symlink(target, path)
+
+    def test_state_root_linked_into_the_data_home(self):
+        for name in ("plain", "firmlink", "vol", "case", "alias"):
+            home = make_home(self)
+            lab = self.data_dir(home, "lab-state")
+            if name == "alias":                         # a link to a link: realpath sees through both
+                os.symlink(roots.data_home(home), os.path.join(home, "alias"))
+                target = os.path.join(home, "alias", "lab-state")
+            else:
+                target = spellings(lab).get(name)
+            if target is None:
+                continue                                # this machine has no such spelling
+            self.replace_with_link(os.path.join(home, ".local", "state"), target)
+            writes = [("state", os.path.join(roots.state_dir(home), "x"))]
+            cases = [(agreed, mode) for agreed in (False, True) for mode in ("engine", "test", "vendor")]
+            for agreed, mode in cases if name == "plain" else [(False, "engine"), (True, "engine")]:
+                with self.subTest(spelling=name, agreed=agreed, mode=mode):
+                    results = self.placement(home, agreed=agreed, mode=mode, writes=writes)
+                    self.assertEqual(results, {"arm": "root_overlaps_data_home"})
+                    self.assertEqual(os.listdir(lab), [])
+
+    def test_roots_that_equal_or_contain_the_data_home(self):
+        for kind in ("equal", "contain"):
+            home = make_home(self)
+            data = self.data_dir(home, "historic-pro")
+            target = os.path.dirname(data) if kind == "equal" else home
+            for name, spelling in spellings(target).items():
+                state = roots.state_dir(home)
+                self.replace_with_link(state, spelling)
+                writes = [("data", os.path.join(data, "x"))]
+                for agreed in (False, True):
+                    with self.subTest(kind=kind, spelling=name, agreed=agreed):
+                        results = self.placement(home, agreed=agreed, writes=writes)
+                        self.assertEqual(results, {"arm": "root_overlaps_data_home"})
+                        self.assertEqual(os.listdir(data), [])
+                os.remove(state)
+
+    def test_data_home_linked_into_a_root(self):
+        home = make_home(self)
+        inside = os.path.join(roots.state_dir(home), "data")
+        os.makedirs(os.path.join(inside, "historic-pro"))
+        elsewhere = os.path.join(home, "elsewhere")
+        os.makedirs(elsewhere)
+        targets = dict(spellings(inside))
+        targets.pop("case", None)
+        vol = spellings(elsewhere).get("vol")
+        if vol is not None:
+            targets["vol_elsewhere"] = vol               # its ancestors could only be found by looking inside it
+        for name, spelling in targets.items():
+            os.symlink(spelling, roots.data_home(home))
+            for agreed in (False, True):
+                with self.subTest(spelling=name, agreed=agreed):
+                    results = self.placement(home, agreed=agreed)
+                    self.assertEqual(results, {"arm": "root_overlaps_data_home"})
+            os.remove(roots.data_home(home))
+        self.assertEqual(os.listdir(os.path.join(inside, "historic-pro")), [])
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    def test_suite_root_linked_to_a_data_root(self):
+        home = make_home(self)
+        historic = self.data_dir(home, "historic-pro")
+        elsewhere = os.path.join(home, "elsewhere")
+        os.makedirs(elsewhere)
+        suite = roots.suite_root(home)
+        writes = [("suite", os.path.join(suite, "x")), ("historic", os.path.join(historic, "y"))]
+        targets = dict(spellings(historic), elsewhere=elsewhere)
+        for name, spelling in targets.items():
+            os.symlink(spelling, suite)
+            with self.subTest(spelling=name):
+                self.assertEqual(self.placement(home, agreed=True, writes=writes), {"arm": "suite_root_misplaced"})
+            os.remove(suite)
+        with open(suite, "w") as handle:
+            handle.write("synthetic")
+        self.assertEqual(self.placement(home, agreed=True), {"arm": "suite_root_misplaced"})
+        os.remove(suite)
+        os.symlink(historic, suite)
+        for mode in ("test", "vendor"):                 # the suite root is no write root of theirs
+            with self.subTest(mode=mode):
+                self.assertEqual(self.placement(home, agreed=True, mode=mode, writes=writes),
+                                 {"arm": "ok", "mkdir_state": "ok", "open:suite": "write_outside_roots",
+                                  "sqlite:suite": "write_outside_roots", "open:historic": "write_outside_roots",
+                                  "sqlite:historic": "write_outside_roots"})
+        self.assertEqual(os.listdir(historic), [])
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    def test_data_home_behind_a_link_with_a_real_suite_root(self):
+        # The control: a data home that is itself a link (another volume, say) is fine, and so is its real
+        # suite.noindex, a real directory at exactly realpath(data home)/suite.noindex.
+        home = make_home(self)
+        external = os.path.join(home, "external", "betangel-data")
+        os.makedirs(os.path.join(external, "suite.noindex"))
+        os.symlink(external, roots.data_home(home))
+        writes = [("suite", os.path.join(roots.suite_root(home), "x"))]
+        self.assertEqual(self.placement(home, agreed=True, writes=writes),
+                         {"arm": "ok", "mkdir_state": "ok", "open:suite": "ok", "sqlite:suite": "ok"})
+        self.assertEqual(sorted(os.listdir(os.path.join(external, "suite.noindex"))), ["x", "x.sqlite"])
+        self.assertEqual(self.placement(home, agreed=False, writes=writes),
+                         {"arm": "ok", "mkdir_state": "ok", "open:suite": "state_root_not_agreed",
+                          "sqlite:suite": "state_root_not_agreed"})
+
+    def test_bin_suite_refuses_before_creating_anything(self):
+        # The evidence's own commands: bin/suite test made lab-state/betangel-suite/tmp; an engine command would
+        # have used historic-pro/tmp as its TMPDIR.
+        home = make_home(self)
+        lab = self.data_dir(home, "lab-state")
+        historic = self.data_dir(home, "historic-pro")
+        os.symlink(historic, roots.suite_root(home))
+        result = run_suite(["selfcheck"], home)
+        self.assertEqual((result.returncode, result.stderr), (2, "refused:suite_root_misplaced\n"))
+        self.replace_with_link(os.path.join(home, ".local", "state"), lab)
+        for args in (["test", "-k", "no_such_test"], ["selfcheck"]):
+            result = run_suite(args, home)
+            self.assertEqual((result.returncode, result.stderr), (2, "refused:root_overlaps_data_home\n"), args)
+        self.assertEqual(os.listdir(lab), [])
+        self.assertEqual(os.listdir(historic), [])
 
 
 if __name__ == "__main__":

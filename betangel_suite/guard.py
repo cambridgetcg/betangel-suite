@@ -36,6 +36,10 @@ What the hook refuses, in every mode and phase:
        path text alone. A relative path in a write open is refused too: the open event does not say which dir_fd it
        is relative to (the other events do, and a dir_fd is resolved with F_GETPATH). The roots check
        resolves the path as given, as the OS does: "link/.." and a final "/" follow the link.
+       That check trusts each root's real path, so arm() first refuses any write root, and TMPDIR, that
+       the file system puts in, around or onto ~/betangel-data (roots.check_placement, stat calls only):
+       root_overlaps_data_home, or suite_root_misplaced for an engine suite root that is not a real
+       directory, or missing, at exactly realpath(~/betangel-data)/suite.noindex.
        CPython raises no audit event for os.mkfifo and os.mknod, so arm() replaces them (in os and posix)
        with wrappers that raise one ("os.mkfifo", "os.mknod") before calling the original.
        The sqlite3.connect event covers only the main database file. ATTACH DATABASE and VACUUM INTO create
@@ -149,6 +153,7 @@ class _State:
         if mode == "vendor":
             found += [roots.share_dir(home), os.path.join(REPO_ROOT, "pin")]
         self.mode = mode
+        self.home = home
         self.sealed = False
         self.roots = tuple(found)
         self.real_roots = tuple(os.path.realpath(root) for root in found)
@@ -189,6 +194,7 @@ def arm(mode):
         state = _State(mode, os.path.normpath(tmp) if os.path.isabs(tmp) else "")
         if not state.tmp_root or tmp != os.environ.get("SQLITE_TMPDIR") or not _tmp_root_ok(state, tmp):
             raise SuiteError("tmpdir_mismatch")
+        _check_placement(state)
         _wrap_node_calls()
         _wrap_sqlite_connect()
         sys.addaudithook(_make_hook(state))
@@ -279,6 +285,17 @@ def _tmp_root_ok(state, tmp):
     return real == os.path.realpath(state.tmp_root) and any(
         roots.within(state.tmp_root, root) and roots.within(real, real_root)
         for root, real_root in zip(state.roots, state.real_roots))
+
+
+def _check_placement(state):
+    """roots.check_placement on every write root and on TMPDIR (Nuance's PR #2 review, item 1).
+
+    The hook trusts each root's real path, so a root that a link puts in, around or onto ~/betangel-data would
+    take every write there: root_overlaps_data_home, or suite_root_misplaced for a suite root that is not a real
+    directory (or missing) at exactly realpath(data home)/suite.noindex. Stat calls only; nothing is opened.
+    """
+    for path in state.roots + (state.tmp_root,):
+        roots.check_placement(path, state.home)
 
 
 # --- calls that raise no audit event of their own --------------------------------------------------
