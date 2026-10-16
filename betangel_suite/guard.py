@@ -36,6 +36,9 @@ What the hook refuses, in every mode and phase:
        path text alone. A relative path in a write open is refused too: the open event does not say which dir_fd it
        is relative to (the other events do, and a dir_fd is resolved with F_GETPATH). The roots check
        resolves the path as given, as the OS does: "link/.." and a final "/" follow the link.
+       chmod, chown, utime and truncate on a descriptor (fchmod and the like) are judged by the file's path
+       from F_GETPATH, and refused when it has none: a read-only open is never checked, so a descriptor
+       does not show that its file lies in the roots. open() of a descriptor is not judged again.
        That check trusts each root's real path, so arm() first refuses any write root, and TMPDIR, that
        the file system puts in, around or onto ~/betangel-data (roots.check_placement, stat calls only):
        root_overlaps_data_home, or suite_root_misplaced for an engine suite root that is not a real
@@ -608,8 +611,13 @@ def _check_sqlite(state, database):
 
 def _check_write(state, path, dir_fd, follow, slot=False):
     if isinstance(path, int):
-        return                                         # an open descriptor, checked when it was opened
-    raw = os.fsdecode(os.fspath(path))
+        if dir_fd is None:
+            return                                     # open() of a descriptor: its writes were judged at its open
+        # fchmod, fchown, futimens or ftruncate: judged by where the descriptor's file is, since a read-only open
+        # is not checked at all (Nuance's PR #2 review, item 17). A descriptor without a path is refused.
+        raw, follow = _descriptor_path(path), False
+    else:
+        raw = os.fsdecode(os.fspath(path))
     if raw in _DEVICES:
         return
     if not os.path.isabs(raw):
@@ -640,6 +648,18 @@ def _check_write(state, path, dir_fd, follow, slot=False):
 
 
 def _fd_path(fd):
-    """The path of an open directory descriptor (macOS F_GETPATH)."""
+    """The path of an open descriptor (macOS F_GETPATH): a dir_fd, or the descriptor of a metadata call."""
     buffer = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
     return os.fsdecode(buffer.split(b"\0", 1)[0])
+
+
+def _descriptor_path(fd):
+    """The absolute path F_GETPATH gives for descriptor fd; GuardRefusal(write_outside_roots) when there is none
+    (a pipe, a socket, a closed or out-of-range descriptor)."""
+    try:
+        path = _fd_path(fd)
+    except (OSError, OverflowError, ValueError):
+        path = ""
+    if not os.path.isabs(path):
+        raise GuardRefusal("write_outside_roots")
+    return path

@@ -9,6 +9,7 @@ through the pure predicate.
 import ast
 import json
 import os
+import stat
 import subprocess
 import unittest
 
@@ -787,6 +788,58 @@ attempt("remove_the_link_itself", lambda: os.remove(os.path.join(state, "empty")
             self.assertEqual(results[name], "ok", name)
         self.assertEqual(sorted(os.listdir(home)), [".local", "outside"])
         self.assertEqual(sorted(os.listdir(os.path.join(home, "outside"))), ["emptydir", "file", "movedir"])
+
+    def test_metadata_calls_on_descriptors_are_judged_by_path(self):
+        # Nuance's PR #2 review, item 17: fchmod on an O_RDONLY descriptor took a data-home directory to 0755. A
+        # read-only open is never checked, so chmod, chown, utime and truncate given a descriptor are now judged by
+        # the file's path (F_GETPATH), and refused when it has none.
+        for agreed, data_code in ((False, "state_root_not_agreed"), (True, "write_outside_roots")):
+            with self.subTest(agreed=agreed):
+                self.descriptor_calls(agreed, data_code)
+
+    def descriptor_calls(self, agreed, data_code):
+        home = make_home(self)
+        historic = os.path.join(roots.data_home(home), "historic-pro")
+        os.makedirs(historic, mode=0o700)
+        setup = self.SETUP + "roots.STATE_ROOT_AGREED = %r\n" % agreed
+        results = checks(self, home, setup=setup, body="""
+import stat, tempfile
+data_fd = os.open(os.path.join(roots.data_home(), "historic-pro"), os.O_RDONLY)
+attempt("fchmod_data_dir", lambda: os.fchmod(data_fd, 0o755))
+attempt("chmod_fd_data_dir", lambda: os.chmod(data_fd, 0o755))
+attempt("fchown_data_dir", lambda: os.fchown(data_fd, os.getuid(), os.getgid()))
+attempt("utime_fd_data_dir", lambda: os.utime(data_fd))
+outside_fd = os.open(os.path.join(outside, "file"), os.O_RDONLY)
+attempt("fchmod_outside_file", lambda: os.fchmod(outside_fd, 0o644))
+attempt("ftruncate_outside_file", lambda: os.ftruncate(outside_fd, 0))
+read_end, write_end = os.pipe()
+attempt("fchmod_pipe", lambda: os.fchmod(read_end, 0o600))
+os.close(write_end)
+os.close(read_end)
+attempt("fchmod_closed", lambda: os.fchmod(read_end, 0o600))
+inside_fd = os.open(os.path.join(state, "ok.txt"), os.O_RDWR | os.O_CREAT, 0o600)
+attempt("fchmod_inside", lambda: os.fchmod(inside_fd, 0o600))
+attempt("ftruncate_inside", lambda: os.ftruncate(inside_fd, 0))
+attempt("utime_fd_inside", lambda: os.utime(inside_fd))
+attempt("fchmod_state_dir", lambda: os.fchmod(os.open(state, os.O_RDONLY), 0o700))
+attempt("open_descriptor_again", lambda: open(inside_fd, "w", closefd=False).close())
+def unlinked_temp_file():
+    with tempfile.TemporaryFile() as handle:
+        os.fchmod(handle.fileno(), 0o600)
+attempt("fchmod_unlinked_temp_file", unlinked_temp_file)
+results["data_mode"] = stat.S_IMODE(os.fstat(data_fd).st_mode)
+""")
+        for name in ("fchmod_data_dir", "chmod_fd_data_dir", "fchown_data_dir", "utime_fd_data_dir"):
+            self.assertEqual(results[name], data_code, name)
+        for name in ("fchmod_outside_file", "ftruncate_outside_file", "fchmod_pipe", "fchmod_closed"):
+            self.assertEqual(results[name], "write_outside_roots", name)
+        for name in ("fchmod_inside", "ftruncate_inside", "utime_fd_inside", "fchmod_state_dir",
+                     "open_descriptor_again", "fchmod_unlinked_temp_file"):
+            self.assertEqual(results[name], "ok", name)
+        self.assertEqual(results["data_mode"], 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(historic).st_mode), 0o700)
+        with open(os.path.join(home, "outside", "file"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "synthetic")
 
     def test_calls_without_their_own_audit_event(self):
         # CPython raises no audit event for os.mkfifo or os.mknod; arm() wraps them so that they do.
