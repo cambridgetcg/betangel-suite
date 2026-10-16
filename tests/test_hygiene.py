@@ -470,13 +470,15 @@ class ContentRuleTests(_RepoCase):
 
     def test_withheld_path_shows_only_a_listed_suffix(self):
         # A name can end in a word rather than a file type (a runner name with a dot for the space). A
-        # withheld path shows a suffix only from the scanner's fixed list, compared exactly, so the word
-        # never prints, in the tree scan or the staged one.
+        # withheld path shows a suffix only from the scanner's short list, compared exactly, so a suffix
+        # off that list does not print, in the tree scan or the staged one. File types that are also
+        # English words (.swift, .key, .tar, .sh) are off the list too; the previous list showed them.
         name = RUNNER_NAMES[1]
         word = name.split()[-1]
         content = f'row = {{"runnerName": "{name}"}}\n'
         cases = ((name.replace(" ", "."), ""), (f"card.{word.lower()}", ""), (f"{name}.MD", ""),
-                 (f"{name}.md", ".md"), (f"{name}.csv", ".csv"))
+                 ("card.swift", ""), ("card.key", ""), ("card.tar", ""), ("card.sh", ""),
+                 (f"{name}.md", ".md"), (f"{name}.csv", ".csv"), ("card.json", ".json"), ("card.bz2", ".bz2"))
         for base, suffix in cases:
             with self.subTest(base=base):
                 self.setUp()

@@ -173,8 +173,21 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual(arm_outcome(self, home, child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp)),
                              "tmpdir_mismatch", tmp)
         # A final "/" or a doubled one changes nothing the OS resolves, so they are still accepted.
-        for tmp in (roots.tmp_dir("test", home) + "/", os.path.join(state + "/", "tmp")):
+        for tmp in (roots.tmp_dir("test", home) + "/", os.path.join(state + "//", "tmp")):
             self.assertEqual(arm_outcome(self, home, child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp)), "armed", tmp)
+
+    def test_refuses_a_tmpdir_with_a_dot_or_dotdot_component(self):
+        # normpath and the non-strict realpath both fold "missing/.." and "file/.." away, but the OS cannot
+        # resolve either (ENOENT, ENOTDIR), and SQLite would then fall back to /var/tmp or /tmp. No "." or ".."
+        # component is accepted, so TMPDIR differs from its normalised text only by a redundant or final "/".
+        home = make_home(self)
+        state = roots.state_dir(home)
+        with open(os.path.join(state, "afile"), "x", encoding="utf-8"):
+            pass
+        for tmp in (os.path.join(state, "missing", "..", "tmp"), os.path.join(state, "afile", "..", "tmp"),
+                    os.path.join(state, ".", "tmp"), roots.tmp_dir("test", home) + "/."):
+            self.assertEqual(arm_outcome(self, home, child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp)),
+                             "tmpdir_mismatch", tmp)
 
     def test_arm_checks_the_interpreter_version_itself(self):
         # guard.arm is the only version check when tests or a future entry point start without _launch.py.
@@ -460,6 +473,20 @@ dangling = os.path.join(run, "b.sock")              # bind would follow it and c
 guard.permit_unix_socket(dangling)
 os.symlink(os.path.join(os.environ["HOME"], "b-target.sock"), dangling)
 attempt("unix_permitted_dangling_link", lambda: audit_bind(dangling))
+# A NUL ends the kernel's socket name, so "n.sock\\0x" would bind n.sock, here a dangling link out of the run
+# directory, and islink cannot see that (it says False for any path with a NUL). The permit refuses it, and
+# so does the hook if the NUL name is put in its permits directly (through gc, as HookStateTests does).
+nul = os.path.join(run, "n.sock")
+os.symlink(os.path.join(os.environ["HOME"], "n-target.sock"), nul)
+attempt("permit_embedded_nul", lambda: guard.permit_unix_socket(nul + "\\0x"))
+import gc
+hook_state = [value for hook in gc.get_objects() if getattr(hook, "__qualname__", "").endswith("audit_hook")
+              and getattr(hook, "__module__", "") == "betangel_suite.guard"
+              for value in hook.__defaults__ if hasattr(value, "unix_paths")]
+results["hook_states"] = len(hook_state)
+hook_state[0].unix_paths.add(nul + "\\0x")
+attempt("unix_embedded_nul_forced", lambda: audit_bind(nul + "\\0x"))
+attempt("unix_embedded_nul_bytes_forced", lambda: audit_bind(os.fsencode(nul) + b"\\0x"))
 attempt("permit_noncanonical", lambda: guard.permit_unix_socket(os.path.join(run, "alias", "..", "d.sock")))
 attempt("permit_trailing_slash", lambda: guard.permit_unix_socket(control + "/"))
 guard.seal()
@@ -482,9 +509,11 @@ attempt("unix_run_dir_replaced", lambda: audit_bind(control))
         self.assertEqual(results["permit_bad_port"], "bind_permit_invalid")
         self.assertEqual(results["permit_after_seal"], "guard_sealed")
         self.assertEqual(results["unix_permitted_audit"], "ok")
-        for name in ("unix_dotdot_after_link", "unix_permitted_dangling_link", "unix_run_dir_replaced"):
+        self.assertEqual(results["hook_states"], 1)
+        for name in ("unix_dotdot_after_link", "unix_permitted_dangling_link", "unix_embedded_nul_forced",
+                     "unix_embedded_nul_bytes_forced", "unix_run_dir_replaced"):
             self.assertEqual(results[name], "bind_refused", name)
-        for name in ("permit_noncanonical", "permit_trailing_slash"):
+        for name in ("permit_noncanonical", "permit_trailing_slash", "permit_embedded_nul"):
             self.assertEqual(results[name], "bind_permit_invalid", name)
 
 
