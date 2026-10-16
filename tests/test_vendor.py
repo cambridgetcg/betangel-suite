@@ -187,6 +187,35 @@ class VendorToolTests(unittest.TestCase):
         self.assertEqual(snapshot(self.research), before)
         self.assertFalse(os.path.lexists(roots.share_dir(self.home)))
 
+    def test_recheck_never_changes_a_mode_in_the_clone(self):
+        # Nuance's PR #2 review, item 8: re-checking an existing deps tree that holds a hard link to a clone file
+        # chmodded the clone's file to 0444. The pre-pass refuses before anything is hashed or chmodded: a hard link,
+        # unpinned or pinned (deps_link_present), and a deps tree that is itself a link to the clone (not_a_directory).
+        ticks = os.path.join("betangel_research", "betfair", "ticks.py")
+        for name, inside, source, code in (("unpinned", "extra-link", "README.md", "deps_link_present"),
+                                           ("pinned", ticks, ticks, "deps_link_present"),
+                                           ("tree", None, None, "not_a_directory")):
+            with self.subTest(case=name):
+                rmtree(self.dest)
+                self.assertEqual(self.vendor(self.sha, "--bump", "--pin-file", self.pin_file)[0], 0)
+                if inside is None:
+                    rmtree(self.dest)
+                    os.symlink(self.research, self.dest)
+                else:
+                    target = os.path.join(self.dest, inside)
+                    os.chmod(os.path.dirname(target), 0o700)
+                    if os.path.lexists(target):
+                        os.remove(target)
+                    os.link(os.path.join(self.research, source), target)
+                    os.chmod(os.path.dirname(target), 0o500)
+                before = snapshot(self.research)
+                self.assertEqual(self.vendor(self.sha, "--pin-file", self.pin_file), (2, "", "refused:%s\n" % code))
+                self.assertEqual(snapshot(self.research), before)
+                for relpath in ("README.md", ticks):
+                    self.assertEqual(os.lstat(os.path.join(self.research, relpath)).st_mode & 0o222, 0o200, relpath)
+                if inside is None:
+                    os.remove(self.dest)
+
     @staticmethod
     def checkout_files():
         """What bin/suite vendor runs from a checkout: the launcher, the package, the tool and the pin."""

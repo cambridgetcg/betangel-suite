@@ -252,6 +252,13 @@ def assert_origins(deps):
                 raise SuiteError("upstream_origin_mismatch")
 
 
+def read_below(tree, relpath, limit=None):
+    """Bytes of the regular file relpath below the directory tree, as file_hashes reads it (no symlink on the way,
+    exactly one link, O_NONBLOCK, at most limit bytes), or None. tools/vendor_research.py reads .git/HEAD and
+    .git/config this way."""
+    return _read_regular(relpath, limit, tree)
+
+
 def _open_below(tree, relpath):
     """A read-only descriptor for relpath below the directory tree, with no symlink at any component of relpath.
 

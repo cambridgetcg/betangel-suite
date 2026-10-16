@@ -16,7 +16,9 @@ Run by hand by lab-Claude, never automatically. Steps:
      the moving clone.
   4. sha256 of every pinned file (betangel_suite.pin.PINNED_FILES): written to pin/betangel-research.json
      with --bump (a pin bump, reviewed as a PR), otherwise checked against it (a fresh machine).
-  5. Rename the directory into place and chmod -R a-w it.
+  5. Rename the directory into place and chmod -R a-w it, after a pre-pass over the whole tree (also run
+     before step 4): a real directory outside the deploy clone, holding only directories, symlinks and
+     regular files with one link (deps_link_present), so no chmod can reach a clone file through a link.
 
 Every git call has protocol.allow=never (only the local file transport is allowed), no hooks and no user
 or system git config, and runs with the network switch on, in exactly the environment guard.VENDOR_GIT_ENV
@@ -78,8 +80,10 @@ def main(argv):
                 or _git(home, "-C", partial, "remote", "remove", "origin") != 0):
             raise SuiteError("git_failed")
     guard.seal()                                      # no subprocess from here on
-    if _read(os.path.join(tree, ".git", "HEAD")) != (sha + "\n").encode() or b"[remote" in _read(
-            os.path.join(tree, ".git", "config")):
+    _check_tree(tree, research, SuiteError)           # before the pin is hashed or written, and before any chmod
+    head = pin.read_below(tree, ".git/HEAD", 1 << 16)
+    config = pin.read_below(tree, ".git/config", 1 << 16)
+    if head != (sha + "\n").encode() or config is None or b"[remote" in config:
         raise SuiteError("git_failed")
     hashes = pin.file_hashes(tree)
     if bump:
@@ -91,7 +95,7 @@ def main(argv):
             raise SuiteError("pin_mismatch")
     if tree == partial:
         os.rename(partial, dest)
-    _make_read_only(dest)
+    _make_read_only(dest, research, SuiteError)
     print("vendor_ok commit=%s files=%d mode=%s" % (sha[:12], len(hashes), "bump" if bump else "check"))
     return 0
 
@@ -145,14 +149,6 @@ def _make_private_dirs(deps_root, share):
             raise SuiteError("not_a_directory")
 
 
-def _read(path):
-    try:
-        with open(path, "rb") as handle:
-            return handle.read(1 << 16)
-    except OSError:
-        return b""
-
-
 def _write_pin(path, value):
     """Write the pin JSON next to its final name, then rename it into place."""
     data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -169,15 +165,46 @@ def _write_pin(path, value):
     os.replace(temporary, path)
 
 
-def _make_read_only(tree):
-    """chmod a-w every directory and regular file under tree, deepest first; symlinks are left alone."""
-    for directory, dirs, files in os.walk(tree, topdown=False):
+def _check_tree(tree, research, error):
+    """Every directory and regular file under tree, deepest first, then tree itself; error() unless all is in order.
+
+    The pre-pass before any chmod (Nuance's PR #2 review, item 8: a re-check of an existing deps tree chmodded
+    deploy-clone files to 0444). tree must be a real directory (not a link: os.walk would follow it) that is not in
+    the deploy clone (research_clone_on_path), and every entry under it a directory, a symlink (left alone), or a
+    regular file with exactly one link: a hard link shares its inode, and so its mode, with a file elsewhere, in the
+    clone say (deps_link_present, which also covers a FIFO, socket or device). A directory that cannot be listed
+    raises OSError rather than being skipped.
+    """
+    info = os.lstat(tree)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise error("not_a_directory")
+    _refuse_research((tree,), research, error)
+    found = []
+    for directory, dirs, files in os.walk(tree, topdown=False, onerror=_raise):
         for name in files + dirs:
             path = os.path.join(directory, name)
-            info = os.lstat(path)
-            if not stat.S_ISLNK(info.st_mode):
-                os.chmod(path, stat.S_IMODE(info.st_mode) & ~0o222)
-    os.chmod(tree, stat.S_IMODE(os.lstat(tree).st_mode) & ~0o222)
+            mode = os.lstat(path)
+            if stat.S_ISLNK(mode.st_mode):
+                continue
+            if not (stat.S_ISDIR(mode.st_mode) or (stat.S_ISREG(mode.st_mode) and mode.st_nlink == 1)):
+                raise error("deps_link_present")
+            found.append(path)
+    return found + [tree]
+
+
+def _raise(exc):
+    raise exc
+
+
+def _make_read_only(tree, research, error):
+    """chmod a-w every directory and regular file under tree, deepest first; symlinks are left alone. The pre-pass
+    (_check_tree) runs first, so nothing is changed unless every entry passes it, and each entry is looked at again
+    just before its chmod, which never follows a link."""
+    for path in _check_tree(tree, research, error):
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1):
+            raise error("deps_link_present")
+        os.chmod(path, stat.S_IMODE(info.st_mode) & ~0o222, follow_symlinks=False)
 
 
 if __name__ == "__main__":
