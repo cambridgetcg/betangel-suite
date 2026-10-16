@@ -515,8 +515,8 @@ class ConversionTests(unittest.TestCase):
                          [[460, 13963], [420, 200], [410, 300]])
 
     def test_off_ladder_prices(self):
-        # The LTP keeps a price that is off the tick ladder (a BSP-matched trade can be), within 1.01 to 1000;
-        # a ladder level off the CLASSIC ladder is dropped.
+        # The LTP keeps a price that is off the tick ladder, within 1.01 to 1000 (whether a real LTP can be off it,
+        # after a BSP-matched trade say, is unverified); a ladder level off the CLASSIC ladder is dropped.
         self.assertEqual(engine.price_h(2.03), 203)
         self.assertEqual(engine.price_h(4.15), 415)
         self.assertEqual(engine.price_h(1.01), 101)

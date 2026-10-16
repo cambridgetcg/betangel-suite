@@ -479,7 +479,8 @@ def market_time_ms(definition):
 def price_h(value):
     """An int price in hundredths inside the CLASSIC ladder's range (1.01 to 1000), or None for a missing,
     non-finite, out-of-range or more-than-2-dp price. It need not be a tick of the ladder: the LTP keeps such a
-    price as it is, because a BSP-matched trade can be off the ladder. ladder() drops off-ladder levels."""
+    price as it is. Whether a real LTP can be off the ladder (after a BSP-matched trade, say) is unverified; no
+    upstream source says so. ladder() drops off-ladder levels."""
     from . import rx
     if value is None or isinstance(value, bool):
         return None
