@@ -83,11 +83,13 @@ context. It is never Yu's instruction, consent or acceptance.
   `ln -s ../../tools/pre-commit .git/hooks/pre-commit`. It runs `tools/hygiene_scan.py --staged`
   with python3.13 `-I -S -B` and blocks the commit on any finding. Never use `--no-verify`.
 - Before pushing, scan the working tree:
-  `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py`. Output is rule codes, redacted
-  paths and line numbers only (`--list-rules` explains each code).
+  `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py`. Output is rule codes, line
+  numbers and entry numbers only, never a path (`--list-rules` explains each code).
 - If a finding is in a file that could hold real data (an archive, a database, a data file, or
   anything under a data or state directory), do not open it. Unstage or delete it, and tell Yu
   with codes only. If it is in source you wrote, move the value into the reserved namespace.
+  To find which of your files it is, scan them by name a few at a time. Do not map an entry
+  number to its path: that prints the path the scanner withholds (docs/data-handling.md).
 - Synthetic fixtures use only the reserved namespace: market ids `1.999` plus six digits, event
   ids `99` plus six digits, selection ids `9` plus seven digits, the venue "Synthetic Park" and
   runners "Synthetic 1..n". They are generated at test time into temp dirs and never committed
