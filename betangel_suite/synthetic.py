@@ -28,7 +28,9 @@ What a market holds (times are pt, integer ms; T is the scheduled off, the publi
   off atb or atl adds 2 * s to trd at that price and to tv. That atb and atl sizes are backer's stakes is
   unverified.
 - T: the in-play flip (one definition: OPEN, inPlay true, betDelay 1, bspReconciled true, every runner's bsp); all
-  unmatched offers lapse and thin in-play ladders replace them.
+  unmatched offers lapse and thin in-play ladders replace them. The flip always comes at exactly the published
+  marketTime, which is never revised, with no SUSPENDED at the off. That shape is this generator's choice: the real
+  flip shape is unverified (DESIGN.md 11.1, owed before Phase 1a).
 - In play for inplay_s: faster, wider markets converging on the winner.
 - T + inplay_s: SUSPENDED; then CLOSED, with WINNER, LOSER (and REMOVED) statuses and settledTime, in the final
   definition.

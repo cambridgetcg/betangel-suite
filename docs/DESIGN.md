@@ -1445,6 +1445,14 @@ Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `cli.p
 - **Manual acceptance.** After each phase, Yu works through a written checklist in Yu's direct channel (section 3.9): keys, latency, readability on the Air through the tunnel.
 - **Review gates.** As routed in section 3.9. Lab-Claude never accepts its own Collab edit tasks.
 
+### 11.1 Known gaps
+
+Gaps in the synthetic fixtures and the Phase 0b engine, recorded from Nuance's PR #4 review (2026-10-16), with the phase each is owed before. The fix is Nuance's suggestion unless the row says otherwise.
+
+| Gap | Why it matters | Owed before | Fix |
+|---|---|---|---|
+| **The in-play flip has one fixed shape** (Nuance, item 5). A synthetic market always flips in play at exactly the published marketTime, which is never revised, with no SUSPENDED at the off. `tests/test_synthetic.py`, `tests/test_integration_ui.py` and `tests/test_engine.py` lock that shape in. The real flip shape is unverified. | Phase 1a's countdown is accepted on synthetic data (section 12). The engine takes `ms_to_off` from the latest marketTime, while section 6.1 anchors the jump marks on the first-published one. In Nuance's early-start probe, 1,114 in-play rows had `ms_to_off` > 0. | Phase 1a | `Spec` options `off_offset`, `market_time_revision` and `suspend_at_off`. |
+
 ---
 
 ## 12. Phases

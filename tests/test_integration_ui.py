@@ -627,6 +627,7 @@ class EndToEndTests(unittest.TestCase):
         for frame in pre_off:
             self.assertEqual((frame["market"]["status"], frame["market"]["inplay"], frame["market"]["invalid_reason"]),
                              ("OPEN", False, None))
+        # The generator flips at exactly marketTime (unverified for real markets; DESIGN.md 11.1).
         self.assertTrue(all(frame["clock"]["ms_to_off"] <= 0 for frame in in_play))
         self.assertTrue(any(frame["market"]["status"] == "OPEN" for frame in in_play))
         for frame in self.frames:

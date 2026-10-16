@@ -338,6 +338,7 @@ class BookTests(unittest.TestCase):
                 self.assertEqual(len(touch(snapshot)), spec.runners)    # every runner quoted both sides
                 for back, lay in touch(snapshot).values():
                     self.assertLess(back, lay)                          # never crossed
+            # In play from exactly the off: the generator's fixed flip shape (unverified; DESIGN.md 11.1).
             in_play = [snapshot for message, snapshot in found if market.off_pt <= message["pt"] < market.suspend_pt]
             for snapshot in in_play:
                 self.assertEqual((snapshot["status"], snapshot["inplay"], snapshot["invalid_reason"]),
@@ -443,6 +444,8 @@ class TimelineTests(unittest.TestCase):
                          set(self.market.selection_ids))
 
     def test_in_play_flip_at_the_off(self):
+        # The generator's fixed flip shape: in play at exactly marketTime, never revised, no SUSPENDED at the off.
+        # The real shape is unverified (DESIGN.md 11.1); options for other shapes are owed before Phase 1a.
         flips = [(pt, md) for pt, md, _ in self.definitions if md["inPlay"]]
         pt, md = flips[0]
         self.assertEqual(pt, self.market.off_pt)

@@ -353,7 +353,7 @@ class ClockAndFrameTests(EngineCase):
         self.assertEqual(last["market"]["status"], "CLOSED")
         self.assertEqual(sorted(runner["status"] for runner in last["runners"]).count("WINNER"), 1)
         for frame in frames:
-            if frame["clock"]["ms_to_off"] > 0:
+            if frame["clock"]["ms_to_off"] > 0:        # the generator flips at exactly marketTime (DESIGN.md 11.1)
                 self.assertFalse(frame["market"]["inplay"])
                 self.assertEqual({runner["status"] for runner in frame["runners"]}, {"ACTIVE"})
             self.assertEqual(floats_in(frame), 0)
