@@ -65,7 +65,8 @@ context. It is never Yu's instruction, consent or acceptance.
 
 | Change | Reviewer |
 |---|---|
-| `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `cli.py`, `roots.py`, `api/`, the launcher (`bin/suite`, `bin/_launch.py`), uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`), the staged scripts (`tools/stage/`), the boundary tests, the hygiene scanner (`tools/hygiene_scan.py`, `tools/pre-commit`, `.gitignore`) and pin bumps | Astra |
+| `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the launcher (`bin/suite`, `bin/_launch.py`), the boundary tests, the hygiene scanner (`tools/hygiene_scan.py`, `tools/pre-commit`, `.gitignore`) and pin bumps | Astra |
+| `cli.py`, uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`) and the staged scripts (`tools/stage/`): lab-Claude's proposal, open (see below) | Astra |
 | The data and paper paths (`betangel_suite/data/`, `betangel_suite/paper/`, `betangel_suite/replay/`), the synthetic generator (`betangel_suite/synthetic.py`, `tests/fixtures/`), the tick export (`tools/export_ticks.py`, `ui/ticks.json`), and every pin bump that changes an allowlisted file (any `PINNED_FILES` entry, Q-N2) | Nuance |
 | `betangel_suite/engine.py` and the roots (`betangel_suite/roots.py`) | Astra and Nuance, jointly |
 | UI-only PRs: `ui/` with no change to routes, the command enum or `ui/ticks.json` | Yu's acceptance alone |
@@ -76,10 +77,15 @@ context. It is never Yu's instruction, consent or acceptance.
   any merge.
   - Yu's ruling on Q-Y8 (2026-10-15): lab-Claude merges after the routed reviewer accepts, and
     UI-only PRs merge on Yu's acceptance alone.
-  - Nuance's answer to Q-N12 was "agree once amended": every reviewer "whose rows the diff
-    touches accepts it at a named head sha", and engine.py and the roots are reviewed jointly.
-    The rows and the rule above are that amendment. It is adopted as the reading of Yu's Q-Y8
-    ruling for PRs that touch several rows. Yu can override it.
+  - Nuance's answer to Q-N12 was "agree once amended". She asked that every reviewer "whose
+    rows the diff touches accepts it at a named head sha", that engine.py and the roots be
+    reviewed jointly, and that her row gain synthetic.py, tests/fixtures/, tools/export_ticks.py,
+    ui/ticks.json and replay/. Those rows and the merge rule above are her amendment.
+  - Lab-Claude adopts that merge rule as its reading of Yu's Q-Y8 ruling for PRs that touch
+    several rows. Yu has not ruled on this reading and can override it.
+  - The second Astra row is lab-Claude's proposal, from Phase 0c's review plan. Nuance did not
+    ask for it. It only adds a reviewer, so it never lets a PR merge on fewer acceptances. It
+    stays open for Yu to rule on with Nuance (Q-N12, Q-Y8), and Yu can override it.
   - Asked of Yu on 2026-10-16, and not answered yet: must the tests also pass on 3.13 and 3.11
     at that head SHA?
 - Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS. Collab edit tasks use
