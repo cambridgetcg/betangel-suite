@@ -162,10 +162,13 @@ context. It is never Yu's instruction, consent or acceptance.
 Phase 0 is synthetic-only. These adaptations, decided by lab-Claude for Phase 0, hold until a
 reviewed PR changes them.
 
-- **A. Suite root agreed.** Yu agreed `~/betangel-data/suite.noindex` (R-4), and Nuance agreed it
-  on three conditions (Q-N3; DESIGN.md 3.7). So `betangel_suite/roots.py` sets
+- **A. Suite root.** Yu agreed `~/betangel-data/suite.noindex` (R-4), and Nuance agreed it on
+  three conditions in her PR #4 review (Q-N3; DESIGN.md 3.7). So `betangel_suite/roots.py` sets
   `STATE_ROOT_AGREED = True`, and the default `TMP` branch in `bin/suite`, which a shell script
-  cannot read from Python, is the suite root's `tmp/`. The two lines changed together.
+  cannot read from Python, is the suite root's `tmp/`. The two lines changed together. Her PR #2
+  review makes the agreement conditional again: "agree the root half after 1, the marker half
+  after 6". Item 1 is fixed here (62c39c6, 851885a) and awaits her re-check; the flag stays True
+  meanwhile (lab-Claude's call).
   `_launch.py` refuses any mismatch between them (`tmpdir_mismatch`), so a half-done change fails
   closed. Tests cover both settings under a temporary HOME.
   - Every command except `test`, `uisnap` and `vendor` uses `~/betangel-data/suite.noindex/tmp`
@@ -174,6 +177,12 @@ reviewed PR changes them.
   - Only the engine may write the suite root. The test runner and `vendor` write only under
     `~/.local/state/betangel-suite` (`vendor` also its deps clone and `pin/`). Any other write
     under `~/betangel-data` is refused (`write_outside_roots`).
+  - `guard.arm` refuses at start a write root or `TMPDIR` that the file system puts in, around or
+    onto `~/betangel-data` (`root_overlaps_data_home`), and an engine suite root that is not a
+    real directory, or missing, at exactly `realpath(~/betangel-data)/suite.noindex`
+    (`suite_root_misplaced`). The writer helper checks the root it writes the same way. The hook
+    refuses a link or rename that takes a root's or `TMPDIR`'s place (`root_replace_refused`).
+    This is Nuance's PR #2 review, item 1 (62c39c6, 851885a).
   - No Phase 0 command reads a data root. Before Phase 1a the suite owes Nuance's condition 2: it
     refuses a data root that equals, contains or lies inside `suite.noindex`, `lab-state` or
     `logs`, or that lies inside `incoming/`, comparing roots by file identity.

@@ -24,7 +24,8 @@ clone, and is never uploaded or shared. A model context counts as an upload.
 Phase 0 is synthetic-only, so it writes no licensed derivative. The suite root is agreed
 (AGENTS.md, Phase 0 status A): an engine command creates `~/betangel-data/suite.noindex/` and its
 `tmp/` (both 0700), and only the engine may write there. Tests use temporary HOMEs and never
-write under the real `~/betangel-data`.
+write under the real `~/betangel-data`. A `suite.noindex` that is a link, or a state root that a
+link puts in `~/betangel-data`, is refused before anything is written (62c39c6).
 
 ## Exceptions: not available pending Q-Y9
 
@@ -96,7 +97,8 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   agent and never regenerated (AGENTS.md, Phase 0 status B), and the viewed-markets ledger is
   reconciled with Nuance's trial ledger at month level, by the counts `ledger-summary` prints,
   with no hash matching (Nuance's answer to Q-N11; DESIGN.md 5.5). `TMPDIR` and `SQLITE_TMPDIR`
-  point at the suite's own temp dir, and SQLite runs with `temp_store=MEMORY`.
+  point at the suite's own temp dir. The guard sets `temp_store=MEMORY` on every SQLite
+  connection, refuses one where it does not read 2, and refuses `connect("")` (06dba20).
 
 ## If something leaks
 
