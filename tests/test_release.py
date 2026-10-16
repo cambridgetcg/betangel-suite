@@ -236,6 +236,35 @@ class ReleaseCommandTests(ReleaseTestCase):
             release.status_of(self.app, self.home)                      # the app root itself is no copy
         self.assertEqual(caught.exception.code, "release_layout_invalid")
 
+    def check_spelling(self, spell):
+        """status_of through another spelling, spell(path), of a copy and of its app root: still a release copy,
+        verified against its RELEASE.json (a changed file is caught), and the app root still no copy."""
+        home = self.fresh_home()
+        target = os.path.realpath(self.place_copy(home))
+        app = os.path.dirname(target)
+        if not os.path.exists(spell(target)) or not os.path.samefile(spell(target), target):
+            self.skipTest("this volume has no such spelling of the temporary HOME")
+        self.assertNotEqual(spell(target), target)
+        self.assertEqual(release.status_of(spell(target), home), release.Status("release", "v1", self.c1, self.tree1))
+        with self.assertRaises(SuiteError) as caught:
+            release.status_of(spell(app), home)
+        self.assertEqual(caught.exception.code, "release_layout_invalid")
+        victim = os.path.join(target, "betangel_suite", "release.py")
+        with writable(os.path.dirname(victim), victim):
+            with open(victim, "a", encoding="utf-8") as handle:
+                handle.write("# tampered\n")
+        with self.assertRaises(SuiteError) as caught:
+            release.status_of(spell(target), home)
+        self.assertEqual(caught.exception.code, "release_file_modified")
+
+    def test_a_case_variant_spelling_of_a_copy_is_still_verified(self):
+        # realpath keeps the case as given, so status_of compares (st_dev, st_ino), never the spelling.
+        self.check_spelling(lambda path: "/APP".join(path.rsplit("/app", 1)))       # .../APP/v1 and .../APP
+
+    def test_the_data_volume_firmlink_spelling_of_a_copy_is_still_verified(self):
+        # On macOS /Users is also /System/Volumes/Data/Users, an alias realpath does not resolve.
+        self.check_spelling(lambda path: "/System/Volumes/Data" + path)
+
     def test_a_release_copy_still_refuses_every_data_root(self):
         # Phase 0: the release status enables nothing; serve from a copy refuses a configured data root.
         home = make_home(self, deps=True)

@@ -122,15 +122,36 @@ def status(home_dir=None):
 
 
 def status_of(root, home_dir=None):
-    """The Status of the code at root; SuiteError for a release copy that does not match its RELEASE.json."""
-    app = os.path.realpath(roots.app_dir(home_dir))
+    """The Status of the code at root; SuiteError for a release copy that does not match its RELEASE.json.
+
+    Whether root lies in the app root is decided by (st_dev, st_ino), not by spelling: realpath keeps a case
+    variant or the /System/Volumes/Data firmlink alias of a copy as given, and such a path must still be verified.
+    """
+    app = _file_id(roots.app_dir(home_dir))
     real = os.path.realpath(root)
-    if not roots.within(real, app):
-        return CHECKOUT
-    if os.path.dirname(real) != app:
+    if app is None:
+        return CHECKOUT                                 # no app root, so no release copy
+    path, depth = real, 0
+    while _file_id(path) != app:
+        parent = os.path.dirname(path)
+        if parent == path:
+            return CHECKOUT
+        path, depth = parent, depth + 1
+    if depth != 1:
         raise SuiteError("release_layout_invalid")     # only app/<tag> itself is a release copy
     manifest = verify_copy(real)
     return Status("release", manifest["tag"], manifest["commit"], manifest["tree"])
+
+
+def _file_id(path):
+    """(st_dev, st_ino) of path, symlinks followed; None when it does not exist."""
+    try:
+        info = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError:
+        raise SuiteError("release_layout_invalid") from None
+    return info.st_dev, info.st_ino
 
 
 def verify_copy(root):
