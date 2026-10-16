@@ -47,7 +47,7 @@ class ConnectPermitTests(unittest.TestCase):
     def test_only_permitted_unix_paths_may_be_connected(self):
         home = support.short_home(self, deps=False)
         results = checks(self, home, setup="os.makedirs(roots.run_dir(), mode=0o700)\n", body="""
-import socket
+import socket, sys
 run = roots.run_dir()
 good, other = os.path.join(run, "c.sock"), os.path.join(run, "o.sock")
 guard.permit_unix_socket(good)
@@ -69,6 +69,10 @@ attempt("permit_relative", lambda: guard.permit_unix_connect("c.sock"))
 attempt("permit_nested", lambda: guard.permit_unix_connect(os.path.join(run, "sub", "c.sock")))
 attempt("permit_dotdot", lambda: guard.permit_unix_connect(os.path.join(run, "..", "c.sock")))
 attempt("permit_bytes", lambda: guard.permit_unix_connect(os.fsencode(good)))
+# normpath would fold "alias/.." that the OS resolves through the link, and drops a final "/".
+os.symlink(os.environ["HOME"], os.path.join(run, "alias"))
+attempt("permit_noncanonical", lambda: guard.permit_unix_connect(os.path.join(run, "alias", "..", "o.sock")))
+attempt("permit_trailing_slash", lambda: guard.permit_unix_connect(other + "/"))
 guard.permit_unix_connect(good)
 attempt("permitted", lambda: connect(good))
 attempt("permitted_connect_ex", lambda: connect(good, ex=True))
@@ -79,17 +83,28 @@ def tcp_raw():
         sock.connect(("127.0.0.1", 9))
 attempt("tcp_raw", tcp_raw)
 attempt("datagram_sendto", lambda: socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM).sendto(b"x", good))
+# Audit-only from here (nothing is connected, so the path length does not matter): the permitted name reached
+# through "alias/..", which the OS resolves to the alias target's parent, and a run directory replaced by a link.
+def audit_connect(address):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sys.audit("socket.connect", sock, address)
+attempt("dotdot_after_link", lambda: audit_connect(os.path.join(run, "alias", "..", "c.sock")))
+attempt("permitted_audit", lambda: audit_connect(good))
 guard.seal()
 attempt("permit_after_seal", lambda: guard.permit_unix_connect(other))
 attempt("permitted_after_seal", lambda: connect(good))
+os.rename(run, run + "-moved")
+os.symlink(os.path.join(os.environ["HOME"], "elsewhere"), run)
+attempt("run_dir_replaced", lambda: audit_connect(good))
 """)
         self.assertEqual(results["unpermitted_before"], "network_refused")
-        for name in ("permit_outside", "permit_relative", "permit_nested", "permit_dotdot", "permit_bytes"):
+        for name in ("permit_outside", "permit_relative", "permit_nested", "permit_dotdot", "permit_bytes",
+                     "permit_noncanonical", "permit_trailing_slash"):
             self.assertEqual(results[name], "connect_permit_invalid", name)
         # connect_ex raises the same "socket.connect" audit event as connect, so it follows the same permit.
-        for name in ("permitted", "permitted_connect_ex", "permitted_after_seal"):
+        for name in ("permitted", "permitted_connect_ex", "permitted_audit", "permitted_after_seal"):
             self.assertEqual(results[name], "ok", name)
-        for name in ("other_path", "tcp_raw", "datagram_sendto"):
+        for name in ("other_path", "tcp_raw", "datagram_sendto", "dotdot_after_link", "run_dir_replaced"):
             self.assertEqual(results[name], "network_refused", name)
         self.assertEqual(results["tcp_loopback"], "name_lookup_refused")
         self.assertEqual(results["permit_after_seal"], "guard_sealed")
