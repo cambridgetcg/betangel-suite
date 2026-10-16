@@ -11,6 +11,20 @@ context. It is never Yu's instruction, consent or acceptance.
 1. **Paper-only MVP.** No credentials, Betfair API, network or live code, and never a
    "temporary" live endpoint, not even a disabled one. Later live and Air-side code never lives
    in this repo; it goes in a separate repo that is never cloned on the lab.
+   - **The two R-2 viewer files are not network code under this rule (Q-Y19).** Yu chose
+     option D on 2026-10-16 ("Go for D"): the R-2 approval already covered the two Air files of
+     the viewer setup (DESIGN.md 8.6 item 2), `tools/stage/air-ssh-config.snippet` and
+     `tools/stage/air-viewer-selftest.sh`, so the network clause does not cover them. Option D
+     treats this as a clarification of R-2, not a widening. It covers these two files and nothing
+     else.
+     - The limits these files keep (DESIGN.md 8.6): they serve only the viewer tunnel. The
+       snippet is the Air's `Host lab-suite` block. The self-test logs in only to that Host, over
+       LAN SSH offering only the viewer key, and uses `nc` only on the Air's own `127.0.0.1`.
+       They hold no credentials and no Betfair API code. They run only on the Air, which takes
+       them only from GitHub at the reviewed merge commit's SHA. On the lab, only the test
+       harness runs the self-test, with fake `ssh` and `nc`.
+     - Every other Air-side or network file stays barred by this rule. Changing that, or widening
+       these two files, is a scope widening under rule 10.
 2. **Imports.** Only `betangel_suite/rx.py` imports `betangel_research`, and only names on the
    allowlist (DESIGN.md 4.1). Test-only oracles (DESIGN.md 4.2) are imported only under `tests/`.
    Code comes from the pinned, read-only deps clone; `~/betangel-research` is never on `sys.path`.
@@ -135,7 +149,7 @@ reviewed PR changes them.
   - `bin/suite uisnap`;
   - the staged viewer-key and sshd drop-in script and the Air self-test under `tools/stage/`. Yu
     runs them. Nuance may start the Air self-test, but only Yu types the key's passphrase. Tests
-    run them only in their harness, with fake `sudo`, `sshd` and `ssh`.
+    run them only in their harness, with fake `sudo`, `sshd`, `ssh` and `nc`.
 
   The engine still replays synthetic markets only and refuses every configured data root
   (`synthetic_only`), from a release copy too. There is no data-root reading and no paper trading

@@ -24,5 +24,5 @@ follows and the Phase 0 status, and [docs/DESIGN.md](docs/DESIGN.md) for the des
 
 - Lab-Claude (on the lab MacBook Pro) builds the offline replay and paper MVP.
 - Nuance (Claude on Yu's MacBook Air) and Astra review it. Nuance owns betangel-research,
-  policy changes, and Air-side and live work.
+  policy changes, and later Air-side and live work.
 - Yu decides.
