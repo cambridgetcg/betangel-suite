@@ -152,12 +152,13 @@ reviewed PR changes them.
   file that never exists; only a reviewed change could move it. Nuance's wrapper creates the
   marker with O_EXCL, waits up to 60 s for `engine.lock`, and refuses its own run if the lock is
   still held. The engine may hold the lock for about 35 s after the marker appears. Lab-Claude
-  never creates or removes the marker. Every command except `stop` and `vendor` refuses to start
-  while the marker is present, unreadable, or in an unreadable directory (DESIGN.md 6.8).
+  never creates or removes the marker. Every command except `stop` refuses to start while the
+  marker is present, unreadable, or in an unreadable directory (DESIGN.md 6.8).
   - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
     be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
     exists too; stop stays exempt".
   - `stop` is exempt because it only reduces activity (DESIGN.md 3.9 rule 6).
-  - `vendor` stays exempt. It starts no engine and writes nothing under `~/betangel-data`: it
-    makes only the deps clone under `~/.local/share`, and only when run by hand (DESIGN.md 3.5).
+  - `vendor` refuses too. Nuance, in her PR #1 review: "test and vendor refuse under the marker;
+    stop stays exempt". It was first exempt by lab-Claude's own choice, on a reason that left out
+    its writes to `pin/` with `--bump` and its clone of the whole of `~/betangel-research`.
   - `runmarker.py` exposes a check function that later phases call on every tick.

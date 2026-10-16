@@ -1,8 +1,8 @@
 """I-17 (start-time part): no engine while Nuance's run marker exists (DESIGN.md 6.8; adaptation E).
 
 A present marker, an unreadable marker or an unreadable marker directory refuses every command except
-stop and vendor, before anything is created. That includes test, on 3.13 and on the 3.11 floor (Nuance's
-answer to Q-N14). All markers live under a temporary HOME.
+stop, before anything is created. That includes test, on 3.13 and on the 3.11 floor, and vendor (Nuance's
+answers to Q-N14). All markers live under a temporary HOME.
 """
 
 import json
@@ -161,13 +161,27 @@ class StartTimeTests(unittest.TestCase):
         for args in bad:
             self.assertEqual(self.suite(home, *args), (2, "refused:bad_arguments\n"), args)
 
-    def test_vendor_does_not_check_the_marker(self):
-        # vendor starts no engine and writes nothing under ~/betangel-data (adaptation E).
+    def test_vendor_refuses_while_the_marker_exists(self):
+        # vendor was first exempt. Nuance's answer to Q-N14 in her PR #1 review: "test and vendor refuse under
+        # the marker; stop stays exempt". vendor writes the deps clone, and pin/ with --bump, and clones the
+        # whole of ~/betangel-research. Each run is refused before its arguments are read or anything is made.
         home = make_home(self)
         path = marker(home)
         os.makedirs(os.path.dirname(path))
         open(path, "w").close()
-        self.assertEqual(self.suite(home, "vendor"), (2, "refused:bad_arguments\n"))
+        pin_file = os.path.join(home, "pin.json")          # never this checkout's pin, even if a run started
+        runs = (("vendor",), ("vendor", "f" * 40, "--pin-file", pin_file),
+                ("vendor", "f" * 40, "--bump", "--pin-file", pin_file))
+        before = tree_listing(home)
+        for args in runs:
+            self.assertEqual(self.suite(home, *args), (2, "refused:run_marker_present\n"), args)
+        self.assertEqual(tree_listing(home), before)
+        os.remove(path)
+        os.chmod(os.path.dirname(path), 0)
+        self.addCleanup(os.chmod, os.path.dirname(path), 0o700)
+        self.assertEqual(self.suite(home, "vendor"), (2, "refused:run_marker_unreadable\n"))
+        os.chmod(os.path.dirname(path), 0o700)
+        self.assertEqual(self.suite(home, "vendor"), (2, "refused:bad_arguments\n"))   # no marker: it starts
 
 
 if __name__ == "__main__":

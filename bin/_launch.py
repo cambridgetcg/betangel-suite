@@ -8,7 +8,7 @@ matters and is part of the design (DESIGN.md 3.6, 6.8, 10):
   2. append the checkout root to sys.path (-I leaves the script's directory off it);
   3. arm the audit hook (betangel_suite.guard) in the mode the command name selects, before anything
      can import betangel_research, and install the code-only exception hooks;
-  4. check TMPDIR against roots.tmp_dir(command), then (for every command except stop and vendor, so test
+  4. check TMPDIR against roots.tmp_dir(command), then (for every command except stop, so test and vendor
      too) load the config and refuse while the run marker exists, before anything is created anywhere;
   5. dispatch to betangel_suite.cli, which creates TMPDIR (0700) before any handler runs.
 
