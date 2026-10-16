@@ -40,7 +40,9 @@ Options (Spec.options, a frozenset of strings; anything else is refused):
 
   suspension      the market is SUSPENDED for a few seconds pre-off, then reopened by a fresh image;
   removal         a runner (never the favourite or the winner) is REMOVED pre-off: a SUSPENDED definition with its
-                  removalDate and adjustmentFactor, then an image reopening the market with the rest repriced;
+                  removalDate and adjustmentFactor, then an image reopening the market with the rest repriced.
+                  Every adjustmentFactor is a market chance in percent: the removed runner's is its chance at
+                  removal, and the rest are renormalised without it. Betfair's real semantics are unverified;
   nonfinite_sp    pre-off, one runner's spn and spf become the quoted strings "NaN" and "Infinity" and its spl
                   carries a size "Infinity" at 1000 (snapshots in that window are invalid: non_finite_size), until a
                   later message deletes that point and restores the projections;
@@ -812,6 +814,7 @@ class _Simulation:
         r = self.runners[self.p.removed]
         r.removed = True
         r.removal_date = iso_ms(t)
+        r.af = round(max(0.01, 100 * self._q(r)), 2)       # its chance at removal (real semantics unverified)
         self.total -= math.exp(r.u)
         for other in self._active():
             other.af = round(max(0.01, 100 * self._q(other)), 2)

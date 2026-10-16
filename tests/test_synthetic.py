@@ -531,6 +531,27 @@ class OptionTests(unittest.TestCase):
         self.assertTrue(after and all(len(touch(s)) == SMALL["runners"] for s in after))
         self.assert_pre_off_open_snapshots_valid(market, found)    # the image clears ladder_partial_after_suspension
 
+    def test_the_removed_runners_adjustment_factor_is_its_chance_at_removal(self):
+        # Nuance's PR #4 review, item 4: it used to keep its opening value. Betfair's real semantics are unverified.
+        real = synthetic._Simulation._removal_message
+        seen = []
+
+        def spy(sim, t):
+            r = sim.runners[sim.p.removed]
+            expected = round(max(0.01, 100 * sim._q(r)), 2)
+            line = real(sim, t)
+            seen.append((expected, json.loads(line)["mc"][0]["marketDefinition"]["runners"][r.i]))
+            return line
+
+        with mock.patch.object(synthetic._Simulation, "_removal_message", spy):
+            for seed in (62, 63, 64):
+                for _line in generate(Spec(seed=seed, options={"removal"}, **SMALL)).lines():
+                    pass
+        self.assertEqual(len(seen), 3)
+        for expected, runner in seen:
+            self.assertEqual(runner["status"], "REMOVED")
+            self.assertEqual(runner["adjustmentFactor"], expected)
+
     def test_removal(self):
         market = generate(Spec(seed=62, options={"removal"}, **SMALL))
         (removed,) = market.removed_ids
@@ -549,6 +570,7 @@ class OptionTests(unittest.TestCase):
         self.assertEqual(md["numberOfActiveRunners"], SMALL["runners"] - 1)
         others = sum(r["adjustmentFactor"] for r in md["runners"] if r["status"] == "ACTIVE")
         self.assertAlmostEqual(others, 100.0, delta=0.5)
+        self.assertNotEqual(runner["adjustmentFactor"], round(100 * market.plan.q0[index], 2))   # not the opening one
         self.assertEqual((defs[position + 1][0], defs[position + 1][1]["status"], defs[position + 1][2]),
                          (reopen, "OPEN", True))
         for pt, later, _img in defs[position:]:
