@@ -7,7 +7,7 @@
 | Author | lab-Claude (Claude Code session 03026dfa on the lab MacBook Pro) |
 | Reviewers | Nuance (the rule 1 wording; Q-N15), Astra (the two files, their tests, and PR #5 finding 1) |
 | Approver | Yu |
-| Base | Branch `phase0/viewing` (PR #5) at d9b129e, plus the commit that adds this file. The rule text comes from 0c1335b, e9b1646 and beeb1f4. The self-test changes for Astra's two code questions are a53856a and b1d5082 (section 7). |
+| Base | Branch `phase0/viewing` (PR #5) at d9b129e, plus c051b2d, the commit that adds this file. The rule text comes from 0c1335b, e9b1646, beeb1f4 and c051b2d (section 4.4). The self-test changes for Astra's two code questions are a53856a and b1d5082 (section 7). |
 | Process | Suite AGENTS.md rule 10; DESIGN.md section 14 (steps 3, 6 and 7 do not apply; see section 9) |
 | Request | Yu, 2026-10-16, asked by lab-Claude whether a rule 10 proposal file is also wanted for Q-Y19 option D, answered: "yes to formal proposal". |
 
@@ -50,7 +50,7 @@ The reasons in that text are lab-Claude's, not Yu's. Yu's words were "Go for D".
 - D's text also said the reword "may need the same proposal process as C". Yu has now asked for a formal proposal. This is it.
 - This proposal does not decide whether "Go for D" was itself the rule 10 approval. It takes the reworded rule through rule 10's order as written: proposal, review by Nuance and Astra, then Yu's written approval.
 
-### 2.4 Nuance's first view
+### 2.4 Nuance's views
 
 Nuance wrote to lab-Claude through the mailbox on 2026-10-16 (note 20261016T134105Z, item 5), before this file existed. These are Nuance's words, not Yu's:
 
@@ -58,7 +58,15 @@ Nuance wrote to lab-Claude through the mailbox on 2026-10-16 (note 20261016T1341
 - "rule 10 says every widening goes through a proposal, and an exception to rule 1 is a widening."
 - "Whether that file is required is Yu's call, not mine."
 
-So Nuance reads the exception as a widening, while lab-Claude read D as a clarification (section 2.3). This proposal goes through rule 10 either way. Section 10 asks Nuance to confirm or change this view as the review.
+**Nuance's PR #1 review** (2026-10-16) then answered Q-N15 at the stack tip, which the review names as c051b2d, the commit that adds this file. In Nuance's words, not Yu's: "faithful; agree, as "the only exception to this rule"". The rule 1 text in section 4 is c051b2d's: AGENTS.md rule 1, DESIGN.md 3.9 rule 1 and section 4 have not changed since.
+
+**Lab-Claude's reading.**
+
+- Nuance's phrase frames the two files as an exception to rule 1, as Nuance's first view did ("an exception to rule 1 is a widening"). Option D's text calls the reword "a clarification rather than a widening" (section 2.2), and lab-Claude read D that way (section 2.3).
+- Rule 1 as worded in section 4 does not use the word "exception". It says the two files "are not network code under this rule", and "This covers these two files and nothing else."
+- Adopting Nuance's phrase would change rule 1's text, which needs Astra's review and Yu's written approval like the rest of section 4. Lab-Claude has not changed rule 1 for it. It takes the point up in this proposal's review (section 10), as it told Nuance on 2026-10-17.
+
+This proposal goes through rule 10 either way, whichever reading holds.
 
 ## 3. The problem
 
@@ -71,7 +79,9 @@ So Nuance reads the exception as a widening, while lab-Claude read D as a clarif
   - The Codex review bot, inline on PR #5 (2026-10-15, on `tools/stage/air-viewer-selftest.sh`), P1: "Move the Air-side SSH tooling to the separate repository".
   - Astra, in the review of PR #5 at 8b89ee4, finding 1 (P1): "Resolve the rule 1 conflict before merging the Air client code." Astra's fix: "Move the Air program/configuration to the separate repository, or resolve Q-Y19 before merge through the applicable proposal/review process and Yu’s own written ruling, with consistent binding text."
 - **What answers it.** Yu chose D, and asked for this proposal (section 2.1). This proposal is the proposal and review step that Astra's fix names. Section 9 sets the order before merge.
-- **Astra's re-review of PR #5 at d9b129e** came before this file existed. These are Astra's words, not Yu's. It lists finding 1 as "**P1, Air-side rule conflict — resolved.**", and says: "**Q-Y19/Q-N15:** I accept the narrow wording as implementing Yu's D ruling and do not reopen the resolved P1. Whether they want a separate proposal artifact remains explicitly recorded; this review neither invents that decision nor grants any wider exception." Astra has not yet reviewed this file itself, or a53856a and b1d5082 (section 10).
+- **Astra's re-review of PR #5 at d9b129e** came before this file existed. These are Astra's words, not Yu's. It lists finding 1 as "**P1, Air-side rule conflict — resolved.**", and says: "**Q-Y19/Q-N15:** I accept the narrow wording as implementing Yu's D ruling and do not reopen the resolved P1. Whether they want a separate proposal artifact remains explicitly recorded; this review neither invents that decision nor grants any wider exception."
+  - **That acceptance covers d9b129e's wording, not the current one.** c051b2d, the next commit, added this file and changed rule 1's text (section 4.4). The caveat sentence now records Yu's "yes to formal proposal" and points to this file. In the limits text, the snippet "offers only the viewer key", and the self-test logs in "by public key only" where d9b129e said "with the viewer key only".
+  - Astra has not yet reviewed the current wording (section 4), this file itself, or a53856a and b1d5082 (section 10).
 - **Earlier replies on PR #5.** Two of lab-Claude's replies on PR #5 came before Yu's "yes to formal proposal". The reply on the Codex thread (2026-10-16 09:16Z) says "Resolved by Yu's ruling on Q-Y19". The reply to Astra's review (2026-10-16 12:47Z) says "Finding 1 is answered by Yu's ruling", and that Yu had not ruled on a proposal file. This proposal replaces that wording. The Codex P1 and Astra's finding 1 are answered through this proposal, its review and Yu's written approval, not by "Go for D" alone.
 
 ## 4. The exact text change
@@ -86,7 +96,7 @@ Before (`git show 0c1335b^:AGENTS.md`; the same on `phase0/http` today):
    in this repo; it goes in a separate repo that is never cloned on the lab.
 ```
 
-After (proposed; `phase0/viewing` with the commit that adds this file):
+After (proposed; `phase0/viewing` since c051b2d, the commit that adds this file):
 
 ```
 1. **Paper-only MVP.** No credentials, Betfair API, network or live code, and never a
@@ -141,7 +151,7 @@ After (proposed):
 | 0c1335b | Added the sub-bullet and its two points. It said "Option D treats this as a clarification of R-2, not a widening" and "Every other Air-side or network file stays barred by this rule." |
 | e9b1646 | "LAN SSH offering only the viewer key" became "LAN SSH with the viewer key only, never a password". |
 | beeb1f4 | Took "not a widening" out of the binding text and put D's caveat (the rule 10 proposal process) in its place. Replaced "Every other Air-side or network file stays barred", which was broader than the old rule, with "Rule 1 is otherwise unchanged: other Air-side code and all other network code stay barred as before." |
-| The commit that adds this file | The caveat sentence now says that Yu, asked by lab-Claude, answered "yes to formal proposal", and points to this file. It holds no status. "With the viewer key only" became "it offers only the viewer key" for the snippet and "by public key only" for the self-test. That is what the code enforces (section 5.6). |
+| c051b2d, the commit that adds this file | The caveat sentence now says that Yu, asked by lab-Claude, answered "yes to formal proposal", and points to this file. It holds no status. "With the viewer key only" became "it offers only the viewer key" for the snippet and "by public key only" for the self-test. That is what the code enforces (section 5.6). |
 
 ### 4.5 Text that records the ruling
 
@@ -336,7 +346,7 @@ DESIGN.md section 14's steps, for this proposal:
 | 1. Lab-Claude writes the proposal | This file. |
 | 2. A Collab coordination task for Nuance | To be opened when this file is pushed. |
 | 3. Nuance drafts the upstream change | Does not apply. This changes only the suite's own AGENTS.md rule 1 and DESIGN.md 3.9. betangel-research is not touched. |
-| 4. Astra reviews | This proposal, with PR #5 (finding 1). Astra's re-review of PR #5 at d9b129e started before this file existed. It marked finding 1 resolved and accepted the narrow wording (section 3). Lab-Claude asks Astra to review this file, and a53856a and b1d5082, as well. |
+| 4. Astra reviews | This proposal, with PR #5 (finding 1). Astra's re-review of PR #5 at d9b129e started before this file existed. It marked finding 1 resolved and accepted the narrow wording (section 3). That acceptance covers d9b129e's wording; c051b2d then changed rule 1's text (section 4.4). So lab-Claude asks Astra to review the current wording in section 4, this file, and a53856a and b1d5082 as well. |
 | 5. Yu approves in writing | After Nuance and Astra have reviewed. |
 | 6. Nuance implements upstream | Does not apply, as for step 3. |
 | 7. The suite bumps its pin | Does not apply. The pin does not change. |
@@ -348,7 +358,7 @@ Rule 10 also asks for Nuance's review. Section 10 asks for it, and so does the P
 1. Nuance and Astra review this proposal. Astra's review of PR #5 goes on under the routing in AGENTS.md (Q-Y8).
    - PR #5's diff against `phase0/http` also changes `betangel_suite/roots.py` (release's `TMPDIR` in `STATE_TMP_COMMANDS`, and `app_dir`) and `betangel_suite/engine.py` (two end reasons in `END_REASONS`). AGENTS.md routes those two files to Astra and Nuance jointly, and a PR merges only after every reviewer whose rows its diff touches has accepted it at a named head SHA. So PR #5 also needs Nuance's acceptance of those changes at a named head SHA. Lab-Claude asks Nuance for it with this proposal. PR #5 does not merge on Astra's and Yu's acceptance alone.
 2. Any change from review goes onto `phase0/viewing` as new commits. The rule text and section 4 change together, so the binding text and this proposal stay the same.
-3. Yu is asked to approve the reviewed proposal in writing. That reaches lab-Claude in a lab-Claude session Yu types into, or in an acceptance checklist file Yu edits (DESIGN.md 3.9). A relay from Nuance, Astra, the mailbox or Collab is not approval.
+3. Yu is asked to approve the reviewed proposal in writing. That reaches lab-Claude only in a lab-Claude session Yu types into (DESIGN.md 3.9). An acceptance checklist file that Yu edits is a log of Yu's checks, not approval (Nuance, PR #1 review). A relay from Nuance, Astra, the mailbox or Collab is not approval.
 4. Lab-Claude does not merge PR #5 before step 3. This is lab-Claude's own commitment, not Yu's words. It keeps Astra's "before merge" without deciding whether "Go for D" was itself the rule 10 approval. DESIGN.md 2.2.1 and the 15.1 Q-Y19 row record it too. Until PR #5 merges, `phase0/http` keeps rule 1 as before.
 5. After Yu's answer, one commit records it, before any merge:
    - this file's Status: Yu's words and the date;
@@ -360,6 +370,6 @@ Rule 10 also asks for Nuance's review. Section 10 asks for it, and so does the P
 
 | Who | Asked | Notes |
 |---|---|---|
-| Nuance | Review this proposal. In particular, the open half of Q-N15: do you agree with the rule 1 wording in section 4? Also review PR #5's changes to `roots.py` and `engine.py`, which are routed to you and Astra jointly, and accept them, or not, at a named head SHA (section 9, step 1). | Yu answered Q-N15's other half on 2026-10-16: "yes to formal proposal". Nuance's first view (section 2.4) supports the wording "as long as nothing else widens". Lab-Claude asks Nuance to confirm or change it as the review. Lab-Claude also asks: should the rule say what "widening these two files" means? Lab-Claude's reading: any change that lets either file reach a machine other than the lab, another port or socket, use another key or login method, hold a secret, or run on the lab outside the test harness. Under that reading, moving the lab's one address (section 5.6) is not a widening, because it is the same machine with the same host key. |
-| Astra | Review this proposal with PR #5. Two code questions, asked in this proposal's first draft and now implemented for Astra to review (section 7). (1) Should the self-test run its identity and forward checks on `ssh -G` with each probe's options (`-T` and `-tt` with a command, `-N` with the probe forwards, `-W`), require exactly one identity in each, and drop or tighten the "Trying private key" fallback (section 5.6)? a53856a checks all six forms and drops the fallback, the stricter option; section 5.3 says why a correct setup still passes. Is dropping it right, and is anything missing from the per-form checks? (2) Should the untested refusals in section 6 get test cases? b1d5082 adds one for each of the nine. | It is written to answer PR #5 finding 1 (P1): "resolve Q-Y19 before merge through the applicable proposal/review process and Yu’s own written ruling, with consistent binding text". Astra's re-review at d9b129e already lists finding 1 as resolved and accepts the narrow wording (section 3, Astra's words). Still asked: Astra's review of this file itself, and of a53856a and b1d5082. |
+| Nuance | Review this proposal. Q-N15's open half, the rule 1 wording in section 4, is answered by Nuance's PR #1 review (Notes). Whether rule 1 should call the two files an exception, as that answer does, is asked here. Also review PR #5's changes to `roots.py` and `engine.py`, which are routed to you and Astra jointly, and accept them, or not, at a named head SHA (section 9, step 1). | Yu answered Q-N15's other half on 2026-10-16: "yes to formal proposal". Nuance's first view (section 2.4) supports the wording "as long as nothing else widens". Nuance's PR #1 review answered at c051b2d, whose rule 1 text is the current one: "faithful; agree, as "the only exception to this rule"" (section 2.4). Lab-Claude's reading: that phrase frames the two files as an exception, while D's text calls the reword "a clarification rather than a widening". Adopting it would change rule 1's text, which needs Astra's review and Yu's written approval, so lab-Claude asks Nuance here whether rule 1 should say it. Lab-Claude also asks: should the rule say what "widening these two files" means? Lab-Claude's reading: any change that lets either file reach a machine other than the lab, another port or socket, use another key or login method, hold a secret, or run on the lab outside the test harness. Under that reading, moving the lab's one address (section 5.6) is not a widening, because it is the same machine with the same host key. |
+| Astra | Review this proposal with PR #5. Two code questions, asked in this proposal's first draft and now implemented for Astra to review (section 7). (1) Should the self-test run its identity and forward checks on `ssh -G` with each probe's options (`-T` and `-tt` with a command, `-N` with the probe forwards, `-W`), require exactly one identity in each, and drop or tighten the "Trying private key" fallback (section 5.6)? a53856a checks all six forms and drops the fallback, the stricter option; section 5.3 says why a correct setup still passes. Is dropping it right, and is anything missing from the per-form checks? (2) Should the untested refusals in section 6 get test cases? b1d5082 adds one for each of the nine. | It is written to answer PR #5 finding 1 (P1): "resolve Q-Y19 before merge through the applicable proposal/review process and Yu’s own written ruling, with consistent binding text". Astra's re-review at d9b129e already lists finding 1 as resolved and accepts the narrow wording (section 3, Astra's words). That acceptance covers d9b129e's wording; c051b2d then changed rule 1's text (section 4.4). Still asked: Astra's review of the current wording in section 4, of this file itself, and of a53856a and b1d5082. |
 | Yu | (1) The lab's address, before the viewer install: reserve `192.168.50.88` for the lab on the router, with no file change, or move the two files, DESIGN.md 8.6 and the tests to the lab's new address (section 5.6)? Does moving that one lab address count as widening these two files? (2) After both reviews, approve the reviewed proposal in writing, or not. | Yu chose D ("Go for D"). Asked by lab-Claude, Yu answered "yes to formal proposal". Approval of the proposal itself comes after review. The router is Yu's; lab-Claude changes no network settings. Question 1 is best answered with question 2. |
