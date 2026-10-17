@@ -7,6 +7,7 @@ sizes in the real ranges of DESIGN.md 6.7, the in-play flip, CLOSED with a winne
 Everything is generated in memory or into temp dirs under TMPDIR; nothing here reads a data root.
 """
 
+import copy
 import hashlib
 import json
 import os
@@ -616,6 +617,60 @@ class OptionTests(unittest.TestCase):
         found, _cache = replay(market, every=20)
         self.assertTrue(all(s["market_time"] is None for _m, s in found if s is not None))
         self.assert_pre_off_open_snapshots_valid(market, found)
+
+    def test_no_ladder_definition_drops_only_that_key(self):
+        # Nuance's PR #1 review, item 1(d): a keyless variant. The market is otherwise byte for byte the one the same
+        # spec gives without the option, with any other options too.
+        for options in (set(), {"suspension", "removal"}):
+            plain = generate(Spec(seed=69, options=options, **SMALL))
+            keyless = generate(Spec(seed=69, options=options | {synthetic.NO_LADDER_DEFINITION}, **SMALL))
+            self.assertEqual((keyless.market_id, keyless.selection_ids, keyless.winner_id, keyless.removed_ids),
+                             (plain.market_id, plain.selection_ids, plain.winner_id, plain.removed_ids))
+            plain_messages, keyless_messages = list(plain.messages()), list(keyless.messages())
+            self.assertEqual(len(keyless_messages), len(plain_messages))
+            dropped = 0
+            for before, after in zip(plain_messages, keyless_messages):
+                md = before["mc"][0].get("marketDefinition")
+                if md is not None:
+                    self.assertEqual(md.pop("priceLadderDefinition"), {"type": "CLASSIC"})
+                    self.assertNotIn("priceLadderDefinition", after["mc"][0]["marketDefinition"])
+                    dropped += 1
+                self.assertEqual(after, before)
+            self.assertGreaterEqual(dropped, 4)          # the opening image, the flip, SUSPENDED and CLOSED at least
+            self.assertEqual(len(definitions(keyless)), dropped)
+
+    def test_no_ladder_definition_gives_no_ladder_type_and_a_valid_book(self):
+        market = generate(Spec(seed=70, options={synthetic.NO_LADDER_DEFINITION}, **SMALL))
+        found, cache = replay(market, every=10)
+        snapshots = [snapshot for _message, snapshot in found if snapshot is not None]
+        self.assertGreater(len(snapshots), 20)
+        self.assertEqual({snapshot["price_ladder_type"] for snapshot in snapshots}, {None})
+        self.assert_pre_off_open_snapshots_valid(market, found)
+        self.assertEqual(found[-1][1]["status"], "CLOSED")
+
+    def test_paper_validation_refuses_every_click_on_a_keyless_market(self):
+        # DESIGN.md 7.1, the ladder-type condition: without priceLadderDefinition, V9 refuses every click in paper
+        # mode with ladder_not_classic (validate.py:120-121), and nothing else differs. This shows how the paper
+        # path treats such a market today; V9 and any CLASSIC default are Yu's to rule on (D-5, U-10), not changed.
+        cfg = copy.deepcopy(rx.config.DEFAULTS)
+        refused = [{"rule": "V9", "reason": "ladder_not_classic", "instruction": None}]
+        for options, expected in ((set(), []), ({synthetic.NO_LADDER_DEFINITION}, refused)):
+            market = generate(Spec(seed=71, options=options, **SMALL))
+            checked = 0
+            for seconds, snapshot in sorted(snapshots_at(market, (90, 30, 5)).items()):
+                self.assertEqual((snapshot["status"], snapshot["inplay"], snapshot["invalid_reason"]),
+                                 ("OPEN", False, None))
+                for selection, runner in sorted(snapshot["runners"].items()):
+                    for side, ladder in (("BACK", runner["back"]), ("LAY", runner["lay"])):
+                        instruction = {"selection_id": int(selection), "handicap": 0, "side": side,
+                                       "price_h": rx.ticks.to_hundredths(ladder[0][0]), "size_p": 200,
+                                       "persistence_type": "LAPSE"}
+                        failures = rx.validate.validate_place(
+                            market.market_id, [instruction], book=snapshot, open_orders=[], config=cfg, mode="paper",
+                            now_ns=snapshot["pt"] * 1_000_000 + 1_000_000)
+                        self.assertEqual(failures, expected, (options, seconds, side))
+                        checked += 1
+            self.assertEqual(checked, 3 * 2 * SMALL["runners"])
 
     def test_month_override(self):
         market = generate(Spec(seed=65, options={"month:2026-01"}, **SMALL))
