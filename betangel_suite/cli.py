@@ -4,9 +4,10 @@ bin/_launch.py has already armed the guard, checked TMPDIR and, for every comman
 the run marker before main() is called. main() then, for a command that may touch real data (REALDATA_COMMANDS),
 takes the realdata lock shared and checks the marker again under it (runmarker.hold_shared; DESIGN.md 6.8), and
 only then creates TMPDIR (0700, through the writer helper) before any handler runs (DESIGN.md 3.6), so SQLite
-never falls back to a system temp directory. vendor is the exception: it must work before the deps clone exists,
-never imports upstream (which the writer helper's path_guard needs) and makes no temporary files. Output is codes
-and counts only.
+never falls back to a system temp directory. stop and vendor (NO_TMPDIR) are the exceptions: neither makes
+temporary files. stop must work during a run, so it needs neither TMPDIR nor the lock; vendor must work before the
+deps clone exists and never imports upstream (which the writer helper's path_guard needs). Output is codes and
+counts only.
 """
 
 import importlib.util
@@ -29,6 +30,11 @@ NO_RUN_MARKER_CHECK = ("stop",)
 # vendor touch neither and do not take it; stop must work during a run and takes nothing (runmarker.py says why).
 # main() refuses (run_lock_not_held) any other command whose TMPDIR would be made under ~/betangel-data.
 REALDATA_COMMANDS = ("serve", "open", "ssh-session", "catalogue", "selfcheck", "diagnose", "ledger-summary")
+# They create no temporary files, so main() makes no TMPDIR for them and never asks them for the lock. stop must work
+# during a run (DESIGN.md 6.8); without this, its TMPDIR under ~/betangel-data made main() refuse it with
+# run_lock_not_held (round-4 review). phase0/http has the same tuple and phase0/viewing adds release: merged into
+# them, the run_lock_not_held check stays inside the `not in NO_TMPDIR` branch.
+NO_TMPDIR = ("stop", "vendor")
 REPO_ROOT = guard.REPO_ROOT
 
 
@@ -52,7 +58,7 @@ def main(argv):
     if command in REALDATA_COMMANDS:
         from . import config
         runmarker.hold_shared(runmarker.marker_path(config.load()), runmarker.lock_path())
-    if command != "vendor":
+    if command not in NO_TMPDIR:
         tmp = roots.tmp_dir(command)
         if roots.within(tmp.casefold(), roots.data_home().casefold()) and not runmarker.holding():
             raise SuiteError("run_lock_not_held")       # nothing is made under ~/betangel-data without the lock

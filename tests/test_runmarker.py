@@ -398,6 +398,8 @@ class RealDataLockTests(unittest.TestCase):
         self.assertLessEqual(set(cli.REALDATA_COMMANDS), set(cli.COMMANDS))
         for command in ("test", "uisnap", "vendor", "stop"):
             self.assertNotIn(command, cli.REALDATA_COMMANDS)
+        self.assertEqual(cli.NO_TMPDIR, ("stop", "vendor"))
+        self.assertFalse(set(cli.NO_TMPDIR) & set(cli.REALDATA_COMMANDS))
         self.assertEqual(self.lock, os.path.join(self.home, ".local", "state", "betangel-suite", "run", "realdata.lock"))
 
     def test_a_wrapper_waits_for_a_holder_and_fails_closed_at_its_deadline(self):
@@ -506,6 +508,28 @@ sys.exit(run(["selfcheck"]))
             os.close(fd)
         self.assertEqual(self.finish(self.holder(body)), (0, "", ""))
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "handler-ran")))
+
+    def test_stop_needs_neither_the_lock_nor_a_tmpdir(self):
+        # Round-4 review: cli.main refused stop with run_lock_not_held, because its TMPDIR lies under ~/betangel-data
+        # and it takes no lock. stop must work during a run (DESIGN.md 6.8): here the marker exists and the wrapper
+        # holds LOCK_EX, and stop (a stand-in handler) still runs, takes nothing and makes nothing.
+        os.makedirs(os.path.dirname(self.lock), 0o700)
+        os.makedirs(os.path.dirname(self.marker))
+        open(self.marker, "w").close()
+        fd = os.open(self.lock, os.O_RDONLY | os.O_CREAT, 0o600)
+        body = r"""
+def handler(args):
+    print("stop-ran", runmarker.holding())
+    return 0
+cli._HANDLERS["stop"] = handler
+sys.exit(run(["stop"]))
+"""
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.finish(self.holder(body)), (0, "stop-ran False\n", ""))
+        finally:
+            os.close(fd)
+        self.assertEqual(os.listdir(roots.data_home(self.home)), [])        # no suite root, no tmp/
 
     def test_no_tmpdir_under_the_data_home_without_the_lock(self):
         # A command that may touch real data but is missing from REALDATA_COMMANDS refuses before its TMPDIR.
