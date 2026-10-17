@@ -9,7 +9,8 @@ keys}, at most MAX_LINE bytes, and gets one line back:
 
     attach            open's takeover: pause, invalidate every earlier code and token,
                       {"ok": true, "port": n, "code": c}
-    new_code          a fresh single-use code, {"ok": true, "port": n, "code": c}
+    new_code          a fresh single-use code, {"ok": true, "port": n, "code": c}: silently, with no takeover
+                      (no CLI caller; tests use it to get codes)
     pause             pause the clock, {"ok": true}
     stop              end the engine, {"ok": true}
     attach_viewer     {"port": p}: ssh-session's takeover (as attach), which also starts a terminal viewer:
@@ -21,7 +22,10 @@ keys}, at most MAX_LINE bytes, and gets one line back:
 
 The viewer commands answer {"ok": false, "code": "superseded"} once a later takeover has replaced viewer g
 (api/lifetime.py). Only open and ssh-session ask for a code, and they hand it to /usr/bin/open, the caller's
-stdout (open --print-url) or the viewer's terminal; this module never prints or logs one. The client side
+stdout (open --print-url) or the viewer's terminal; this module never prints or logs one. new_code and
+viewer_code mint a code for whichever same-uid process asks, silently: nothing is printed to Yu, opened or paused
+(Nuance's PR #1 review). Only conduct keeps agents from sending them to the real socket (DESIGN.md 3.9 rule 6,
+9.1, 9.4): a same-uid process could take the session over through attach anyway. The client side
 (request) connects through guard.permit_unix_connect, the only connect the guard allows; a sealed client
 (ssh-session's attached viewer) keeps the permit it got before seal(). stop (stop_main) needs no engine:
 with no engine holding engine.lock it prints not_running, and while one holds the lock without answering yet

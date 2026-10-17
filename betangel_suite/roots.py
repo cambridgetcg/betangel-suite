@@ -4,7 +4,7 @@ Roots, under the home directory taken from $HOME (bin/suite passes the caller's 
 
     ~/.local/state/betangel-suite/            0700  config, prefs, run/ (realdata.lock), tmp/, install-salt (Phase 0)
     ~/.local/share/betangel-suite/deps/       read-only pinned upstream code (written only by the vendor tool)
-    ~/.local/share/betangel-suite/app/        release copies <tag>/ and the current symlink (written only by release)
+    ~/.local/share/betangel-suite/app/        release copies <sha12>/ and the current symlink (written only by release)
     ~/betangel-data/suite.noindex/            0700  the suite root, ONLY while STATE_ROOT_AGREED is True
 
 STATE_ROOT_AGREED is True: Yu agreed the suite root (R-4), and Nuance agreed it on three conditions in Nuance's

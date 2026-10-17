@@ -208,7 +208,7 @@ class App:
             if command == "attach_viewer":
                 reply["viewer"] = generation
             return reply
-        if command == "new_code":
+        if command == "new_code":           # silent: no takeover, nothing printed (control.py; DESIGN.md 9.1)
             return {"ok": True, "port": self.port, "code": self.auth.issue_code()}
         if command == "viewer_code":
             code = self.viewer_code(args["viewer"])
