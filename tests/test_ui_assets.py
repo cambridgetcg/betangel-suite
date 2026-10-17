@@ -345,8 +345,9 @@ class HygieneTests(unittest.TestCase):
 
     def test_the_scanner_finds_nothing_in_the_ui_files(self):
         targets = ["ui", os.path.join("tools", "export_ticks.py"), os.path.join("tests", "test_ui_assets.py")]
-        scan = subprocess.run([PYTHON, "-I", "-S", "-B", SCANNER, "--root", ROOT, *targets], env=dict(os.environ),
-                              cwd=ROOT, capture_output=True, timeout=120)
+        # A temporary HOME: the test runner starts no interpreter with its own (guard.runner_argv_ok).
+        scan = subprocess.run([PYTHON, "-I", "-S", "-B", SCANNER, "--root", ROOT, *targets],
+                              env=child_env(make_home(self)), cwd=ROOT, capture_output=True, timeout=120)
         output = (scan.stdout + scan.stderr).decode("utf-8", "replace")
         self.assertEqual(scan.returncode, 0, output)
         self.assertIn("hygiene_scan: OK", output)

@@ -30,11 +30,12 @@ there. A `suite.noindex` that is a link, or a state root that a link puts in `~/
 refused before anything is written (62c39c6).
 
 The test runner itself is confined: its guard mode refuses writes under `~/betangel-data`, and
-reads there too, as `vendor`'s, `uisnap`'s and `stop`'s do (0a3ed65). Its launcher children
-(`bin/suite`, or an interpreter running `_launch.py`) need an explicit environment whose HOME,
-the roots under it and `TMPDIR` keep out of the runner's data home, checked at spawn by realpath
-and identity (96f8a90; Nuance's re-review of #2, F2). An interpreter child that does not arm the
-guard is unguarded, so tests give every child a temporary HOME; that is conduct.
+reads there too, as `vendor`'s, `uisnap`'s and `stop`'s do (0a3ed65). Every interpreter child it
+starts and every `bin/suite` child need an explicit environment whose HOME, the roots under it and
+`TMPDIR` keep out of the runner's data home, checked at spawn by realpath and identity (96f8a90,
+8e751d6; Nuance's re-review of #2, F2): a child that imports `betangel_suite` arms its own guard
+from the HOME it is given. So tests give every child a temporary HOME. What a child does with its
+environment after it starts, and a child that never imports `betangel_suite`, are conduct.
 
 The suite never writes `~/.local/state/lab-runs/`, where Nuance's run wrapper keeps its marker and
 lock, and refuses a root in, around or onto it (`root_overlaps_lab_runs`; c3b0c61).
@@ -104,10 +105,10 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   for every finding: the scanner never prints a path or any part of one, not even a suffix, and
   never the matched text. Line 0 means the finding is about the entry itself (its name, type, size
   or link target). Line numbers count `\n` line ends; the rules also split lines at CR, NEL, LS
-  and the other `str.splitlines()` boundaries, and read each line with format characters (a BOM,
-  zero-width spaces) and the other default-ignorable code points dropped, in NFKC form, so a
-  no-break space reads as a space and fullwidth digits as ASCII digits (1e39931). After ten lines
-  for one entry and rule, one line counts the rest
+  and the other `str.splitlines()` boundaries, and read each line twice: as written, with format
+  characters (a BOM, zero-width spaces) dropped, and with those and the other default-ignorable
+  code points dropped, in NFKC form, so a no-break space reads as a space and fullwidth digits as
+  ASCII digits (1e39931, 99ed70d). After ten lines for one entry and rule, one line counts the rest
   (`FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)`), and a last line gives the
   totals per code. The message and history scans name their items in place of `(entry <n>)`:
   `(message)`, `(commit <sha> message)`, `(tag <sha> message)` and `(commit <sha> entry <k>)`.
@@ -156,13 +157,16 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   replaces identifiers with salted hashes (DESIGN.md 9.2 item 9). The hashes are pseudonymous,
   not anonymous: the hashed labels follow the public member layout, so a ref reverses by
   enumeration. So the salt (`~/.local/state/betangel-suite/install-salt`) is never read by an
-  agent and never regenerated: once its `salt-provisioned` marker exists, a missing salt is
+  agent, and is not regenerated while its `salt-provisioned` marker exists: a missing salt is then
   refused (`salt_missing`), and restoring it is Yu's (8288c76; AGENTS.md, Phase 0 status B). The
-  marker holds nothing, so the `install-salt*` deny need not cover it. The viewed-markets ledger is
-  reconciled with Nuance's trial ledger at month level, by the counts `ledger-summary` prints,
-  with no hash matching (Nuance's answer to Q-N11; DESIGN.md 5.5). `TMPDIR` and `SQLITE_TMPDIR`
-  point at the suite's own temp dir. The guard sets `temp_store=MEMORY` on every SQLite
-  connection, refuses one where it does not read 2, and refuses `connect("")` (06dba20).
+  marker sits beside the salt, so losing both together looks like a fresh install, which the
+  marker cannot catch: a new salt is made, and the hashes already recorded stop matching
+  (DESIGN.md 9.2). The marker holds nothing, so the `install-salt*` deny need not cover it. The
+  viewed-markets ledger is reconciled with Nuance's trial ledger at month level, by the counts
+  `ledger-summary` prints, with no hash matching (Nuance's answer to Q-N11; DESIGN.md 5.5).
+  `TMPDIR` and `SQLITE_TMPDIR` point at the suite's own temp dir. The guard sets
+  `temp_store=MEMORY` on every SQLite connection, refuses one where it does not read 2, and
+  refuses `connect("")` (06dba20).
 
 ## If something leaks
 

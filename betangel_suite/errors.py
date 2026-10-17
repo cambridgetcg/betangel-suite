@@ -11,13 +11,15 @@ The salt is per install: 32 random bytes in a 0600 file at ~/.local/state/betang
 Every guard mode may write the state root, while only the engine may write the suite root. The salt stays there:
 lab-Claude withdrew its proposal to move it into suite.noindex, as Nuance's re-review of #2 (Q4) recommended.
 
-It is made once and never made again (lab-Claude's decision, round 5, answering Nuance's re-review of #1, item 2,
-Nuance's re-review of #2, F12, and Astra's review of #1, item 9). The first process that hashes an identifier writes
-it, syncs it and its directory to disk, and only then writes the provisioned marker beside it, salt-provisioned
-(roots.salt_marker_path: 0600, empty, never read). From then on a salt that is missing, unreadable or not 32 bytes
-is refused (salt_missing) and never replaced, since every hash already recorded would stop matching; restoring it
-is Yu's. A salt made before the marker existed gets its marker the first time it is read; until then, a lost salt
-cannot be told from a new install and is made again.
+It is made once and, while its marker exists, never made again (lab-Claude's decision, round 5, answering Nuance's
+re-review of #1, item 2, Nuance's re-review of #2, F12, and Astra's review of #1, item 9). The first process that
+hashes an identifier writes it, syncs it and its directory to disk, and only then writes the provisioned marker
+beside it, salt-provisioned (roots.salt_marker_path: 0600, empty, never read). From then on a salt that is missing,
+unreadable or not 32 bytes is refused (salt_missing) and never replaced, since every hash already recorded would
+stop matching; restoring it is Yu's. A salt made before the marker existed gets its marker the first time it is
+read; until then, a lost salt cannot be told from a new install and is made again. The marker sits beside the salt,
+so losing both (the state directory, say) looks like a fresh install too, which the marker cannot catch: a new salt
+is made, and the hashes already recorded under the suite root stop matching (DESIGN.md 9.2).
 
 tools/hygiene_scan.py and tools/pre-commit print their own refusal codes (refused:usage, git_failed,
 python3.13_missing, ...). They are a separate enum on purpose: the scanner must run without importing

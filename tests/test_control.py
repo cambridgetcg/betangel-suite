@@ -138,7 +138,8 @@ attempt("rename_run_dir", lambda: os.rename(run, run + "-moved"))
         # a run/ replaced by a link would reach whatever socket the link's target holds. arm() refuses a run/ that is
         # already a link (run_lock_invalid), so here a test-mode child (the connect check is the same in every mode)
         # starts an unguarded interpreter that moves the real run/ away and puts a link in its place, as
-        # tests.test_guard.BindTests does for bind. Audit-only: nothing is connected.
+        # tests.test_guard.BindTests does for bind. Audit-only: nothing is connected. The runner starts no interpreter
+        # with its own HOME (lab-Claude's round-5 review of F2), so that one gets another HOME.
         home = support.short_home(self, deps=False)
         results = checks(self, home, mode="test", setup="""
 os.makedirs(os.path.join(os.environ["HOME"], "elsewhere"), mode=0o700)
@@ -153,7 +154,8 @@ good = os.path.join(run, "c.sock")
 guard.permit_unix_connect(good)
 attempt("permitted_before", lambda: audit_connect(good))
 replace = "import os, sys\\nos.rename(sys.argv[1], sys.argv[1] + '.moved')\\nos.symlink(sys.argv[2], sys.argv[1])\\n"
-results["replaced"] = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", replace, run, elsewhere]).returncode
+results["replaced"] = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", replace, run, elsewhere],
+                                     env=dict(os.environ, HOME=elsewhere)).returncode
 results["run_is_link"] = os.path.islink(run)
 attempt("run_dir_replaced", lambda: audit_connect(good))
 """)
