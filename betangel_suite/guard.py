@@ -886,9 +886,9 @@ def _check_write(state, path, dir_fd, follow, slot=False):
                 resolved = os.path.join(os.path.realpath(head), tail)
             if roots.within(resolved, real):
                 if slot and resolved.casefold() in state.slots:
-                    # A link, or a name renamed into place, where a root or TMPDIR is (os.symlink(historic-pro,
-                    # suite.noindex), say), or a root or TMPDIR moved away: the next process would trust it. Or the
-                    # realdata lock, or its run/, removed, moved or replaced.
+                    # A link, or a name renamed into place, where a root, TMPDIR or a directory between them is
+                    # (os.symlink(historic-pro, suite.noindex), say), or one of them moved away: the next process
+                    # would trust it. Or the realdata lock, or its run/, removed, moved or replaced.
                     raise GuardRefusal(state.slots[resolved.casefold()])
                 return
             break

@@ -223,7 +223,14 @@ reviewed PR changes them.
     real directory, or missing, at exactly `realpath(~/betangel-data)/suite.noindex`
     (`suite_root_misplaced`). The writer helper checks the root it writes the same way. The hook
     refuses a link or rename that takes a root's or `TMPDIR`'s place (`root_replace_refused`).
-    This is Nuance's PR #2 review, item 1 (62c39c6, 851885a).
+    This is Nuance's PR #2 review, item 1 (62c39c6, 851885a). Since the guard-paths review,
+    `guard.arm` also refuses, in every mode (`test`, `vendor` and `stop` included), a placement it
+    cannot judge, because a stat fails for any reason but a missing name
+    (`root_overlaps_data_home`); a link from a root down to `TMPDIR` (`tmpdir_mismatch`); and a
+    `run/` or realdata lock that is a link (`run_lock_invalid`). The hook also keeps every
+    directory between `TMPDIR` and its root in place (`root_replace_refused`) (57fc0c9, b0d5c0d,
+    8d0955d). These are lab-Claude's fixes and only narrow what is accepted; Astra and Nuance
+    have not reviewed them yet.
   - No Phase 0 command reads a data root. Before Phase 1a the suite owes Nuance's condition 2: it
     refuses a data root that equals, contains or lies inside `suite.noindex`, `lab-state` or
     `logs`, or that lies inside `incoming/`, comparing roots by file identity. Duplicate data
