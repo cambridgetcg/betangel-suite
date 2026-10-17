@@ -3,8 +3,8 @@
 bin/suite test lists the real state root (tmp/ excluded) before and after the run and refuses with
 state_root_changed if anything changed: tests write only under TMPDIR, so a change means a test escaped its
 temporary HOME. An engine Yu starts or stops during an agent's run (serve, open, ssh-session) changes run/ too; its
-lock (run/engine.lock, held while it runs) explains exactly run/, the lock and run/control.sock appearing, and the
-socket vanishing, and nothing else.
+lock (run/engine.lock, held while it runs) explains exactly run/, the lock, run/realdata.lock (which every engine
+takes first, DESIGN.md 6.8) and run/control.sock appearing, and the socket vanishing, and nothing else.
 
 Each case runs an inner `bin/suite test` under a temporary HOME (short_home, with the deps copy) selecting only
 HoldTests below, which holds the inner run open until this test has started or stopped a real synthetic serve child

@@ -22,7 +22,8 @@ What a market holds (times are pt, integer ms; T is the scheduled off, the publi
   true_p ** alpha, alpha < 1); full-depth ladders of near levels plus far offers down to 1.01 and up to 1000 (about
   500-750 book entries at 5 runners and 5,000-5,500 at 44; real: 721-6,166); trades take the best price and move
   ltp, trd and tv (tv is always the sum of trd); spreads tighten and sizes grow towards the off. Every definition
-  carries priceLadderDefinition {"type": "CLASSIC"} (validate's V9 refuses any other ladder type).
+  carries priceLadderDefinition {"type": "CLASSIC"} (validate's V9 refuses any other ladder type), except under
+  no_ladder_definition.
 - trd and tv are on the PRO historical basis, backer's stake x 2 (upstream docs/betfair-facts.md F60), which
   upstream paper (traded_volume_divisor 2) and the engine (engine.TV_DIVISOR) read: a trade that takes s pence
   off atb or atl adds 2 * s to trd at that price and to tv. That atb and atl sizes are backer's stakes is
@@ -49,6 +50,11 @@ Options (Spec.options, a frozenset of strings; anything else is refused):
                   carries a size "Infinity" at 1000 (snapshots in that window are invalid: non_finite_size), until a
                   later message deletes that point and restores the projections;
   no_market_time  the definitions carry no marketTime, suspendTime or openDate;
+  no_ladder_definition
+                  the definitions carry no priceLadderDefinition (Nuance's PR #1 review, item 1(d); DESIGN.md 7.1).
+                  Upstream's book then gives price_ladder_type None, and validate's V9 refuses every click in paper
+                  mode with ladder_not_classic. Nothing else changes: this option is left out of the seed text, so
+                  the market is byte for byte the one the same spec without it gives, less that key;
   month:YYYY-MM   replaces the year and month of Spec.market_time (gate tests).
 
 Market.winner_id, removed_ids and plan are test oracles: an engine must never put them in a frame, and it takes
@@ -74,7 +80,8 @@ EVENT_ID_PREFIX = "99"
 SELECTION_ID_MIN = 90_000_000
 SELECTION_ID_MAX = 99_999_999
 EVENT_TYPE_ID = "7"                     # horse racing
-OPTIONS = frozenset({"suspension", "removal", "nonfinite_sp", "no_market_time"})
+NO_LADDER_DEFINITION = "no_ladder_definition"
+OPTIONS = frozenset({"suspension", "removal", "nonfinite_sp", "no_market_time", NO_LADDER_DEFINITION})
 MONTH_OPTION = "month:"
 MIN_RUNNERS, MAX_RUNNERS = 2, 60
 MIN_PRE_OFF_S, MAX_PRE_OFF_S = 30, 3 * 86_400
@@ -209,6 +216,7 @@ class _Plan:
     clk_base: int
     win_bonus: float
     published: bool        # whether definitions carry marketTime
+    ladder_defined: bool   # whether definitions carry priceLadderDefinition
 
 
 @dataclasses.dataclass(frozen=True)
@@ -248,9 +256,11 @@ def generate(spec):
     """The Market of spec; deterministic for equal specs."""
     if not isinstance(spec, Spec):
         raise TypeError("generate takes a Spec")
+    # no_ladder_definition only drops a key from the definitions, so it is left out of the seed text: the market is
+    # otherwise the same as without it.
     text = "betangel-suite/synthetic/v%d|%d|%d|%d|%d|%s|%s" % (
         GENERATOR_VERSION, spec.seed, spec.runners, spec.pre_off_s, spec.inplay_s, spec.market_time,
-        ",".join(sorted(spec.options)))
+        ",".join(sorted(spec.options - {NO_LADDER_DEFINITION})))
     rng = random.Random(text + "|structure")
     n = spec.runners
     number = spec.seed % 1_000_000
@@ -304,7 +314,7 @@ def generate(spec):
         winner=winner, removed=removed, suspension=suspension, removal=removal, nonfinite=nonfinite,
         sp_window_ms=rng.randint(1800, 7200) * 1000, version_base=rng.randrange(1_000_000_000, 2_000_000_000),
         clk_base=rng.randrange(3_000_000_000, 3_900_000_000), win_bonus=rng.uniform(6.0, 8.0),
-        published="no_market_time" not in spec.options)
+        published="no_market_time" not in spec.options, ladder_defined=NO_LADDER_DEFINITION not in spec.options)
     moment = _EPOCH + datetime.timedelta(milliseconds=off)
     day = moment.day
     suffix = "th" if 10 <= day % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
@@ -913,6 +923,8 @@ class _Simulation:
                    "betDelay": 1 if in_play else 0, "status": status, "priceLadderDefinition": {"type": "CLASSIC"},
                    "runners": runners, "regulators": ["MR_INT"], "venue": m.venue, "countryCode": "GB",
                    "discountAllowed": True, "timezone": "Europe/London"})
+        if not p.ladder_defined:
+            del md["priceLadderDefinition"]     # the only difference no_ladder_definition makes
         if p.published:
             md["openDate"] = m.market_time
         md.update({"version": self.version, "name": m.market_name, "eventName": m.event_name})

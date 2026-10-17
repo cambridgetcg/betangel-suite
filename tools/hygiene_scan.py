@@ -8,7 +8,10 @@ any finding it exits 1 and prints one line per finding:
 "<path withheld>" is literal and the same for every finding: the scanner
 never prints a path or any part of one (no directory, name or suffix), and
 never the text that matched. Line 0 means the finding is about the entry
-itself (its name, type, size or link target), not one of its lines. After
+itself (its name, type, size or link target), not one of its lines. Line
+numbers count "\\n" line ends, as git and sed do; the rules also split a
+line at CR, NEL, LS and the other str.splitlines() boundaries, and ignore
+format characters (Unicode category Cf: a BOM, zero-width spaces). After
 ten lines for one entry and rule, one more line counts the rest:
 
     FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)
@@ -26,6 +29,16 @@ entry's position, counted from 1, in the list the scan worked through:
                    git work tree: every file under the root, sorted)
   PATH ...         the files under the given paths, sorted
 
+The message and history modes name their items in place of "entry <n>":
+
+  --message        "(message)"
+  --push, --range  "(commit <sha> message)", "(tag <sha> message)", and
+                   "(commit <sha> entry <k>)" for the k-th record of
+                   `git diff-tree -r --no-commit-id --raw --no-renames
+                   --root -c <sha>` (deleted paths count, and publish
+                   nothing; for a merge, -c lists only the paths that
+                   differ from every parent)
+
 docs/data-handling.md shows how Yu maps an entry number to its file
 locally.
 
@@ -34,11 +47,18 @@ Run it with the fixed interpreter, standard library only:
     /opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --staged
     /opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py
     /opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py PATH [PATH ...]
+    /opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --range origin/main..HEAD
 
   --staged         scan every entry of the git index (what a commit would hold);
-                   tools/pre-commit runs this
+                   tools/pre-commit and tools/pre-merge-commit run this
   (no PATH)        scan the working tree: tracked plus untracked, not ignored
   PATH ...         scan these files or directories, relative to --root
+  --message FILE   scan a commit message file; tools/commit-msg runs this
+  --push REMOTE    scan what a push to REMOTE publishes, from git's pre-push
+                   lines on stdin: every commit not known to be on REMOTE
+                   (its message, and each path it adds or changes) and each
+                   annotated tag's message; tools/pre-push runs this
+  --range RANGE    the same for the commits `git rev-list RANGE` gives
   --root DIR       repository root (default: the git toplevel of the cwd, else the cwd)
   --list-rules     print the rule codes and exit
 
@@ -53,6 +73,9 @@ exempt from the runner rules.
 Safety. The scanner refuses (exit 2) to run with a root inside betangel-data
 or a *.noindex directory. It never follows a symbolic link, never reads a
 path with a data-root component, and reads working-tree files with O_NOFOLLOW.
+Every git command it runs has replace refs and grafts turned off
+(GIT_NO_REPLACE_OBJECTS=1, GIT_GRAFT_FILE=/dev/null), so it reads the objects
+and parents a commit records and a push sends, never a stand-in.
 Protected names match in any case: data-root components, forbidden
 directories, forbidden file names and suffixes, betangel-research copies,
 and betangel-data in a link target or text are compared with
@@ -67,12 +90,16 @@ reviews the scanner, DESIGN.md 3.9). There is no inline suppression comment.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import os
 import re
 import shutil
 import stat
 import subprocess
 import sys
+import unicodedata
+import zlib
 
 EXIT_CLEAN, EXIT_FINDINGS, EXIT_REFUSED = 0, 1, 2
 
@@ -82,9 +109,9 @@ EXIT_CLEAN, EXIT_FINDINGS, EXIT_REFUSED = 0, 1, 2
 # the limit. DESIGN.md alone may grow to 2 MiB; it is still content-scanned.
 MAX_FILE_BYTES = 512 * 1024
 SIZE_ALLOWLIST = {"docs/DESIGN.md": 2 * 1024 * 1024}
-SNIFF_BYTES = 8192
+SNIFF_BYTES = 8192  # magic bytes are read here, and only this much of an oversize file is read
 MAX_REPORTED_LINES = 10  # per file and rule; the rest are counted
-MAX_TABLE_LINE = 400  # longer lines are never table rows
+MAX_TABLE_LINE = 400  # a table row is matched on its first 400 characters
 
 RULES = {
     "archive_member": "archive or compressed file (.bz2 .tar .gz .zip .xz ..., or by magic bytes)",
@@ -93,7 +120,7 @@ RULES = {
     "data_file": "tabular or serialised data file (.csv .tsv .xlsx .parquet .pkl ...)",
     "key_file": "key, certificate or secrets file (.pem .key .p12 .crt .env .netrc id_*)",
     "image_outside_synthetic": "image or video outside docs/synthetic/",
-    "binary_file": "binary file that is not an allowed media type",
+    "binary_file": "binary file (a NUL anywhere, or not UTF-8) that is not an allowed media type",
     "oversize": "file over 512 KiB (allowlist: SIZE_ALLOWLIST)",
     "forbidden_dir": "path under exports/ run/ screenshots/ private/ ledger/ sessions/ catalogue/ reports/ logs/ tmp/",
     "data_path": "path or symlink into betangel-data, a *.noindex root or a data-root directory",
@@ -104,7 +131,8 @@ RULES = {
     "market_id": "Betfair market-id shape (1.1 or 1.2 then 8-9 digits); reserved 1.999 never matches",
     "event_id": "8-digit event or selection id shape outside the reserved 9xxxxxxx namespace",
     "member_path": "historical-data member path with a non-reserved event id",
-    "runner_table": "three or more rows of a capitalised name (after up to two number cells) and price columns",
+    "runner_table": "three or more rows of a capitalised name (after up to two number cells) and price columns, "
+                    "in any table rendering (|, box drawing, HTML cells, LaTeX &)",
     "runner_record": "runner-name field holding a non-synthetic name",
     "stream_record": "exchange-stream runner change (ladder, traded or ltp values) with a non-reserved runner id",
     "data_path_text": "text naming a member or archive path under betangel-data",
@@ -114,6 +142,10 @@ RULES = {
     "secret_value": "secret-looking value assigned to a key, token, password or session field",
     "known_token": "token with a known provider prefix (GitHub, AWS, Slack, JWT, ...)",
     "bootstrap_code": "suite bootstrap-code URL fragment",
+    "encoded_blob": "base64, hex, \\xNN-escaped, decimal-byte or GIT-binary-patch data that decodes to an "
+                    "archive, a zlib stream, 96+ bytes of binary, or text another rule flags",
+    "filter_attribute": "path git gives a filter driver (clean filter, LFS), or a .gitattributes line "
+                        "that sets one: git stores the filter's output, which the scan never sees",
 }
 
 # Identifier codes that are also checked on the path text itself.
@@ -233,18 +265,37 @@ _SECRET_KEYS = (
     r"(?:api[_-]?key|app[_-]?key|application[_-]?key|x-application|x-authentication"
     r"|authorization|secret|password|passwd|passphrase|token|ssoid|cookie|session[_-]?id"
     r"|private[_-]?key)")
+# Linear time (round-4 recheck). A search tries a match at every place a name could start. A pattern that reads
+# from each of them to the end of a word of [A-Za-z0-9_-] takes time quadratic in the word's length: one
+# snake_case, kebab-case or base64url line of 120 KB took 212 s in _SECRET_LOOSE. So _SECRET_QUOTED,
+# _SECRET_LOOSE's first form and _JWT start only at a word's first character ((?<![A-Za-z0-9_-])), and cross the
+# word at most twice. What follows a name has to follow the whole word, so a match from the word's start finds
+# the value a later start in the word would find.
 _SECRET_QUOTED = re.compile(
-    r"(?i)" + _SECRET_KEYS + r"[A-Za-z0-9_-]*[\"']?\]?\s*[:=]\s*[bru]{0,2}[\"']"
+    r"(?i)(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*?" + _SECRET_KEYS + r")[A-Za-z0-9_-]*+[\"']?\]?\s*[:=]\s*[bru]{0,2}[\"']"
     r"(?:bearer\s+)?([A-Za-z0-9_.~+/-]{16,}=*)[\"']")
 _SECRET_BARE = re.compile(
     r"(?i)(?:^|[\s;])(?:export\s+)?[A-Za-z0-9_]*(?:api_?key|app_?key|secret|password|passwd|token|ssoid)"
     r"\s*=\s*([A-Za-z0-9_.~+/-]{16,}=*)\s*$")
 _SECRET_HEADER = re.compile(r"(?i)\bx-(?:authentication|application)\s*:\s*([A-Za-z0-9_.~+/=-]{12,})")
+# The unquoted forms of YAML files, notes and commit messages (round-4 review): "password: <value>", "api_key: <value>",
+# "session token is <value>", and, for the names that are secrets on their own, a bare space: "ssoid <value>",
+# "app key <value>". _looks_secret still filters every value.
+_SECRET_LOOSE = re.compile(
+    r"(?i)(?:(?<![A-Za-z0-9_-])[A-Za-z0-9_-]*(?:(?:api|app|application)[ _-]?key|secret|password|passwd|passphrase"
+    r"|token|ssoid|session[ _-]?(?:id|token))[\"'`]?(?:\s*[:=]|\s+is)\s*"
+    r"|(?<![A-Za-z0-9])(?:ssoid|session[ _-]?token|(?:api|app|application)[ _-]?key)\s+)"
+    r"[\"'`]?([A-Za-z0-9_.~+/-]{16,}=*)(?=$|[\s\"'`,;)\]}])")
 _KNOWN_TOKEN = re.compile(
     r"\b(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|(?:AKIA|ASIA)[0-9A-Z]{16}"
     r"|xox[abposr]-[A-Za-z0-9-]{10,}|sk-(?:ant-)?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}"
-    r"|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
     r"|[0-9]{8,10}:AA[A-Za-z0-9_-]{33})")
+# A JWT, read from the first "eyJ" in its word that starts a word part (\b): a later one in the same word needs the
+# same "." after the word (round-4 recheck: "eyJ-" repeated was quadratic as a branch of _KNOWN_TOKEN). As its own
+# pattern it also finds a JWT that overlaps another token, which the branch left to that token.
+_JWT = re.compile(
+    r"(?<![A-Za-z0-9_-])(?>[A-Za-z0-9_-]*?\b(?=eyJ))"
+    r"(eyJ[A-Za-z0-9_-]{10,}+\.eyJ[A-Za-z0-9_-]{10,}+\.[A-Za-z0-9_-]{10,})")
 _BOOTSTRAP = re.compile(r"#c=[A-Za-z0-9_-]{16,}")
 _NAME_FIELD_STRICT = re.compile(
     r"[\"'](?:runnerName|runner_name|selectionName|selection_name|horseName|horse_name)[\"']"
@@ -258,10 +309,19 @@ _PRICE = re.compile(r"(?<![0-9.])([0-9]{1,3}\.[0-9]{1,2})(?![0-9.])")
 # Up to two leading cells before the name: a saddle-cloth or row number ("1", "12a", "(3)") followed by a
 # cell separator, a list marker ("1." or "1)") or spaces.
 _LEAD_CELL = r"[\"']?(?:[0-9]{1,3}[A-Za-z]?|\([0-9]{1,2}\))[\"']?(?:\s*[|,;\t]\s*|[.)]\s+|\s+)"
+# Names may hold Latin letters with accents (Latin-1 and Latin Extended-A and B), as runner names do.
+_LATIN = [chr(code) for code in range(0xC0, 0x250)]
+_UPPER = "A-Z" + "".join(c for c in _LATIN if c.isupper())
+_LETTER = "A-Za-z" + "".join(c for c in _LATIN if c.isalpha())
 _ROW = re.compile(
     r"^[\s|>*#(\[{-]*(?:" + _LEAD_CELL + r"){0,2}[\"']?"
-    r"(?P<name>[A-Z][A-Za-z'.-]{1,30}(?: [A-Z(][A-Za-z'.()-]{0,30}){0,4})"
+    r"(?P<name>[%s][%s'.-]{1,30}(?: [%s(][%s'.()-]{0,30}){0,4})" % (_UPPER, _LETTER, _UPPER, _LETTER) +
     r"[\"']?\s*(?:[|,;\t]|:\s|\s{2,}|\s-\s)(?P<rest>.*)$")
+# Other table renderings, turned into "|" cells before a row is matched (round-4 review): box drawing (SQLite's
+# .mode box, DuckDB), a fullwidth bar, LaTeX's &, and HTML cell tags (any other tag is dropped).
+_CELL_BORDERS = str.maketrans(dict.fromkeys("\u2502\u2503\u2551\u2506\u250a\uff5c&", "|"))
+_HTML_CELL = re.compile(r"</?t[dhr]\b[^<>]{0,200}>", re.I)
+_HTML_TAG = re.compile(r"<[^<>]{0,200}>")
 _PRICE_TOKEN = re.compile(r"[0-9]{1,4}(?:\.[0-9]{1,6})?")
 # Exchange-stream runner changes: price/size or traded ladders, or ltp/tv values, next to a runner id that
 # is outside the reserved 9xxxxxxx selection namespace.
@@ -338,9 +398,9 @@ def _line_codes(line: str) -> list:
     if _any_secret(_BEARER, line):
         codes.append("bearer_token")
     if (_any_secret(_SECRET_QUOTED, line) or _any_secret(_SECRET_BARE, line)
-            or _any_secret(_SECRET_HEADER, line)):
+            or _any_secret(_SECRET_HEADER, line) or _any_secret(_SECRET_LOOSE, line)):
         codes.append("secret_value")
-    if any(any(c.isdigit() for c in m.group(1)) for m in _KNOWN_TOKEN.finditer(line)):
+    if any(any(c.isdigit() for c in m.group(1)) for regex in (_KNOWN_TOKEN, _JWT) for m in regex.finditer(line)):
         codes.append("known_token")
     if _BOOTSTRAP.search(line):
         codes.append("bootstrap_code")
@@ -356,15 +416,22 @@ def _line_codes(line: str) -> list:
 
 
 def _table_row_name(line: str):
-    """Return the runner-like name if the line looks like a name-and-prices row."""
-    if len(line) > MAX_TABLE_LINE:
-        return None
-    m = _ROW.match(line)
+    """Return the runner-like name if the line looks like a name-and-prices row.
+
+    Only the first MAX_TABLE_LINE characters after the indent are matched, so a long row (many
+    price columns, or padding) still counts, and the match stays bounded. Box-drawing bars, a
+    fullwidth bar, LaTeX's & and HTML cell tags count as "|". A name in capitals only counts when
+    the row holds nothing else but prices (no other word).
+    """
+    if "<" in line:
+        line = _HTML_TAG.sub("", _HTML_CELL.sub("|", line))
+    m = _ROW.match(line.translate(_CELL_BORDERS).lstrip()[:MAX_TABLE_LINE])
     if not m:
         return None
     name = m.group("name")
-    if name.startswith("Synthetic") or not any(c.islower() for c in name):
+    if name.casefold().startswith("synthetic"):
         return None
+    capitals = not any(c.islower() for c in name)
     prices = words = 0
     for token in _ROW_SPLIT.split(m.group("rest")):
         token = token.strip("£$%x")
@@ -374,31 +441,498 @@ def _table_row_name(line: str):
             prices += 1
         elif any(c.isalpha() for c in token):
             words += 1
-    return name if prices >= 2 and words <= 1 else None
+    return name if prices >= 2 and words <= (0 if capitals else 1) else None
+
+
+def _without_format_chars(line: str) -> str:
+    """Drop Unicode format characters (category Cf): a BOM, zero-width spaces and joiners, soft hyphens."""
+    if line.isascii():
+        return line
+    return "".join(c for c in line if unicodedata.category(c) != "Cf")
+
+
+def _lines(text: str):
+    """Yield (line number, line) with format characters removed, for the line rules.
+
+    Line numbers count "\\n", as git, sed and editors do. A line that holds another line
+    boundary (CR alone, NEL, LS, PS, VT, FF, FS, GS, RS: str.splitlines()) is split there
+    too, and each part keeps the number of its "\\n" line.
+    """
+    for number, line in enumerate(text.split("\n"), 1):
+        if line.endswith("\r"):
+            line = line[:-1]
+        for part in line.splitlines() or [""]:
+            yield number, _without_format_chars(part)
 
 
 def _text_findings(text: str) -> list:
     """Return (line, code) pairs for one decoded text file."""
+    lines = list(_lines(text))
+    found = _plain_findings(lines)
+    found.extend((number, "encoded_blob") for number in _encoded_blob_lines(lines))
+    return found
+
+
+def _plain_findings(lines) -> list:
+    """The line rules and runner_table over (line number, line) pairs."""
     found = []
-    rows = []
-    for number, line in enumerate(text.split("\n"), 1):
-        if line.endswith("\r"):
-            line = line[:-1]
+    rows = []  # (position among the split lines, line number, name)
+    for position, (number, line) in enumerate(lines):
         for code in _line_codes(line):
             found.append((number, code))
         name = _table_row_name(line)
         if name is not None:
-            rows.append((number, name))
+            rows.append((position, number, name))
     i = 0
     while i < len(rows):
         first = rows[i][0]
-        window = [r for r in rows[i:] if r[0] <= first + 7]
-        if len({name for _, name in window}) >= 3:
-            found.append((first, "runner_table"))
-            i += len(window)
+        end = i
+        while end < len(rows) and rows[end][0] <= first + 7:
+            end += 1
+        if len({name for _, _, name in rows[i:end]}) >= 3:
+            found.append((rows[i][1], "runner_table"))
+            i = end
         else:
             i += 1
     return found
+
+# ------------------------------------------------------------ encoded data
+#
+# encoded_blob (Nuance's #2 review, item 5; round-4 review): data hidden in text. A token is one of:
+#   b64  a run of 16+ base64 characters (standard or URL-safe alphabet), with its padding;
+#   hex  8+ hex byte pairs, bare or split by one or two spaces or by colons (`od -An -tx1`), or
+#        right after `\x` (a PostgreSQL bytea literal), or 0x-prefixed and comma-separated, or the
+#        hex columns of an xxd or `hexdump -C` line, or the octal words of an `od` line (its
+#        default output: 16-bit words, little-endian);
+#   esc  a quoted string literal holding at least one \xNN escape;
+#   dec  16+ integers from 0 to 255 split by commas or spaces: a byte list as `list(data)`,
+#        `Array.from(buf)` or `od -An -tu1` print it.
+# A token that ends its line (only a closing quote, bracket, `;`, `+` or `\` after it) runs on
+# into each next line that holds nothing but one token of the same kind: a wrapped dump, or
+# implicit string concatenation. A comma ends a run, except after a 0x or a dec token, so a
+# list of hashes is never joined into one. Lines that start with a comment or list marker
+# (`#`, `//`, `--`, `;`, `>`, `*`, `-`, `%`) are also read a second time without it, so a dump
+# that every line comments out, or a YAML list of its pieces, is joined too (only lines with the
+# same marker join). Separately, each
+# hunk of a GIT binary patch (`git diff --binary`, `git format-patch`: the lines after
+# `literal N` or `delta N`, each a length letter and git's base85) is decoded to its zlib stream.
+# Each run is decoded and flagged, at its first line, when it
+#   - is 24+ bytes that start with an archive or SQLite magic (gzip needs its method byte and
+#     clear reserved flags, not just 1f 8b) or form a whole zlib stream;
+#   - is 96+ bytes holding a NUL or not UTF-8 (binary data: compressed, encrypted or packed);
+#   - is 16+ bytes of text that the line rules or runner_table flag, or that holds such a run
+#     itself (decoded once more: base64 of base64, hex of base64). Bytes that hold a NUL or are
+#     not UTF-8, but are too few for the second test, are read as text with each NUL as a line
+#     end and any other byte that is not UTF-8 replaced, and, if they hold a NUL, again with the
+#     NULs removed, as UTF-16 text needs (the finishing review's recheck: a record of under 96
+#     bytes with one NUL or 0xFF byte got neither test).
+# The last two need a base64 run to mix upper case, lower case and digits, a hex run to hold a
+# letter, and a dec run to be neither sorted nor ASCII with control characters (other than tab,
+# LF and CR), as encoded data is; names, paths, hashes, decimal numbers, price ladders and lists
+# of small counts are not.
+# A hex run whose every line gave one whole token of exactly 40 or 64 digits is a list of commit
+# or file hashes, one per line (bare, quoted or after a marker), so the second test does not apply
+# to it (round-4 recheck: lists of full hashes were binary), and the third reads it as text in
+# the same way however long it is. The first applies where any of its lines starts, not only at
+# its first byte, and also looks for an image or document signature (PNG, JPEG, GIF, WebP, ISO
+# media, TIFF, PDF) (round-4 finishing review: with one real hash line first, as a commit message
+# cites a commit, or with one NUL or 0xFF byte, data passed, and so did images and PDFs; its
+# recheck: UTF-16 text passed, one character a line). In a file or a message the lines of its
+# lists of two or more such lines are counted, each line once, though both readings (with and
+# without line markers) may see it. Past ENCODED_MAX_HASH_LINES, every such list in that file or
+# message is binary data, and so is every such list in a decoded run read as text, whatever the
+# count: a list that holds a NUL or is not UTF-8 is flagged at any length, not only from 96 bytes
+# (the finishing review's recheck: the count was per run, so runs of 64 lines split by a blank
+# line carried any amount; the recheck of that fix: a decoded run kept a count of its own, so
+# base64 runs that each decoded to a list of 64 lines carried any amount, and past the count lists
+# of two to four lines, under 96 bytes, still passed when split by blank lines). So the exemption
+# of lists of hashes carries at most 64 lines, about 2 KiB, in one file or message. A single line
+# is not a list and is not counted: alone it is too short for the second test either way.
+# Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
+# patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
+# characters (groups of 8, or a list whose first piece is that short), and lists split by commas.
+# Not flagged (known gaps): in lists of hashes (up to 64 whole lines of exactly 40 or 64 digits in
+# one file or message, outside a decoded run), binary data with no signature above and no zlib
+# stream at the start of a line (raw deflate, a compressed file without its header, encrypted
+# bytes, or a signature that starts mid-line); and, older than 2ae7640 and with no bound, binary
+# data with no signature in runs of under 96 bytes each, however many: a blank or other line every
+# few lines, a change of marker, or text before or after the token on each line (a numbered list,
+# trailing words), so that no run is long enough for the second test (one hash line alone between
+# blank lines is such a run). Flagged although not data (known false positives, failing closed):
+# lists of md5, sha224, sha384, sha512 or blake2b sums, or of lines that hold two or more hashes
+# split by spaces (`git log --format='%H %P'`), more than 64 lines of lists of hashes in one file
+# or message, and a list of two or more hashes in a decoded run (base64 of a text that lists
+# commits). A word after each hash on its line avoids them.
+
+ENCODED_MIN_MAGIC = 24
+ENCODED_MIN_BINARY = 96
+ENCODED_MIN_TEXT = 16
+ENCODED_MAX_DEPTH = 1   # a decoded run is searched for encoded runs once more, no deeper
+ENCODED_MAX_HASH_LINES = 64  # lines in lists of hashes in a file or message; past it, each of those lists is binary
+
+# The token patterns, by kind: for any token, and for the short last line of a run.
+_B64_TOKEN = {False: re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}"), True: re.compile(r"[A-Za-z0-9+/_-]{2,}={0,2}")}
+_HEX_TOKEN = {short: re.compile(
+    r"(?:(?<=\\x)|(?<![0-9A-Za-z]))(?:0[xX][0-9a-fA-F]{2}(?:[ \t]*,[ \t]*0[xX][0-9a-fA-F]{2}){%s}"
+    r"|[0-9a-fA-F]{2}(?:(?: {1,2}|:)?[0-9a-fA-F]{2}){%s})(?![0-9A-Za-z])" % (count, count))
+    for short, count in ((False, "7,"), (True, "0,"))}
+_HEX_DUMP = {short: re.compile(
+    r"\s*[0-9a-fA-F]{6,10}:?\s+(?P<hex>[0-9a-fA-F]{2}(?: {0,2}[0-9a-fA-F]{2}){%s})(?:\s{2,}.*)?\s*" % count)
+    for short, count in ((False, "3,"), (True, "0,"))}
+_OCT_DUMP = {short: re.compile(r"\s*[0-7]{7,}(?P<oct>(?:[ \t]+[01][0-7]{5}){%s})\s*" % count)   # 16-bit words
+             for short, count in ((False, "4,"), (True, "1,"))}
+_DEC_BYTE = r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
+_DEC_TOKEN = {short: re.compile(
+    r"(?<![0-9A-Za-z_.-])%s(?:(?:[ \t]*,[ \t]*|[ \t]+)%s){%s}(?![0-9A-Za-z_.])" % (_DEC_BYTE, _DEC_BYTE, count))
+    for short, count in ((False, "15,"), (True, "0,"))}
+_DEC_NUMBER = re.compile(r"[0-9]+")
+_HEX_DROP = re.compile(r"0[xX]|[^0-9a-fA-F]")
+# A string literal, by its quote: the quote, then characters other than it and "\", or a "\" and any one character,
+# then the quote again. Read only through _esc_literals.
+_ESC_LITERAL = {"'": re.compile(r"'(?:[^'\\]|\\.)*+'", re.S), '"': re.compile(r"\"(?:[^\"\\]|\\.)*+\"", re.S)}
+_QUOTE = re.compile(r"['\"]")
+_HAS_XNN = re.compile(r"\\x[0-9a-fA-F]{2}")
+_ESC = re.compile(r"\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|.)", re.S)
+_ESC_SIMPLE = {"n": 10, "r": 13, "t": 9, "a": 7, "b": 8, "f": 12, "v": 11, "\\": 92, "'": 39, '"': 34}
+_PURE_BEFORE = {"b64": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
+                "hex": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
+                "esc": re.compile(r"\s*(?:\+\s*)?[bBrRuU]{0,2}"),
+                "dec": re.compile(r"\s*(?:[\[({]\s*)?")}
+# What may follow a token that ends its line. Possessive (*+, ?+): with backtracking, "\s*...\s*" took time
+# quadratic, and with a comma between, cubic, in the whitespace after a token (round-4 recheck). No two neighbouring
+# parts share a character, so they match the same text.
+_ENDS_LINE = re.compile(r"[\"'`]?+\s*+[)\]\\;+]*+\s*+")
+_ENDS_LINE_0X = re.compile(r"\s*+,?+\s*+[)\]\\;+]*+\s*+")
+_ENDS_LINE_ESC = re.compile(r"\s*+[)\]\\;+]*+\s*+")
+_ENDS_LINE_DEC = re.compile(r"\s*+,?+\s*+[)\]};]*+\s*+")
+_URLSAFE = str.maketrans("-_", "+/")
+# A comment or list marker that starts a line: such lines are read a second time without it.
+_LINE_PREFIX = re.compile(r"[ \t]*(?:#+|//+|--|;+|>+|\*+|-|%+)[ \t]?")
+# GIT binary patch: a hunk header, then lines of a length letter and base85 in groups of five.
+_GIT_BINARY_HEAD = re.compile(r"(?:literal|delta) [0-9]+")
+_GIT_BINARY_LINE = re.compile(r"[A-Za-z](?:[0-9A-Za-z!#$%&()*+;<=>?@^_`{|}~-]{5})+")
+
+
+def _unescape(body: str) -> bytes:
+    """The bytes a string literal's body stands for: \\xNN, octal and one-letter escapes."""
+    out = bytearray()
+    pos = 0
+    for m in _ESC.finditer(body):
+        out += body[pos:m.start()].encode("utf-8")
+        esc = m.group(1)
+        if esc[0] == "x":
+            out.append(int(esc[1:], 16))
+        elif esc[0] in "01234567":
+            out.append(int(esc, 8) & 0xFF)
+        elif esc in _ESC_SIMPLE:
+            out.append(_ESC_SIMPLE[esc])
+        else:
+            out += ("\\" + esc).encode("utf-8")
+        pos = m.end()
+    out += body[pos:].encode("utf-8")
+    return bytes(out)
+
+
+def _esc_literals(line: str) -> list:
+    """The string literals on one line, left to right, as a search for either kind of literal finds them, in time
+    linear in the line's length.
+
+    A literal that does not close has read every later quote of its kind as the second half of an escape ("\\'"),
+    and a literal started at any of them reads on, in step, to the same end of the line without closing either. So
+    after its first failure a kind of quote is not tried again. Retrying every start took time quadratic in the
+    line's length: a line holding "\\x" and an unclosed literal of 512 KB of escaped quotes took 16 minutes to scan
+    (round-4 finishing review).
+    """
+    found = []
+    dead = set()
+    pos = 0
+    while True:
+        quote = _QUOTE.search(line, pos)
+        if quote is None:
+            return found
+        kind = quote.group()
+        m = None if kind in dead else _ESC_LITERAL[kind].match(line, quote.start())
+        if m is None:
+            dead.add(kind)
+            pos = quote.end()
+        else:
+            found.append(m)
+            pos = m.end()
+
+
+def _segments(kind: str, line: str, short: bool = False) -> list:
+    """[(start, end, payload, ends_line, pure, digest)] for one kind of token on one line.
+
+    payload is the token text (b64), its hex digits (hex) or the bytes it stands for (esc, dec).
+    digest: the token is one whole run of exactly 40 or 64 hex digits, the shape of a commit or file hash.
+    short: also tokens below the minimum length (the last line of a wrapped dump).
+    """
+    if kind == "hex":
+        dump = _OCT_DUMP[short].fullmatch(line)
+        if dump:  # od: an octal offset, then 16-bit words in octal, low byte first (before xxd: its digits are hex too)
+            words = [int(word, 8) for word in dump.group("oct").split()]
+            return [(dump.start("oct"), dump.end("oct"), "".join(f"{w & 0xFF:02x}{w >> 8:02x}" for w in words),
+                     True, True, False)]
+        dump = _HEX_DUMP[short].fullmatch(line)
+        if dump:  # xxd or hexdump -C: the offset and the character column are not data
+            return [(dump.start("hex"), dump.end("hex"), _HEX_DROP.sub("", dump.group("hex")), True, True, False)]
+        matches = list(_HEX_TOKEN[short].finditer(line))
+    elif kind == "b64":
+        matches = list(_B64_TOKEN[short].finditer(line))
+    elif kind == "dec":
+        matches = list(_DEC_TOKEN[short].finditer(line))
+    else:
+        if "\\x" not in line:
+            return []
+        matches = [m for m in _esc_literals(line) if _HAS_XNN.search(m.group())]
+    segments = []
+    for m in matches:
+        token = m.group()
+        digest = False
+        if kind == "hex":
+            payload = _HEX_DROP.sub("", token)
+            digest = len(token) in (40, 64) and len(payload) == len(token)
+            ends = (_ENDS_LINE_0X if token[:2] in ("0x", "0X") else _ENDS_LINE).fullmatch(line, m.end())
+        elif kind == "dec":
+            payload = bytes(int(number) for number in _DEC_NUMBER.findall(token))
+            ends = _ENDS_LINE_DEC.fullmatch(line, m.end())
+        else:
+            payload = token if kind == "b64" else _unescape(token[1:-1])
+            ends = (_ENDS_LINE if kind == "b64" else _ENDS_LINE_ESC).fullmatch(line, m.end())
+        pure = bool(ends) and len(matches) == 1 and bool(_PURE_BEFORE[kind].fullmatch(line, 0, m.start()))
+        segments.append((m.start(), m.end(), payload, bool(ends), pure, digest))
+    return segments
+
+
+def _runs(kind: str, lines) -> list:
+    """[(first line number, [payload, ...], digests, position)]: the tokens of one kind, joined across lines as above.
+
+    digests: every line of the run gave one whole 40- or 64-digit hex token (a list of hashes, one per line).
+    position: the index in lines of the run's first line; each next payload comes from the next line.
+    """
+    runs = []
+    current = None
+    for position, (number, line) in enumerate(lines):
+        segments = _segments(kind, line)
+        if current is not None:
+            if len(segments) == 1 and segments[0][4]:
+                current[1].append(segments[0][2])
+                current[2].append(segments[0][5])
+                continue
+            if not segments:
+                tail = _segments(kind, line, short=True)
+                if len(tail) == 1 and tail[0][4]:  # a short last line ends the run
+                    current[1].append(tail[0][2])
+                    current[2].append(tail[0][5])
+            runs.append(current)
+            current = None
+        for segment in segments[:-1]:
+            runs.append((number, [segment[2]], [segment[5]], position))
+        if segments:
+            last = segments[-1]
+            if last[3]:
+                current = (number, [last[2]], [last[5]], position)
+            else:
+                runs.append((number, [last[2]], [last[5]], position))
+    if current is not None:
+        runs.append(current)
+    return [(number, payloads, all(digests), position) for number, payloads, digests, position in runs]
+
+
+def _decode_run(kind: str, payloads: list):
+    """(bytes, mixed) for one run, or (None, False) if it does not decode. mixed: it looks like encoded data."""
+    if kind == "esc":
+        return b"".join(payloads), True
+    if kind == "dec":
+        blob = b"".join(payloads)
+        # Not data: ASCII with control characters other than tab, LF and CR (small numbers or counts), or a sorted
+        # list (a price ladder such as ui/ticks.json, a range of ids). Compressed or encoded bytes are neither.
+        control = max(blob) < 0x80 and any(b < 0x20 and b not in (9, 10, 13) for b in blob)
+        ordered = list(blob) in (sorted(blob), sorted(blob, reverse=True))
+        return blob, not (control or ordered)
+    text = "".join(payloads)
+    if kind == "hex":
+        mixed = any(c in "abcdefABCDEF" for c in text)
+        return bytes.fromhex(text[: len(text) // 2 * 2]), mixed
+    mixed = (any(c.isupper() for c in text) and any(c.islower() for c in text)
+             and any(c.isdigit() for c in text))
+    bare = text.replace("=", "").translate(_URLSAFE)
+    if len(bare) % 4 == 1:
+        bare = bare[:-1]
+    try:
+        return binascii.a2b_base64((bare + "=" * (-len(bare) % 4)).encode("ascii")), mixed
+    except (binascii.Error, ValueError):
+        return None, False
+
+
+# Images and documents (a screenshot, a PDF report): binary data with no archive magic. Only a list of hashes, which is
+# never binary data, is tested for them; anywhere else they are binary data already, and a small icon is not flagged.
+_MEDIA_MAGIC = re.compile(rb"\x89PNG\r\n\x1a\n|\xff\xd8\xff|GIF8[79]a|RIFF....WEBP|....ftyp|II\*\x00|MM\x00\*|%PDF-",
+                          re.S)
+
+
+def _blob_magic(blob: bytes, media: bool = False) -> bool:
+    if blob[:2] == b"\x1f\x8b":  # gzip: also the deflate method byte and clear reserved flags
+        return blob[2] == 8 and blob[3] & 0xE0 == 0
+    return _magic_code(blob[:SNIFF_BYTES]) is not None or (media and _MEDIA_MAGIC.match(blob) is not None)
+
+
+def _zlib_stream(blob: bytes) -> bool:
+    """True for a whole zlib stream (header, deflate data, Adler-32), or one that inflates past 1 MiB."""
+    if blob[0] & 0x0F != 8 or blob[0] >> 4 > 7 or blob[1] & 0x20 or (blob[0] << 8 | blob[1]) % 31:
+        return False
+    inflater = zlib.decompressobj()
+    try:
+        inflater.decompress(blob, 1 << 20)
+    except zlib.error:
+        return False
+    return inflater.eof or bool(inflater.unconsumed_tail)
+
+
+def _is_utf8(blob: bytes) -> bool:
+    try:
+        blob.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _git_binary_hunks(lines) -> list:
+    """[(line number of its header, zlib stream)] for each hunk of a GIT binary patch.
+
+    After a "literal N" or "delta N" line, each line is a length letter ('A'-'Z' for 1-26 bytes, 'a'-'z' for 27-52)
+    and that many bytes in git's base85, in groups of five characters; the hunk ends at the first other line.
+    """
+    hunks = []
+    current = None
+    for number, line in lines:
+        if current is not None:
+            if _GIT_BINARY_LINE.fullmatch(line):
+                size = ord(line[0]) - (ord("A") - 1 if line[0] <= "Z" else ord("a") - 27)
+                try:
+                    chunk = base64.b85decode(line[1:])
+                except ValueError:
+                    chunk = b""
+                if len(chunk) == -(-size // 4) * 4:
+                    current[1].append(chunk[:size])
+                    continue
+            hunks.append(current)
+            current = None
+        if _GIT_BINARY_HEAD.fullmatch(line):
+            current = (number, [])
+    if current is not None:
+        hunks.append(current)
+    return [(number, b"".join(chunks)) for number, chunks in hunks if chunks]
+
+
+def _without_prefixes(lines):
+    """(view, origin): the lines that start with a comment or list marker, with it removed, and for each line of
+    the view the index in lines of the line it comes from; or None when no line has one.
+
+    Only lines with the same marker (the same text, indent included) join: every other line, and a change of
+    marker, is an empty line here, which ends a run. So a list of names under "- " and one under "# " never join.
+    """
+    out = []
+    origin = []
+    previous = None
+    for position, (number, line) in enumerate(lines):
+        m = _LINE_PREFIX.match(line)
+        if not (m and line[m.end():].strip()):
+            out.append((number, ""))
+            origin.append(position)
+            previous = None
+            continue
+        if previous is not None and m.group() != previous:
+            out.append((number, ""))
+            origin.append(position)
+        out.append((number, line[m.end():]))
+        origin.append(position)
+        previous = m.group()
+    return (out, origin) if any(line for _number, line in out) else None
+
+
+def _hash_list_starts(payloads: list) -> list:
+    """For a list of hashes, one per line: the offset in its decoded bytes where each line's bytes start."""
+    starts = [0]
+    for payload in payloads[:-1]:
+        starts.append(starts[-1] + len(payload) // 2)
+    return starts
+
+
+def _signature_at(blob: bytes, starts, media: bool) -> bool:
+    """Whether a magic, a zlib stream or (with media) an image or document signature starts at any of starts."""
+    view = memoryview(blob)
+    return any(len(blob) - start >= ENCODED_MIN_MAGIC and (_blob_magic(blob[start:start + SNIFF_BYTES], media)
+                                                           or _zlib_stream(view[start:]))
+               for start in starts)
+
+
+def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
+    """Whether one decoded run is flagged (the three tests above).
+
+    starts: for a list of hashes (a hex run whose every line is one whole 40- or 64-digit token, in a file or message
+    whose lists hold at most ENCODED_MAX_HASH_LINES lines in all, not in a decoded run), or for one such line alone,
+    where each line's bytes start. Such a run is never binary data, so a magic, an image or document signature, or a
+    zlib stream counts at the start of any of its lines, and its text is read with NULs as line ends and other bytes
+    that are not UTF-8 replaced, and again with the NULs removed (UTF-16 text). Any other run too short to count as
+    binary data is read as text in the same way.
+    """
+    if _signature_at(blob, starts or (0,), media=starts is not None):
+        return True
+    if not mixed or len(blob) < ENCODED_MIN_TEXT:
+        return False
+    if b"\0" in blob or not _is_utf8(blob):
+        if starts is None and len(blob) >= ENCODED_MIN_BINARY:
+            return True
+        texts = [blob.replace(b"\0", b"\n").decode("utf-8", "replace")]
+        if b"\0" in blob:  # UTF-16 text: the other byte of each ASCII character is a NUL
+            texts.append(blob.replace(b"\0", b"").decode("utf-8", "replace"))
+    else:
+        texts = [blob.decode("utf-8")]
+    for text in texts:
+        lines = list(_lines(text))
+        if _plain_findings(lines) or (depth < ENCODED_MAX_DEPTH and _encoded_blob_lines(lines, depth + 1)):
+            return True
+    return False
+
+
+def _encoded_blob_lines(lines, depth: int = 0) -> list:
+    """The first line number of every encoded run that decodes to something flagged.
+
+    Lists of hashes of two or more lines are tested last, once the lines of all of them are counted. At depth 0 (a
+    file or a message) they are exempt from the binary test while they hold at most ENCODED_MAX_HASH_LINES lines in
+    all; in a decoded run (depth 1) they never are.
+    """
+    views = [(lines, range(len(lines)))]
+    stripped = _without_prefixes(lines)
+    if stripped is not None:
+        views.append(stripped)
+    flagged = set()
+    lists = []  # (first line number, bytes, mixed, payloads) of each list of hashes of two or more lines
+    listed = set()  # the lines of those lists, by index in lines, so a line that both views read counts once
+    for view, origin in views:
+        for kind in ("b64", "hex", "esc", "dec"):
+            for number, payloads, digests, position in _runs(kind, view):
+                blob, mixed = _decode_run(kind, payloads)
+                if blob is None:
+                    continue
+                if digests and len(payloads) > 1:
+                    listed.update(origin[position:position + len(payloads)])
+                    lists.append((number, blob, mixed, payloads))
+                elif _blob_flagged(blob, mixed, depth, _hash_list_starts(payloads) if digests else None):
+                    flagged.add(number)
+        flagged.update(number for number, blob in _git_binary_hunks(view) if _blob_flagged(blob, True, depth))
+    # A list in a decoded run read as text is never exempt: its lines would count in a total of their own, apart
+    # from the file's or message's. Past the count, and in a decoded run, a list that holds a NUL or is not UTF-8 is
+    # binary data at any length: runs of two to four lines, split by blank lines, are each under ENCODED_MIN_BINARY.
+    # Either way a signature still counts at the start of any of its lines, an image or document one included: a list
+    # that is valid UTF-8 with no NUL, such as an ASCII PDF after one lead line, is otherwise read only as text.
+    binary = depth > 0 or len(listed) > ENCODED_MAX_HASH_LINES
+    flagged.update(number for number, blob, mixed, payloads in lists
+                   if (binary and (_signature_at(blob, _hash_list_starts(payloads), media=True)
+                                   or mixed and (b"\0" in blob or not _is_utf8(blob))))
+                   or _blob_flagged(blob, mixed, depth, None if binary else _hash_list_starts(payloads)))
+    return sorted(flagged)
 
 # ------------------------------------------------------------- scan an entry
 
@@ -418,18 +952,38 @@ def _symlink_codes(target: str) -> list:
     return codes
 
 
+# A .gitattributes line that gives a pattern (or an [attr] macro) a filter driver. "-filter" and
+# "!filter" unset it and carry no "=".
+_SETS_FILTER = re.compile(r"(?:^|\s)filter=\S")
+
+
 def _content_codes(rel: str, data: bytes, oversize: bool) -> list:
+    """Findings for one entry's bytes: all of it, or the first SNIFF_BYTES of an oversize one.
+
+    Binary means a NUL anywhere in what was read, or bytes that are not strict UTF-8, so data
+    after 8 KiB of text, a NUL-free zlib stream and text in another encoding (cp500, UTF-16)
+    all count. Only text that decodes as UTF-8 reaches the text rules.
+    """
     found = []
     magic = _magic_code(data[:SNIFF_BYTES])
     if magic:
         found.append((0, magic))
-    if b"\0" in data[:SNIFF_BYTES]:
+    if b"\0" in data:
         if not _binary_allowed(rel):
             found.append((0, "binary_file"))
         return found
     if magic or oversize:
         return found
-    found.extend(_text_findings(data.decode("utf-8", "replace")))
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        if not _binary_allowed(rel):
+            found.append((0, "binary_file"))
+        return found
+    found.extend(_text_findings(text))
+    if rel.rsplit("/", 1)[-1].casefold() == ".gitattributes":
+        found.extend((number, "filter_attribute") for number, line in _lines(text)
+                     if not line.lstrip().startswith("#") and _SETS_FILTER.search(line))
     return found
 
 
@@ -444,12 +998,21 @@ def _size_limit(rel: str) -> int:
 # ------------------------------------------------------------------- git I/O
 
 GIT = shutil.which("git") or "/usr/bin/git"
+# A replace ref (`git replace`, refs/replace/*) or a graft (.git/info/grafts, or GIT_GRAFT_FILE) makes git show one
+# object, or one list of parents, in another's place. A commit still records the original blob and a push sends the
+# original objects, so a scan that followed them would pass a dirty blob or commit it never saw (round-4 review).
+# Every git child below gets this process's environment (the hook's, with GIT_DIR or GIT_INDEX_FILE) plus these.
+_NO_STAND_INS = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
+
+
+def _git_env() -> dict:
+    return {**os.environ, **_NO_STAND_INS}
 
 
 def _git(root: str, *args: str) -> bytes:
     proc = subprocess.run(
         [GIT, "-C", root, "-c", "core.quotepath=off", *args],
-        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        stdin=subprocess.DEVNULL, capture_output=True, check=False, env=_git_env())
     if proc.returncode != 0:
         raise Refusal("git_failed")
     return proc.stdout
@@ -458,8 +1021,40 @@ def _git(root: str, *args: str) -> bytes:
 def _is_git_worktree(root: str) -> bool:
     proc = subprocess.run(
         [GIT, "-C", root, "rev-parse", "--is-inside-work-tree"],
-        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        stdin=subprocess.DEVNULL, capture_output=True, check=False, env=_git_env())
     return proc.returncode == 0 and proc.stdout.strip() == b"true"
+
+
+def _filtered(rels) -> set:
+    """The paths of rels that git gives a filter driver (a clean filter, or LFS).
+
+    git stores what the clean filter makes of a file, and the scan sees only that, so a filter
+    could hide anything; each such path is a filter_attribute finding. The attribute is read
+    twice: as `git add` reads it (each worktree .gitattributes, or the index's copy where the
+    worktree has none, $GIT_DIR/info/attributes and core.attributesFile), and with --cached
+    (the index's copies only, which the commit records even when the worktree's differ).
+    Configured drivers (filter.<name>.clean, a global filter.lfs) are not read: they act only
+    through an attribute.
+    Paths with a data-root component are left out, so git reads no .gitattributes along them.
+    """
+    names = [rel for rel in rels if not _has_data_component(rel)]
+    if not names:
+        return set()
+    stdin = b"".join(rel.encode("utf-8", "surrogateescape") + b"\0" for rel in names)
+    flagged = set()
+    for cached in ((), ("--cached",)):
+        proc = subprocess.run(
+            [GIT, "-C", ROOT, "check-attr", *cached, "-z", "--stdin", "filter"],
+            input=stdin, capture_output=True, check=False, env=_git_env())
+        if proc.returncode != 0:
+            raise Refusal("git_check_attr")
+        fields = proc.stdout.split(b"\0")  # path, attribute, value; one record per path, in order
+        if len(fields) != 3 * len(names) + 1 or fields[-1]:
+            raise Refusal("git_check_attr")
+        for index, rel in enumerate(names):
+            if fields[3 * index + 2] not in (b"unspecified", b"unset"):
+                flagged.add(rel)
+    return flagged
 
 
 def _read_exact(stream, n: int) -> bytes:
@@ -473,8 +1068,64 @@ def _read_exact(stream, n: int) -> bytes:
     return b"".join(chunks)
 
 
+class _Objects:
+    """One `git cat-file --batch` for a whole scan: objects are read from git, never from disk."""
+
+    def __init__(self):
+        self.proc = None
+
+    def read(self, sha: bytes, limit: int, sniff: int):
+        """(type, size, data): all of an object up to limit bytes, else its first sniff bytes."""
+        if self.proc is None:
+            self.proc = subprocess.Popen(
+                [GIT, "-C", ROOT, "cat-file", "--batch"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=_git_env())
+        self.proc.stdin.write(sha + b"\n")
+        self.proc.stdin.flush()
+        header = self.proc.stdout.readline().split()
+        if len(header) != 3:
+            raise Refusal("git_object")
+        size = int(header[2])
+        keep = size if size <= limit else min(size, sniff)
+        data = _read_exact(self.proc.stdout, keep)
+        rest = size - keep
+        while rest > 0:
+            rest -= len(_read_exact(self.proc.stdout, min(rest, 1 << 16)))
+        self.proc.stdout.read(1)
+        return header[1], size, data
+
+    def close(self):
+        if self.proc is not None:
+            self.proc.stdin.close()
+            self.proc.stdout.close()
+            self.proc.wait()
+
+
+def _object_entry(objects: _Objects, rel: str, mode: bytes, sha: bytes, filtered=frozenset()) -> list:
+    """Findings for one tree or index entry (path, mode, object), reading its blob from git."""
+    found = [(0, c) for c in _path_codes(rel)] + _rel_id_codes(rel)
+    if rel in filtered:
+        found.append((0, "filter_attribute"))
+    if mode == b"160000":
+        found.append((0, "submodule"))
+        return found
+    limit = _size_limit(rel)
+    kind, size, data = objects.read(sha, limit, SNIFF_BYTES)
+    if kind != b"blob":
+        raise Refusal("git_object")
+    codes = {c for _, c in found}
+    if mode == b"120000":
+        found.extend((0, c) for c in _symlink_codes(data.decode("utf-8", "replace")))
+    elif "data_path" not in codes:
+        oversize = size > limit
+        if oversize:
+            found.append((0, "oversize"))
+        found.extend(_content_codes(rel, data, oversize))
+    return found
+
+
 def _staged_entries():
-    """Yield (rel, findings) for every index entry, reading blobs from git."""
+    """Yield (rel, findings, where) for every index entry, reading blobs from git."""
     raw = _git(ROOT, "ls-files", "-s", "-z")
     records = []
     for rec in raw.split(b"\0"):
@@ -485,46 +1136,157 @@ def _staged_entries():
         if len(fields) != 3:
             raise Refusal("git_index_format")
         records.append((fields[0], fields[1], path.decode("utf-8", "surrogateescape")))
-    blobs = [r for r in records if r[0] != b"160000"]
-    proc = None
-    if blobs:
-        proc = subprocess.Popen(
-            [GIT, "-C", ROOT, "cat-file", "--batch"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    filtered = _filtered(sorted({rel for _mode, _sha, rel in records}))
+    objects = _Objects()
     try:
-        for mode, sha, rel in records:
-            found = [(0, c) for c in _path_codes(rel)] + _rel_id_codes(rel)
-            if mode == b"160000":
-                found.append((0, "submodule"))
-                yield rel, found
-                continue
-            proc.stdin.write(sha + b"\n")
-            proc.stdin.flush()
-            header = proc.stdout.readline().split()
-            if len(header) != 3 or header[1] != b"blob":
-                raise Refusal("git_object")
-            size = int(header[2])
-            limit = _size_limit(rel)
-            keep = size if size <= limit else min(size, SNIFF_BYTES)
-            data = _read_exact(proc.stdout, keep)
-            rest = size - keep
-            while rest > 0:
-                rest -= len(_read_exact(proc.stdout, min(rest, 1 << 16)))
-            proc.stdout.read(1)
-            codes = {c for _, c in found}
-            if mode == b"120000":
-                found.extend((0, c) for c in _symlink_codes(data.decode("utf-8", "replace")))
-            elif "data_path" not in codes:
-                oversize = size > limit
-                if oversize:
-                    found.append((0, "oversize"))
-                found.extend(_content_codes(rel, data, oversize))
-            yield rel, found
+        for index, (mode, sha, rel) in enumerate(records, 1):
+            yield rel, _object_entry(objects, rel, mode, sha, filtered), f"entry {index}"
     finally:
-        if proc is not None:
-            proc.stdin.close()
-            proc.stdout.close()
-            proc.wait()
+        objects.close()
+
+# --------------------------------------------------------- messages, history
+#
+# Nuance's #2 review, item 20: commit messages, and the history a push publishes, were never
+# scanned; a file that one commit adds and a later one deletes passed every tree scan.
+
+_OBJECT_ID = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
+MAX_OBJECT_BYTES = 2 * MAX_FILE_BYTES  # a commit or tag object read whole: headers and message
+# git's pre-push lines, about 8,900 ref updates. More is refused (push_input), never cut short: a cut at a line end
+# would drop every later ref, and the push would publish commits no scan saw (round-4 review).
+MAX_PUSH_INPUT = 1 << 20
+
+
+def _message_findings(message: bytes) -> list:
+    """A commit or tag message gets the content rules of a file: binary, oversize and text."""
+    oversize = len(message) > MAX_FILE_BYTES
+    found = [(0, "oversize")] if oversize else []
+    return found + _content_codes("", message[:SNIFF_BYTES] if oversize else message, oversize)
+
+
+def _message_of(data: bytes) -> bytes:
+    """The message of a raw commit or tag object: everything after the first blank line."""
+    _headers, blank, message = data.partition(b"\n\n")
+    return message if blank else b""
+
+
+def _read_message_file(path: str) -> bytes:
+    """The message file git hands commit-msg, read with no link followed and never blocking."""
+    _check_lexical(os.path.abspath(path))
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        raise Refusal("message_unreadable") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Refusal("message_not_regular")
+        chunks, left = [], MAX_FILE_BYTES + 1
+        while left > 0:
+            chunk = os.read(fd, min(left, 1 << 16))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _is_commit(sha: str) -> bool:
+    proc = subprocess.run(
+        [GIT, "-C", ROOT, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{sha}^{{commit}}"],
+        stdin=subprocess.DEVNULL, capture_output=True, check=False, env=_git_env())
+    return proc.returncode == 0
+
+
+def _push_targets(remote: str, lines: bytes):
+    """(rev-list arguments, tag objects) for what a push publishes, from git's pre-push lines.
+
+    Each line is "<local ref> <local object> <remote ref> <remote object>". A deletion (local
+    object all zeros) publishes nothing. The commits published are those reachable from the
+    local objects but from neither the remote's old objects (when this clone has them) nor any
+    of this clone's tracking refs for the remote (refs/remotes/<remote>/*): what the remote is
+    known to hold already is not scanned again. A remote given as a URL has no tracking refs,
+    so everything not reachable from the old objects is scanned.
+    """
+    tips, known = [], []
+    for line in lines.splitlines():
+        fields = line.split(b" ")
+        if len(fields) != 4 or not (_OBJECT_ID.fullmatch(fields[1]) and _OBJECT_ID.fullmatch(fields[3])):
+            raise Refusal("push_input")
+        local, old = fields[1].decode(), fields[3].decode()
+        if local.strip("0"):
+            tips.append(local)
+        if old.strip("0") and _is_commit(old):
+            known.append(old)
+    if not tips:
+        return None, []
+    return [*tips, "--not", *known, f"--remotes={remote}"], tips
+
+
+def _peel_tags(objects: _Objects, tips) -> list:
+    """The annotated tag objects among tips (and the tags they point at), each read once."""
+    tags, seen = [], set()
+    for sha in tips:
+        while sha not in seen:
+            seen.add(sha)
+            kind, _size, data = objects.read(sha.encode(), MAX_OBJECT_BYTES, MAX_OBJECT_BYTES)
+            if kind != b"tag":
+                if kind != b"commit":
+                    raise Refusal("push_object_not_commit")
+                break
+            tags.append((sha, data))
+            target = data.split(b"\n", 1)[0].split(b" ")
+            if len(target) != 2 or target[0] != b"object" or not _OBJECT_ID.fullmatch(target[1]):
+                raise Refusal("git_object")
+            sha = target[1].decode()
+    return tags
+
+
+def _diff_records(raw: bytes):
+    """(mode, object, path) of each record of `git diff-tree -r -z --raw -c`: the result side.
+
+    A record is ":<modes> <objects> <status>" (one colon per parent) then the path. Deleted
+    paths have mode 000000.
+    """
+    fields = raw.split(b"\0")
+    if fields[-1]:
+        raise Refusal("git_diff_format")
+    for meta, path in zip(fields[0:-1:2], fields[1:-1:2]):
+        parents = len(meta) - len(meta.lstrip(b":"))
+        parts = meta[parents:].split(b" ")
+        if parents < 1 or len(parts) != 2 * parents + 3:
+            raise Refusal("git_diff_format")
+        yield parts[parents], parts[2 * parents + 1], path.decode("utf-8", "surrogateescape")
+
+
+def _history_entries(revisions, tips=()):
+    """Yield (rel, findings, where) for every commit rev-list gives for revisions, oldest first.
+
+    Each commit's message is one item, then each path it adds or changes, numbered as
+    `git diff-tree -r --no-commit-id --raw --no-renames --root -c <commit>` lists them (deleted
+    paths count but publish nothing). For a merge, -c lists only paths that differ from every
+    parent: whatever came from a parent was scanned in that parent's commit, or is on the remote
+    already. Annotated tags among the pushed objects come first, as their messages.
+    """
+    objects = _Objects()
+    try:
+        for sha, data in _peel_tags(objects, tips):
+            yield "", _message_findings(_message_of(data)), f"tag {sha} message"
+        if revisions is None:
+            return
+        commits = _git(ROOT, "rev-list", "--reverse", "--topo-order", *revisions).decode().split()
+        for sha in commits:
+            kind, _size, data = objects.read(sha.encode(), MAX_OBJECT_BYTES, MAX_OBJECT_BYTES)
+            if kind != b"commit":
+                raise Refusal("git_object")
+            yield "", _message_findings(_message_of(data)), f"commit {sha} message"
+            raw = _git(ROOT, "diff-tree", "-r", "-z", "--no-commit-id", "--raw", "--no-renames", "--root", "-c", sha)
+            for index, (mode, blob, rel) in enumerate(_diff_records(raw), 1):
+                if mode != b"000000":
+                    yield rel, _object_entry(objects, rel, mode, blob), f"commit {sha} entry {index}"
+    finally:
+        objects.close()
 
 # ------------------------------------------------------------- tree I/O
 
@@ -592,6 +1354,13 @@ def _tree_entry(rel: str):
             found.append((0, "special_file"))
             return rel, found
         found.extend(_content_codes(rel, data, oversize))
+    return rel, found
+
+
+def _with_filter(entry, filtered: set):
+    rel, found = entry
+    if found is not None and rel in filtered:
+        found.append((0, "filter_attribute"))
     return rel, found
 
 
@@ -684,20 +1453,22 @@ def _default_root() -> str:
     _check_lexical(os.getcwd())
     proc = subprocess.run(
         [GIT, "rev-parse", "--show-toplevel"],
-        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        stdin=subprocess.DEVNULL, capture_output=True, check=False, env=_git_env())
     if proc.returncode == 0 and proc.stdout.strip():
         return proc.stdout.strip().decode("utf-8", "surrogateescape")
     return os.getcwd()
 
 # ----------------------------------------------------------------- output
 
-def _report(results, mode: str) -> int:
-    """Print the findings. Every path shows as WITHHELD, whatever the rule."""
+def _report(results, mode: str, noun: str = "file(s)") -> int:
+    """Print the findings of (rel, findings, where) results. Every path shows as WITHHELD, whatever the rule;
+    where says which item it is: "entry <n>", "message", "commit <sha> message", "commit <sha> entry <k>" or
+    "tag <sha> message"."""
     total = 0
     per_code = {}
     files_with = 0
     scanned = 0
-    for index, (_rel, found) in enumerate(results, 1):
+    for _rel, found, where in results:
         if found is None:
             continue
         scanned += 1
@@ -712,14 +1483,14 @@ def _report(results, mode: str) -> int:
             per_code[code] = per_code.get(code, 0) + len(lines)
             total += len(lines)
             for line in lines[:MAX_REPORTED_LINES]:
-                print(f"FAIL {code} {WITHHELD}:{line} (entry {index})")
+                print(f"FAIL {code} {WITHHELD}:{line} ({where})")
             if len(lines) > MAX_REPORTED_LINES:
-                print(f"FAIL {code} {WITHHELD}: +{len(lines) - MAX_REPORTED_LINES} more line(s) (entry {index})")
+                print(f"FAIL {code} {WITHHELD}: +{len(lines) - MAX_REPORTED_LINES} more line(s) ({where})")
     if total:
         summary = ", ".join(f"{code}={n}" for code, n in sorted(per_code.items()))
-        print(f"hygiene_scan: FAIL {total} finding(s) in {files_with} file(s) [{mode}]: {summary}")
+        print(f"hygiene_scan: FAIL {total} finding(s) in {files_with} {noun} [{mode}]: {summary}")
         return EXIT_FINDINGS
-    print(f"hygiene_scan: OK {scanned} file(s) scanned [{mode}]")
+    print(f"hygiene_scan: OK {scanned} {noun} scanned [{mode}]")
     return EXIT_CLEAN
 
 # ------------------------------------------------------------------- main
@@ -738,6 +1509,9 @@ def _main(argv) -> int:
     global ROOT
     parser = _Parser(prog="hygiene_scan.py", add_help=True)
     parser.add_argument("--staged", action="store_true")
+    parser.add_argument("--message")
+    parser.add_argument("--push")
+    parser.add_argument("--range", dest="revisions")
     parser.add_argument("--root")
     parser.add_argument("--list-rules", action="store_true")
     parser.add_argument("paths", nargs="*")
@@ -748,15 +1522,35 @@ def _main(argv) -> int:
         return EXIT_CLEAN
     if args.staged and args.paths:
         raise Refusal("staged_with_paths")
+    history = [m for m in (args.message, args.push, args.revisions) if m is not None]
+    if len(history) > 1 or (history and (args.staged or args.paths)):
+        raise Refusal("one_mode_only")
+    if any(not m or m.startswith("-") for m in history):
+        raise Refusal("usage")
     root = args.root if args.root else _default_root()
     _check_lexical(os.path.abspath(root))
     ROOT = _safe_resolve(root)
-    if args.staged:
+    if args.message is not None:
+        found = _message_findings(_read_message_file(args.message))
+        return _report([("", found, "message")], "message", "message(s)")
+    if args.staged or history:
         if not _is_git_worktree(ROOT):
             raise Refusal("not_a_git_worktree")
+    if args.staged:
         return _report(_staged_entries(), "staged")
+    if args.push is not None:
+        lines = sys.stdin.buffer.read(MAX_PUSH_INPUT + 1)
+        if len(lines) > MAX_PUSH_INPUT:
+            raise Refusal("push_input")
+        revisions, tips = _push_targets(args.push, lines)
+        return _report(_history_entries(revisions, tips), "push", "item(s)")
+    if args.revisions is not None:
+        return _report(_history_entries([args.revisions]), "range", "item(s)")
     rels = _tree_rels(args.paths)
-    return _report((_tree_entry(rel) for rel in rels), "paths" if args.paths else "tree")
+    filtered = _filtered(rels) if _is_git_worktree(ROOT) else set()
+    results = (_with_filter(_tree_entry(rel), filtered) for rel in rels)
+    return _report(((rel, found, f"entry {index}") for index, (rel, found) in enumerate(results, 1)),
+                   "paths" if args.paths else "tree")
 
 
 def main(argv=None) -> int:

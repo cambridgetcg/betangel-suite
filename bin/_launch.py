@@ -13,7 +13,9 @@ matters and is part of the design (DESIGN.md 3.6, 6.8, 10):
      RELEASE.json (betangel_suite.release, I-18) and refuse any mismatch; any other root is a working checkout;
      then check TMPDIR against roots.tmp_dir(command), then (for every command except stop, so test and vendor
      too) load the config and refuse while the run marker exists, before anything is created anywhere;
-  5. dispatch to betangel_suite.cli, which creates TMPDIR (0700) before any handler runs.
+  5. dispatch to betangel_suite.cli, which, for a command that may touch real data, takes run/realdata.lock shared
+     and checks the marker again under it (runmarker.hold_shared), then creates TMPDIR (0700) before any handler
+     runs.
 
 A refusal prints one line, "refused:<code>", on stderr and exits 2.
 """

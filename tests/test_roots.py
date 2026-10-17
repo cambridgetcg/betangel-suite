@@ -1,6 +1,7 @@
 """State roots and the single writer helper (DESIGN.md 3.7; Phase 0 adaptations A and B).
 
-The flag roots.STATE_ROOT_AGREED is on since Nuance agreed the suite root (Q-N3). Both settings are still
+The flag roots.STATE_ROOT_AGREED is on since Nuance agreed the suite root (Q-N3, PR #4 review; DESIGN.md 3.7 gives its
+status since Nuance's PR #2 review). Both settings are still
 tested, against a temporary HOME, with mock.patch for the setting that is not the default. With the flag
 off, a write under ~/betangel-data is refused on the path text alone: the tests make that directory
 unreadable first, so any file-system access there would surface as a different error.
@@ -193,6 +194,36 @@ class WriterTests(unittest.TestCase):
         self.assertEqual(mode(os.path.join(suite, "x")), 0o600)
         self.assertEqual(os.listdir(data_home), ["suite.noindex"])
 
+    def test_writer_refuses_a_root_that_a_link_puts_in_the_data_home(self):
+        # Nuance's PR #2 review, item 1: with ~/.local/state linked to betangel-data/lab-state, write_new wrote
+        # there. The writer helper now runs check_placement on the root of every path it writes.
+        lab = os.path.join(roots.data_home(self.home), "lab-state")
+        os.makedirs(lab, mode=0o700)
+        rmtree(os.path.join(self.home, ".local", "state"))
+        os.symlink(lab, os.path.join(self.home, ".local", "state"))
+        for agreed in (False, True):
+            with self.subTest(agreed=agreed), mock.patch.object(roots, "STATE_ROOT_AGREED", agreed):
+                self.refused("root_overlaps_data_home", roots.write_new, os.path.join(self.state, "x"), b"x")
+                self.refused("root_overlaps_data_home", roots.ensure_dir, os.path.join(self.state, "sub"))
+                self.refused("root_overlaps_data_home", roots.check_placement, self.state)
+        self.assertEqual(os.listdir(lab), [])
+
+    def test_writer_refuses_a_suite_root_that_is_not_a_real_directory_in_place(self):
+        historic = os.path.join(roots.data_home(self.home), "historic-pro")
+        os.makedirs(historic, mode=0o700)
+        suite = roots.suite_root(self.home)
+        os.symlink(historic, suite)
+        with mock.patch.object(roots, "STATE_ROOT_AGREED", True):
+            self.refused("suite_root_misplaced", roots.write_new, os.path.join(suite, "x"), b"x")
+            self.refused("suite_root_misplaced", roots.ensure_dir, os.path.join(suite, "tmp"))
+            self.refused("suite_root_misplaced", roots.check_placement, os.path.join(suite, "tmp"))
+            os.remove(suite)
+            os.makedirs(suite)
+            roots.check_placement(os.path.join(suite, "tmp"), home_dir=self.home)     # a real directory: fine
+            os.symlink(historic, os.path.join(suite, "tmp"))                          # in it, but resolving out
+            self.refused("suite_root_misplaced", roots.check_placement, os.path.join(suite, "tmp"))
+        self.assertEqual(os.listdir(historic), [])
+
     def test_agreed_suite_root_must_pass_check_data_root(self):
         # DESIGN.md 3.7: the suite root lies outside the repository and every Git worktree
         # (upstream archive.check_data_root), checked before anything is created in it.
@@ -204,6 +235,120 @@ class WriterTests(unittest.TestCase):
                 roots.ensure_dir(os.path.join(suite, "tmp"), home_dir=self.home)
         self.assertEqual((caught.exception.code, caught.exception.reason), ("suite_root_invalid", "inside_git_worktree"))
         self.assertEqual(os.listdir(data_home), [".git"])
+
+
+class LiesInTests(unittest.TestCase):
+    """roots.lies_in, which vendor and the guard use to keep writes out of the deploy clone (Nuance's PR #2 review,
+    item 2): by text in any case, through links, and by identity at the nearest existing ancestor."""
+
+    def test_lies_in(self):
+        from tests.test_pin import firmlink_spelling
+        home = make_home(self)
+        clone = roots.research_clone(home)
+        os.makedirs(os.path.join(clone, "sub"))
+        outside = os.path.join(home, "outside")
+        os.makedirs(outside)
+        links = {"plain": os.path.join(clone, "sub"), "firm": firmlink_spelling(os.path.join(clone, "sub")),
+                 "dangling_firm": os.path.join(firmlink_spelling(clone), "missing"), "elsewhere": outside}
+        for name, target in links.items():
+            os.symlink(target, os.path.join(home, name))
+
+        def judged(*parts):
+            return roots.lies_in(os.path.join(home, *parts), clone, "research_clone_on_path")
+
+        for parts in (("betangel-research",), ("betangel-research", "sub", "missing", "deeper"), ("BetAngel-Research",),
+                      ("betangel-reſearch", "sub"), ("plain",), ("plain", "missing", "deeper"), ("firm",),
+                      ("firm", "missing", "deeper"), ("dangling_firm", "deeper")):
+            self.assertTrue(judged(*parts), parts)
+        for parts in (("outside",), ("elsewhere", "missing"), ("betangel-research-2",), ("missing", "deeper")):
+            self.assertFalse(judged(*parts), parts)
+        self.assertTrue(roots.lies_in(firmlink_spelling(os.path.join(clone, "sub")), clone, "research_clone_on_path"))
+        rmtree(clone)                                   # no clone: only the text can place a path in it
+        self.assertFalse(judged("firm"))
+        self.assertTrue(judged("betangel-research", "sub"))
+
+    def test_a_clone_that_cannot_be_judged_is_refused(self):
+        # The guard fix's question 3: lies_in read every failed stat of the clone as "no clone", as check_placement
+        # did before 57fc0c9. Here the clone links to vault/clone, and vault has no search permission, so the clone
+        # cannot be stat()ed (EACCES), and a link into it is spelt through the firmlink or /.vol, which the text check
+        # does not see. lies_in returned False, so vendor and the guard's partial clone check let such a path through.
+        from betangel_suite import guard
+        home = make_home(self)
+        vault = os.path.join(home, "vault")
+        sub = os.path.join(vault, "clone", "sub")
+        os.makedirs(sub)
+        clone = roots.research_clone(home)
+        os.symlink(os.path.join(vault, "clone"), clone)
+        info = os.stat(sub)
+        spellings = {"firmlink": "/System/Volumes/Data" + os.path.realpath(sub),
+                     "vol": "/.vol/%d/%d" % (info.st_dev, info.st_ino)}
+        for name, target in spellings.items():
+            self.assertTrue(os.path.samestat(os.stat(target), info), name)
+            os.symlink(target, os.path.join(home, name))
+        deps = os.path.join(home, "firmlink", "deps")   # a deps root that the share directory's link put in the clone
+        partial = os.path.join(deps, "betangel-research-0123456789ab.partial")
+        argv = list(guard.VENDOR_GIT_PREFIX) + ["-C", partial, "remote", "remove", "origin"]
+        env = dict(guard.VENDOR_GIT_ENV, HOME=home)
+        self.addCleanup(os.chmod, vault, 0o700)
+        for name in spellings:
+            path = os.path.join(home, name, "deeper")
+            with self.subTest(spelling=name, vault="searchable"):
+                self.assertTrue(roots.lies_in(path, clone, "research_clone_on_path"))
+            os.chmod(vault, 0)
+            try:
+                with self.subTest(spelling=name, vault="not searchable"):
+                    with self.assertRaises(SuiteError) as caught:
+                        roots.lies_in(path, clone, "research_clone_on_path")
+                    self.assertEqual(caught.exception.code, "research_clone_on_path")
+            finally:
+                os.chmod(vault, 0o700)
+        os.chmod(vault, 0)
+        try:
+            with self.subTest(guard="partial clone path, vault not searchable"):
+                self.assertFalse(guard.vendor_argv_ok(argv, env, clone, deps, home))
+        finally:
+            os.chmod(vault, 0o700)
+        with self.subTest(clone="a link loop"):     # cannot be judged either (ELOOP)
+            os.remove(clone)
+            os.symlink(clone, clone)
+            with self.assertRaises(SuiteError) as caught:
+                roots.lies_in(os.path.join(home, "firmlink", "deeper"), clone, "research_clone_on_path")
+            self.assertEqual(caught.exception.code, "research_clone_on_path")
+        with self.subTest(clone="missing"):         # still judged by its text alone
+            os.remove(clone)
+            self.assertFalse(roots.lies_in(os.path.join(home, "firmlink", "deeper"), clone, "research_clone_on_path"))
+
+    def test_a_path_that_cannot_be_judged_is_refused(self):
+        # The final recheck of 26fb4c4: the clone side was fixed, but the path side still read a failed stat as
+        # missing. Here vault (no search permission) holds a link into a real, searchable clone, so a path through
+        # vault was judged at vault itself and found outside the clone, and the guard's partial check allowed it.
+        from betangel_suite import guard
+        home = make_home(self)
+        clone = roots.research_clone(home)
+        os.makedirs(os.path.join(clone, "sub"))
+        vault = os.path.join(home, "vault")
+        os.makedirs(vault)
+        os.symlink(os.path.join(clone, "sub"), os.path.join(vault, "x"))
+        path = os.path.join(vault, "x", "deeper")
+        deps = os.path.join(vault, "x", "deps")
+        partial = os.path.join(deps, "betangel-research-0123456789ab.partial")
+        argv = list(guard.VENDOR_GIT_PREFIX) + ["-C", partial, "remote", "remove", "origin"]
+        env = dict(guard.VENDOR_GIT_ENV, HOME=home)
+        self.addCleanup(os.chmod, vault, 0o700)
+        with self.subTest(vault="searchable"):
+            self.assertTrue(roots.lies_in(path, clone, "research_clone_on_path"))
+        os.chmod(vault, 0)
+        try:
+            with self.subTest(vault="not searchable"):
+                with self.assertRaises(SuiteError) as caught:
+                    roots.lies_in(path, clone, "research_clone_on_path")
+                self.assertEqual(caught.exception.code, "research_clone_on_path")
+            with self.subTest(guard="partial clone path, vault not searchable"):
+                self.assertFalse(guard.vendor_argv_ok(argv, env, clone, deps, home))
+        finally:
+            os.chmod(vault, 0o700)
+        with self.subTest(path="missing, below a searchable directory"):   # still judged at its nearest ancestor
+            self.assertFalse(roots.lies_in(os.path.join(home, "nowhere", "deps"), clone, "research_clone_on_path"))
 
 
 if __name__ == "__main__":

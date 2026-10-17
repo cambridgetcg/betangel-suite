@@ -1,0 +1,38 @@
+#!/bin/sh
+# betangel-suite pre-merge-commit hook (docs/DESIGN.md I-9, sections 5.6 and 9.4).
+# `git merge` commits a merge that needs no conflict resolution itself and
+# never runs pre-commit, so this hook runs the same staged scan on the merge
+# result and blocks the merge on any finding. A merge that stops on conflicts
+# is finished with `git commit`, which runs tools/pre-commit. The scanner
+# prints rule codes, line numbers and entry numbers only, never a path or the
+# matched text.
+#
+# Install once per clone, from the repository root, beside tools/pre-commit:
+#   ln -s ../../tools/pre-merge-commit .git/hooks/pre-merge-commit
+# Never bypass it with `git merge --no-verify`.
+set -u
+
+PY=/opt/homebrew/bin/python3.13
+
+ROOT=$(git rev-parse --show-toplevel) || {
+  echo "pre-merge-commit: refused:no_toplevel" >&2
+  exit 1
+}
+SCAN="$ROOT/tools/hygiene_scan.py"
+
+if [ ! -x "$PY" ]; then
+  echo "pre-merge-commit: refused:python3.13_missing" >&2
+  exit 1
+fi
+if [ ! -f "$SCAN" ]; then
+  echo "pre-merge-commit: refused:scanner_missing" >&2
+  exit 1
+fi
+
+"$PY" -I -S -B "$SCAN" --root "$ROOT" --staged
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "pre-merge-commit: merge blocked by hygiene_scan (exit $rc); fix the listed codes" >&2
+  exit 1
+fi
+exit 0

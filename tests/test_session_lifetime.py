@@ -625,6 +625,17 @@ class CliTests(unittest.TestCase):
         self.assertEqual(changes(base + [run, lock], base, True, True), sorted([run, lock]))
         self.assertEqual(changes(base, empty, True, True), [config])
         self.assertEqual(changes(base, base, False, False), [])
+        # run/realdata.lock: every engine takes it in cli.main before its TMPDIR (DESIGN.md 6.8), so the first engine
+        # ever in a HOME makes it too. A live engine explains it appearing; nothing explains it without one, and
+        # nothing explains it vanishing (the suite never removes it).
+        realdata = ("run/realdata.lock", False)
+        self.assertIn(realdata, cli.ENGINE_ENTRIES)
+        self.assertEqual(changes(base, base + [run, lock, realdata, socket_entry], False, True), [])
+        self.assertEqual(changes(base + [run, lock], base + [run, lock, realdata, socket_entry], False, True), [])
+        self.assertEqual(changes(base, base + [run, lock, realdata, socket_entry], False, False),
+                         sorted([run, lock, realdata, socket_entry]))
+        self.assertEqual(changes(base + [run], base + [run, realdata], False, False), [realdata])
+        self.assertEqual(changes(base + [run, lock, realdata], base + [run, lock], True, True), [realdata])
 
 
 if __name__ == "__main__":

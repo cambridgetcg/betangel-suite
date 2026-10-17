@@ -620,14 +620,16 @@ results["bootstrap"] = request("POST", "/api/v1/bootstrap", {"code": open(os.pat
 
     def test_the_forced_command_serves_and_attaches_only_on_the_viewer_port(self):
         # bin/suite ssh-session exactly as the viewer key runs it, with no --port (DESIGN.md 8.6 item 2): another
-        # config port is refused before any lock, socket or engine; an engine on another port (serve --port 0) is
-        # refused before the takeover, so its tokens stay live and nothing is printed.
+        # config port is refused before any engine lock, socket or engine; an engine on another port (serve --port 0)
+        # is refused before the takeover, so its tokens stay live and nothing is printed.
         home = support.short_home(self)
         env = child_env(home, SSH_CONNECTION=SSH)
         write_config(home, {"port": 8766})
         result = run_suite(["ssh-session"], home, env=env)
         self.assertEqual((result.returncode, result.stdout, result.stderr), (2, "", "refused:viewer_port_mismatch\n"))
-        self.assertFalse(os.path.lexists(roots.run_dir(home)))
+        # ssh-session is a real-data command: cli.main took run/realdata.lock shared first (DESIGN.md 6.8), making
+        # run/ and the lock, and the handler refused before engine.lock or control.sock.
+        self.assertEqual(sorted(os.listdir(roots.run_dir(home))), [roots.REALDATA_LOCK_NAME])
         os.remove(roots.config_path(home))                     # the default port, 8765, from here on
         serving = support.run_child(self, home, SERVE % (60.0, 120))
         port = serving.wait_ready()
@@ -662,6 +664,9 @@ results["controller"] = query(open(os.path.join(HOME, "token-1")).read())[1]["co
             result = subprocess.run([PYTHON, "-I", "-S", "-B", LAUNCH_PY, *args], env=env, cwd=home,
                                     capture_output=True, text=True, timeout=60)
             self.assertEqual((result.returncode, result.stdout, result.stderr), (2, "", "refused:%s\n" % code), args)
+            # cli.main checks the flag before it takes run/realdata.lock (serve and ssh-session are real-data
+            # commands), so a refused command has made neither run/ nor the lock.
+            self.assertFalse(os.path.lexists(roots.run_dir(home)), args)
         # bin/suite itself: --print-url over SSH is refused before env -i; ssh-session needs SSH.
         for args, env, code in ((["selfcheck", "--print-url"], {"SSH_CONNECTION": SSH}, "print_url_over_ssh"),
                                 (["ssh-session", "--port", "0"], {}, "ssh_session_outside_ssh")):

@@ -265,6 +265,24 @@ class ClockAndFrameTests(EngineCase):
         self.assertEqual(published.line, (__import__("json").dumps(frame, separators=(",", ":")) + "\n").encode())
         self.assert_matches_reference(frame, 21, start_pt)
 
+    def test_a_market_with_no_ladder_definition_renders_as_before(self):
+        # DESIGN.md 11.1, "the ladder type is ignored" (Nuance's PR #4 review, item 10): build_frame never reads the
+        # ladder type, so a keyless market (synthetic no_ladder_definition; Nuance's PR #1 review, item 1(d)) gives
+        # the very frame its CLASSIC twin gives, invalid_reason None included. Its own field is owed before real data.
+        class Keyless(SmallSynthetic):
+            @staticmethod
+            def Spec(seed):
+                return synthetic.Spec(seed=seed, runners=5, pre_off_s=120, inplay_s=20,
+                                      options={synthetic.NO_LADDER_DEFINITION})
+
+        frames = []
+        for module in (SmallSynthetic, Keyless):
+            actor = self.make(synthetic_module=module)
+            self.assertEqual(actor.command("open_market", {"seed": 21}), {"ok": True, "market_id": "1.999000021"})
+            frames.append(self.frame(actor).frame)
+        self.assertEqual(frames[1], frames[0])
+        self.assertIsNone(frames[1]["market"]["invalid_reason"])
+
     def assert_matches_reference(self, frame, seed, pt):
         market_id, snapshot = reference(seed, pt)
         self.assertEqual(frame["market"]["id"], market_id)

@@ -4,11 +4,13 @@ not_implemented.
 
 bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop, checked the run
 marker before main() is called (test and vendor are checked too: Nuance's answers to Q-N14). main() checks the
-command's arguments first, then creates TMPDIR (0700, through the writer helper) before any handler runs
-(DESIGN.md 3.6, 6.8), so SQLite never falls back to a system temp directory. vendor and stop are the exceptions:
-vendor must work before the deps clone exists and never imports upstream (which the writer helper's path_guard
-needs); stop only talks to the control socket. Neither makes temporary files. release is the third: it writes
-only the release copy (guard mode release) and never needs upstream. Output is codes and counts only.
+command's arguments first; then, for a command that may touch real data (REALDATA_COMMANDS), it takes the realdata
+lock shared and checks the marker again under it (runmarker.hold_shared; DESIGN.md 6.8), and only then creates
+TMPDIR (0700, through the writer helper) before any handler runs (DESIGN.md 3.6), so SQLite never falls back to a
+system temp directory. stop, vendor and release (NO_TMPDIR) are the exceptions: none makes temporary files. stop
+must work during a run and only talks to the control socket, so it needs neither TMPDIR nor the lock; vendor must
+work before the deps clone exists and never imports upstream (which the writer helper's path_guard needs); release
+writes only the release copy (guard mode release) and never needs upstream. Output is codes and counts only.
 
     serve [--port N]   the engine in synthetic mode on 127.0.0.1 (config port; N = 0 picks a free port);
                        prints "serving port=<n>", never a bootstrap code or token
@@ -55,7 +57,19 @@ COMMANDS = ("serve", "open", "ssh-session", "stop", "catalogue", "selfcheck", "d
 # refuse during a run like the other commands (Nuance's answers to Q-N14: "stop stays exempt", and "test and
 # vendor refuse under the marker").
 NO_RUN_MARKER_CHECK = ("stop",)
-NO_TMPDIR = ("stop", "vendor", "release")         # they create no temporary files and must not need upstream
+# The commands that may read a real data root or write under ~/betangel-data. Each takes LOCK_SH on run/realdata.lock
+# before its TMPDIR is created, checks the marker again under the lock and holds it until it exits, so Nuance's
+# wrapper, which takes LOCK_EX, waits for it (Nuance's PR #2 review, item 6; PR #1 review, item 5). test, uisnap and
+# vendor touch neither and do not take it; stop must work during a run and takes nothing (runmarker.py says why;
+# lab-Claude's decision, asked of Nuance on 2026-10-17, not answered).
+# main() refuses (run_lock_not_held) any other command whose TMPDIR would be made under ~/betangel-data.
+REALDATA_COMMANDS = ("serve", "open", "ssh-session", "catalogue", "selfcheck", "diagnose", "ledger-summary")
+# They create no temporary files and must not need upstream, so main() makes no TMPDIR for them and never asks them
+# for the lock. stop must work during a run (DESIGN.md 6.8); without this, its TMPDIR under ~/betangel-data made
+# main() refuse it with run_lock_not_held (round-4 review). release is the third: it writes only the release
+# copy (guard mode release) and never needs upstream. The run_lock_not_held check stays inside the
+# `not in NO_TMPDIR` branch, so none of the three is refused for it.
+NO_TMPDIR = ("stop", "vendor", "release")
 REPO_ROOT = guard.REPO_ROOT
 VIA_SSH_ENV = "SUITE_VIA_SSH"                     # set by bin/suite: "1" for ssh-session after its SSH checks, else "0"
 
@@ -80,8 +94,15 @@ def main(argv):
     if parser is not None:
         args = parser(args)                     # argument errors refuse before anything is created
     check_ssh(command, os.environ.get(VIA_SSH_ENV, ""))
+    from . import runmarker
+    if command in REALDATA_COMMANDS:
+        from . import config
+        runmarker.hold_shared(runmarker.marker_path(config.load()), runmarker.lock_path())
     if command not in NO_TMPDIR:
-        roots.ensure_dir(roots.tmp_dir(command))
+        tmp = roots.tmp_dir(command)
+        if roots.within(tmp.casefold(), roots.data_home().casefold()) and not runmarker.holding():
+            raise SuiteError("run_lock_not_held")       # nothing is made under ~/betangel-data without the lock
+        roots.ensure_dir(tmp)
     return handler(args)
 
 
@@ -424,7 +445,10 @@ def test_worker(tier, verbosity, pattern, marker):
         answers.flush()
 
 
-ENGINE_ENTRIES = (("run", True), (os.path.join("run", "engine.lock"), False))
+# run/realdata.lock too: an engine (serve, open, ssh-session) takes it in main() before its TMPDIR (DESIGN.md
+# 6.8), so the first engine ever in a HOME makes it as well, and the suite never removes it.
+ENGINE_ENTRIES = (("run", True), (os.path.join("run", "engine.lock"), False),
+                  (os.path.join("run", roots.REALDATA_LOCK_NAME), False))
 SOCKET_ENTRY = (os.path.join("run", "control.sock"), False)
 
 
@@ -432,9 +456,10 @@ def unexplained_changes(before, after, running_before, running_after):
     """The state_listing entries that appeared or vanished during a test run, less what a real engine explains.
 
     Yu may start or stop an engine (serve, open, ssh-session) while an agent's tests run. Its lock (run/engine.lock,
-    flock'd while it runs) tells it apart: an engine that holds the lock at the end explains run/, run/engine.lock
-    and run/control.sock appearing; one that held it at the start explains run/control.sock vanishing. Nothing
-    else is ever explained: any other entry, or those three without a live lock to explain them, still counts.
+    flock'd while it runs) tells it apart: an engine that holds the lock at the end explains run/, run/engine.lock,
+    run/realdata.lock and run/control.sock appearing; one that held it at the start explains run/control.sock
+    vanishing. Nothing else is ever explained: any other entry, or those four without a live lock to explain them,
+    still counts.
     running_before and running_after mean the lock was definitely held (control.engine_lock_state HELD): a lock
     that cannot be checked (a link at run/engine.lock, say, which a test that escaped its HOME could leave) explains
     nothing, although stop and uisnap count it as held.

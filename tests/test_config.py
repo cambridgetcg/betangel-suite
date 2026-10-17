@@ -6,7 +6,7 @@ import unittest
 
 from betangel_suite import config, roots, rx
 from betangel_suite.errors import SuiteError
-from tests import make_home
+from tests import make_home, run_python
 
 
 class DefaultsTests(unittest.TestCase):
@@ -47,7 +47,7 @@ class LoadTests(unittest.TestCase):
 
     def test_valid_overrides(self):
         values = {"port": 8766, "frame_hz": 5, "cap_profile": "practice", "watch_grace_s": 60, "max_session_s": 600,
-                  "run_marker": "~/.local/state/lab-runs/ACTIVE", "research_months_ruling": "ruling-2026-01",
+                  "run_marker": "~/.local/state/lab-runs/ACTIVE", "research_months_ruling": None,
                   "commission_source": "user_package_verified", "data_roots": ["~/betangel-data/historic-pro"]}
         self.write(values)
         loaded = config.load(self.home)
@@ -70,6 +70,16 @@ class LoadTests(unittest.TestCase):
             self.write({key: value})
             self.refused("config_invalid_value")
 
+    def test_research_months_stay_hidden_until_a_reviewed_pr_lists_a_ruling(self):
+        # Nuance's PR #2 review, item 12: any well-formed id used to load, so one config edit could put research-month
+        # rows in the catalogue (DESIGN.md 5.3, 14). Only null loads until Yu rules on Q-Y7 and a reviewed PR lists the id.
+        self.assertEqual(config.ACCEPTED_RULINGS, frozenset())
+        for value in ("ruling-2026-01", "x", "", "null", "RULING-2026-01"):
+            self.write({"research_months_ruling": value})
+            self.refused("config_invalid_value")
+        self.write({"research_months_ruling": None})
+        self.assertIsNone(config.load(self.home)["research_months_ruling"])
+
     def test_shape_refusals(self):
         cases = ((b'{"port": 8765, "port": 8766}', "config_not_json"), (b'{"frame_hz": NaN}', "config_not_json"),
                  (b"{", "config_not_json"), (b"\xff\xfe", "config_not_json"), (b"[]", "config_not_object"),
@@ -77,6 +87,17 @@ class LoadTests(unittest.TestCase):
         for data, code in cases:
             self.write(data)
             self.refused(code)
+
+    def test_a_fifo_or_directory_at_config_json_is_refused_at_once(self):
+        # Nuance's PR #2 review, item 22: a blocking open of a FIFO waits for a writer for ever. Each load runs in a
+        # child with a timeout, so a regression fails here instead of hanging the whole run.
+        for label, make in (("fifo", os.mkfifo), ("directory", os.mkdir)):
+            home = make_home(self)
+            make(roots.config_path(home))
+            code = ("from betangel_suite import config\nfrom betangel_suite.errors import SuiteError\n"
+                    "try:\n    config.load(%r)\nexcept SuiteError as exc:\n    print(exc.code)\n") % home
+            result = run_python(code, home, timeout=20)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "config_insecure\n", ""), label)
 
     def test_file_safety(self):
         self.write({"port": 8765}, mode=0o620)

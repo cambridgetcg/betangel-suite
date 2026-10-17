@@ -1,20 +1,28 @@
-"""I-17 (start-time part): no engine while Nuance's run marker exists (DESIGN.md 6.8; adaptation E).
+"""I-17: no engine, and nothing on real data, while Nuance's run marker exists (DESIGN.md 6.8; adaptation E).
 
 A present marker, an unreadable marker or an unreadable marker directory refuses every command except
 stop, before anything is created. That includes test, on 3.13 and on the 3.11 floor, and vendor (Nuance's
 answers to Q-N14). A test run that is already going stops before its next test once the marker appears
-(Nuance's PR #4 review, item 14). All markers live under a temporary HOME.
+(Nuance's PR #4 review, item 14).
+
+The realdata lock (Nuance's PR #2 review, item 6; PR #1 review, item 5): a real-data command holds LOCK_SH on
+run/realdata.lock for its life, taken before its TMPDIR and with the marker checked again under it, and a stand-in
+for Nuance's wrapper (WRAPPER, which never imports betangel_suite) shows that LOCK_EX waits for the holder. All
+markers and locks live under a temporary HOME.
 """
 
+import fcntl
 import io
 import json
 import os
+import stat
+import subprocess
 import time
 import unittest
 
 from betangel_suite import cli, config, pin, roots, runmarker
 from betangel_suite.errors import SuiteError
-from tests import child_env, make_home, run_suite, start_suite, tree_listing
+from tests import ARM_ENGINE, PYTHON, child_env, make_home, run_python, run_suite, start_suite, tree_listing
 
 PROBE_SENTINEL = "mid-run-marker-probe"     # made only in a temporary HOME, by MidRunTests
 
@@ -170,9 +178,10 @@ class StartTimeTests(unittest.TestCase):
             self.assertIn("Ran 0 tests", stderr)
         for args in bad:
             self.assertEqual(self.suite(home, *args), (2, "refused:bad_arguments\n"), args)
+        self.assertFalse(os.path.lexists(runmarker.lock_path(home)))       # test never takes the realdata lock
 
     def test_vendor_refuses_while_the_marker_exists(self):
-        # vendor was first exempt. Nuance's answer to Q-N14 in her PR #1 review: "test and vendor refuse under
+        # vendor was first exempt. Nuance's PR #1 review, answering Q-N14: "test and vendor refuse under
         # the marker; stop stays exempt". vendor writes the deps clone, and pin/ with --bump, and clones the
         # whole of ~/betangel-research. Each run is refused before its arguments are read or anything is made.
         home = make_home(self)
@@ -192,6 +201,7 @@ class StartTimeTests(unittest.TestCase):
         self.assertEqual(self.suite(home, "vendor"), (2, "refused:run_marker_unreadable\n"))
         os.chmod(os.path.dirname(path), 0o700)
         self.assertEqual(self.suite(home, "vendor"), (2, "refused:bad_arguments\n"))   # no marker: it starts
+        self.assertFalse(os.path.lexists(runmarker.lock_path(home)))       # vendor never takes the realdata lock
 
 
 class RunnerStopTests(unittest.TestCase):
@@ -281,6 +291,340 @@ class MidRunTests(unittest.TestCase):
         self.assertTrue(err.endswith("\nrefused:run_marker_present\n"), err[-2000:])
         self.assertTrue(os.path.exists(os.path.join(tmp, "probe-1-started")))
         self.assertFalse(os.path.exists(os.path.join(tmp, "probe-2-started")))
+
+
+# A stand-in for Nuance's run wrapper, as DESIGN.md 6.8 and Nuance's PR #2 review describe it: it runs outside the
+# suite (never imports betangel_suite), creates the marker with O_EXCL, then takes LOCK_EX on the realdata lock,
+# waiting up to wait_s and failing closed. A missing lock file counts as free. It removes only its own marker, at
+# its end.
+WRAPPER = r"""
+import fcntl, json, os, sys, time
+marker, lock, wait_s = %r, %r, %r
+os.makedirs(os.path.dirname(marker), exist_ok=True)
+os.close(os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+started = time.monotonic()
+try:
+    fd = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+except FileNotFoundError:
+    fd = None
+result, status = "free", 0
+while fd is not None:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = "locked"
+        break
+    except BlockingIOError:
+        if time.monotonic() - started > wait_s:
+            result, status = "refused", 3
+            break
+        time.sleep(0.02)
+print(json.dumps({"result": result, "waited_s": round(time.monotonic() - started, 2)}), flush=True)
+os.remove(marker)
+sys.exit(status)
+"""
+
+# An engine-mode child, as bin/_launch.py would leave it, that runs cli.main with a stand-in handler. signal() and
+# wait_for() use files in its TMPDIR (the temporary HOME's state tmp/), which the test watches and writes too.
+HOLDER = ARM_ENGINE + r"""
+import os, sys, time
+from betangel_suite import cli, errors, roots, runmarker
+TMP = os.environ["TMPDIR"]
+
+def signal(name):
+    open(os.path.join(TMP, name), "w").close()
+
+def wait_for(name):
+    deadline = time.monotonic() + 60
+    while not os.path.exists(os.path.join(TMP, name)):
+        if time.monotonic() > deadline:
+            sys.exit(5)
+        time.sleep(0.02)
+
+def run(argv):
+    try:
+        return cli.main(argv)
+    except errors.SuiteError as exc:
+        sys.stderr.write(errors.describe(exc) + "\n")
+        return 2
+"""
+
+
+class RealDataLockTests(unittest.TestCase):
+    """runmarker.hold_shared through cli.main, in engine-mode children with a temporary HOME."""
+
+    def setUp(self):
+        self.home = make_home(self, deps=True)
+        os.mkdir(roots.data_home(self.home), 0o700)         # the suite root's parent, as on the lab
+        self.tmp = roots.tmp_dir("test", self.home)
+        self.marker = marker(self.home)
+        self.lock = runmarker.lock_path(self.home)
+        self.suite = roots.suite_root(self.home)
+
+    def start(self, code):
+        child = subprocess.Popen([PYTHON, "-I", "-S", "-B", "-c", code], env=child_env(self.home), cwd=self.home,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(self.reap, child)
+        return child
+
+    def reap(self, child):
+        if child.poll() is None:
+            child.kill()
+        child.communicate()
+
+    def holder(self, body):
+        return self.start(HOLDER + body)
+
+    def wrapper(self, wait_s):
+        return self.start(WRAPPER % (self.marker, self.lock, wait_s))
+
+    def signal(self, name):
+        open(os.path.join(self.tmp, name), "w").close()
+
+    def wait_for(self, name, child):
+        deadline = time.monotonic() + 60
+        path = os.path.join(self.tmp, name)
+        while not os.path.exists(path) and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if not os.path.exists(path):
+            self.fail("%s never came: %r" % (name, child.communicate(timeout=60)))
+
+    def finish(self, child):
+        out, err = child.communicate(timeout=120)
+        return child.returncode, out, err
+
+    def wrapper_result(self, child):
+        status, out, err = self.finish(child)
+        self.assertEqual(err, "")
+        return status, json.loads(out)
+
+    def test_the_commands_that_take_the_lock(self):
+        self.assertEqual(cli.REALDATA_COMMANDS,
+                         ("serve", "open", "ssh-session", "catalogue", "selfcheck", "diagnose", "ledger-summary"))
+        self.assertLessEqual(set(cli.REALDATA_COMMANDS), set(cli.COMMANDS))
+        for command in ("test", "uisnap", "vendor", "stop", "release"):
+            self.assertNotIn(command, cli.REALDATA_COMMANDS)
+        self.assertEqual(cli.NO_TMPDIR, ("stop", "vendor", "release"))     # release is phase0/viewing's
+        self.assertFalse(set(cli.NO_TMPDIR) & set(cli.REALDATA_COMMANDS))
+        self.assertEqual(self.lock, os.path.join(self.home, ".local", "state", "betangel-suite", "run", "realdata.lock"))
+
+    def test_a_wrapper_waits_for_a_holder_and_fails_closed_at_its_deadline(self):
+        holder = self.holder(r"""
+def handler(args):
+    signal("holding")
+    wait_for("release")
+    return 0
+cli._HANDLERS["catalogue"] = handler
+sys.exit(run(["catalogue"]))
+""")
+        self.wait_for("holding", holder)
+        info = os.lstat(self.lock)
+        self.assertTrue(stat.S_ISREG(info.st_mode))
+        self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+        self.assertTrue(os.path.isdir(os.path.join(self.suite, "tmp")))    # made after the lock was taken
+        # A wrapper that waits 1 s refuses its own run: no LOCK_EX while the holder lives.
+        status, result = self.wrapper_result(self.wrapper(1.0))
+        self.assertEqual((status, result["result"]), (3, "refused"))
+        self.assertGreaterEqual(result["waited_s"], 1.0)
+        # One that waits longer is still waiting while the holder lives, and gets the lock once it has gone.
+        waiting = self.wrapper(60.0)
+        # Its clock starts when it has made the marker, not when it was spawned: under load its start-up alone
+        # can take tens of ms, so count the 0.5 s from the marker (the first wrapper removed its own).
+        deadline = time.monotonic() + 60
+        while not os.path.exists(self.marker) and waiting.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.5)
+        self.assertIsNone(waiting.poll())
+        self.assertIsNone(holder.poll())
+        self.signal("release")
+        self.assertEqual(self.finish(holder), (0, "", ""))
+        status, result = self.wrapper_result(waiting)
+        self.assertEqual((status, result["result"]), (0, "locked"))
+        self.assertGreaterEqual(result["waited_s"], 0.5)
+        self.assertTrue(os.path.lexists(self.lock))                       # never unlinked
+
+    def test_a_headless_holder_stops_at_its_next_member_and_lets_the_wrapper_in(self):
+        holder = self.holder(r"""
+def handler(args):
+    for member in range(3000):
+        runmarker.require_clear()
+        if member == 0:
+            signal("holding")
+        time.sleep(0.02)
+    return 0
+cli._HANDLERS["catalogue"] = handler
+sys.exit(run(["catalogue"]))
+""")
+        self.wait_for("holding", holder)
+        waiting = self.wrapper(60.0)
+        self.assertEqual(self.finish(holder), (2, "", "refused:run_marker_present\n"))
+        status, result = self.wrapper_result(waiting)
+        self.assertEqual((status, result["result"]), (0, "locked"))
+        self.assertLess(result["waited_s"], 30)
+
+    def test_a_holder_checks_the_marker_again_after_locking(self):
+        # The race the lock closes: the launcher's check passed, then the wrapper made the marker before the command
+        # took its lock. The command must refuse under the lock, before anything is made under ~/betangel-data, and
+        # let the lock go at once, while it is still running.
+        holder = self.holder(r"""
+runmarker.require_absent(runmarker.marker_path())      # bin/_launch.py's check, passed
+signal("checked")
+wait_for("go")
+def handler(args):
+    signal("handler-ran")
+    return 0
+cli._HANDLERS["catalogue"] = handler
+status = run(["catalogue"])
+signal("returned")
+wait_for("exit")
+sys.exit(status)
+""")
+        self.wait_for("checked", holder)
+        os.makedirs(os.path.dirname(self.marker))
+        open(self.marker, "w").close()                  # the wrapper makes the marker first
+        self.signal("go")
+        self.wait_for("returned", holder)
+        fd = os.open(self.lock, os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)    # free while the refused command still runs
+        finally:
+            os.close(fd)
+        self.signal("exit")
+        self.assertEqual(self.finish(holder), (2, "", "refused:run_marker_present\n"))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "handler-ran")))
+        self.assertEqual(os.listdir(roots.data_home(self.home)), [])        # no suite root, no tmp/
+
+    def test_a_lock_the_wrapper_holds_refuses_at_once(self):
+        # Between the wrapper removing its marker and letting the lock go, a command sees no marker but cannot lock.
+        os.makedirs(os.path.dirname(self.lock), 0o700)
+        fd = os.open(self.lock, os.O_RDONLY | os.O_CREAT, 0o600)
+        body = r"""
+def handler(args):
+    signal("handler-ran")
+    return 0
+cli._HANDLERS["selfcheck"] = handler
+sys.exit(run(["selfcheck"]))
+"""
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.finish(self.holder(body)), (2, "", "refused:run_lock_busy\n"))
+            self.assertFalse(os.path.exists(os.path.join(self.tmp, "handler-ran")))
+            self.assertEqual(os.listdir(roots.data_home(self.home)), [])
+        finally:
+            os.close(fd)
+        self.assertEqual(self.finish(self.holder(body)), (0, "", ""))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "handler-ran")))
+
+    def test_stop_needs_neither_the_lock_nor_a_tmpdir(self):
+        # Round-4 review: cli.main refused stop with run_lock_not_held, because its TMPDIR lies under ~/betangel-data
+        # and it takes no lock. stop must work during a run (DESIGN.md 6.8): here the marker exists and the wrapper
+        # holds LOCK_EX, and stop (a stand-in handler) still runs, takes nothing and makes nothing.
+        os.makedirs(os.path.dirname(self.lock), 0o700)
+        os.makedirs(os.path.dirname(self.marker))
+        open(self.marker, "w").close()
+        fd = os.open(self.lock, os.O_RDONLY | os.O_CREAT, 0o600)
+        body = r"""
+def handler(args):
+    print("stop-ran", runmarker.holding())
+    return 0
+cli._HANDLERS["stop"] = handler
+sys.exit(run(["stop"]))
+"""
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.finish(self.holder(body)), (0, "stop-ran False\n", ""))
+        finally:
+            os.close(fd)
+        self.assertEqual(os.listdir(roots.data_home(self.home)), [])        # no suite root, no tmp/
+
+    def test_no_tmpdir_under_the_data_home_without_the_lock(self):
+        # A command that may touch real data but is missing from REALDATA_COMMANDS refuses before its TMPDIR.
+        body = r"""
+cli.REALDATA_COMMANDS = ()
+cli._HANDLERS["diagnose"] = lambda args: 0
+sys.exit(run(["diagnose"]))
+"""
+        self.assertEqual(self.finish(self.holder(body)), (2, "", "refused:run_lock_not_held\n"))
+        self.assertEqual(os.listdir(roots.data_home(self.home)), [])
+
+    def test_a_state_root_it_cannot_write_refuses(self):
+        # The round-4 reviewer's state_not_writable probe: run/ cannot be made, so the lock cannot be opened. That
+        # was an uncaught PermissionError (exit 1), not a refusal.
+        state = roots.state_dir(self.home)
+        os.chmod(state, 0o500)
+        self.addCleanup(os.chmod, state, 0o700)
+        body = r"""
+cli._HANDLERS["diagnose"] = lambda args: 0
+sys.exit(run(["diagnose"]))
+"""
+        self.assertEqual(self.finish(self.holder(body)), (2, "", "refused:run_lock_invalid\n"))
+        self.assertFalse(os.path.lexists(roots.run_dir(self.home)))
+        self.assertEqual(os.listdir(roots.data_home(self.home)), [])
+
+    def test_only_a_real_private_lock_file_is_held(self):
+        state = roots.state_dir(self.home)
+        cases = []
+        for label, make in (("symlink", lambda path: os.symlink(os.path.join(state, "elsewhere"), path)),
+                            ("fifo", os.mkfifo), ("directory", os.mkdir),
+                            ("group_writable", lambda path: (open(path, "w").close(), os.chmod(path, 0o620))),
+                            ("two_links", lambda path: (open(path, "w").close(),
+                                                        os.link(path, os.path.join(os.path.dirname(path), "x"))))):
+            directory = os.path.join(state, "case-" + label)
+            os.mkdir(directory, 0o700)
+            make(os.path.join(directory, "realdata.lock"))
+            cases.append((label, os.path.join(directory, "realdata.lock")))
+        readable = os.path.join(state, "case-readable", "realdata.lock")
+        os.mkdir(os.path.dirname(readable), 0o700)
+        open(readable, "w").close()
+        os.chmod(readable, 0o644)                       # made by someone else with umask 022: still a lock file
+        code = ARM_ENGINE + r"""
+from betangel_suite import errors, runmarker
+marker = runmarker.marker_path()
+for label, path in %r + [("missing", %r), ("again", %r)]:
+    try:
+        runmarker.require_clear() if label == "again" else None
+        runmarker.hold_shared(marker, path)
+        print(label, "held", runmarker.holding())
+    except errors.SuiteError as exc:
+        print(label, exc.code, runmarker.holding())
+""" % (cases, self.lock, readable)
+        result = run_python(code, self.home, timeout=60)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout.splitlines(), [label + " run_lock_invalid False" for label, _ in cases] + [
+            "missing held True", "again run_lock_invalid True"])
+        info = os.lstat(self.lock)
+        self.assertEqual((stat.S_ISREG(info.st_mode), stat.S_IMODE(info.st_mode)), (True, 0o600))
+        code = ARM_ENGINE + r"""
+from betangel_suite import errors, runmarker
+runmarker.hold_shared(runmarker.marker_path(), %r)
+print("held", runmarker.holding())
+""" % (readable,)
+        result = run_python(code, self.home, timeout=60)
+        self.assertEqual((result.stdout, result.stderr), ("held True\n", ""))
+
+    def test_require_clear_needs_the_lock_on_the_file_still_in_place(self):
+        other = os.path.join(roots.state_dir(self.home), "elsewhere", "realdata.lock")
+        code = ARM_ENGINE + r"""
+import os
+from betangel_suite import errors, runmarker
+
+def clear():
+    try:
+        runmarker.require_clear()
+        return "clear"
+    except errors.SuiteError as exc:
+        return exc.code
+
+lock = %r
+print(clear())
+runmarker.hold_shared(runmarker.marker_path(), lock)
+print(clear())
+os.rename(lock, lock + ".old")
+os.close(os.open(lock, os.O_RDONLY | os.O_CREAT, 0o600))
+print(clear())
+""" % (other,)
+        result = run_python(code, self.home, timeout=60)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout.splitlines(), ["run_lock_not_held", "clear", "run_lock_invalid"])
 
 
 if __name__ == "__main__":

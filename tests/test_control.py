@@ -117,9 +117,9 @@ attempt("embedded_nul_bytes_forced", lambda: audit_connect(os.fsencode(nul) + b"
 guard.seal()
 attempt("permit_after_seal", lambda: guard.permit_unix_connect(other))
 attempt("permitted_after_seal", lambda: connect(good))
-os.rename(run, run + "-moved")
-os.symlink(os.path.join(os.environ["HOME"], "elsewhere"), run)
-attempt("run_dir_replaced", lambda: audit_connect(good))
+# run/ cannot be moved away from inside the suite (it holds the realdata lock's name: run_lock_protected), so the
+# run directory replaced by a link is tested in test_a_run_directory_replaced_by_a_link_connects_nowhere.
+attempt("rename_run_dir", lambda: os.rename(run, run + "-moved"))
 """)
         self.assertEqual(results["unpermitted_before"], "network_refused")
         for name in ("permit_outside", "permit_relative", "permit_nested", "permit_dotdot", "permit_bytes",
@@ -130,10 +130,40 @@ attempt("run_dir_replaced", lambda: audit_connect(good))
             self.assertEqual(results[name], "ok", name)
         self.assertEqual(results["hook_states"], 1)
         for name in ("other_path", "tcp_raw", "datagram_sendto", "dotdot_after_link", "socket_is_link",
-                     "embedded_nul_forced", "embedded_nul_bytes_forced", "run_dir_replaced"):
+                     "embedded_nul_forced", "embedded_nul_bytes_forced"):
             self.assertEqual(results[name], "network_refused", name)
         self.assertEqual(results["tcp_loopback"], "name_lookup_refused")
         self.assertEqual(results["permit_after_seal"], "guard_sealed")
+        self.assertEqual(results["rename_run_dir"], "run_lock_protected")
+
+    def test_a_run_directory_replaced_by_a_link_connects_nowhere(self):
+        # The suite cannot move run/ away itself (run_lock_protected), but another process can, while the suite runs.
+        # The connect check compares where run/ resolves with where it resolved at arm(): a permitted socket path in
+        # a run/ replaced by a link would reach whatever socket the link's target holds. arm() refuses a run/ that is
+        # already a link (run_lock_invalid), so here a test-mode child (the connect check is the same in every mode)
+        # starts an unguarded interpreter that moves the real run/ away and puts a link in its place, as
+        # tests.test_guard.BindTests does for bind. Audit-only: nothing is connected.
+        home = support.short_home(self, deps=False)
+        results = checks(self, home, mode="test", setup="""
+os.makedirs(os.path.join(os.environ["HOME"], "elsewhere"), mode=0o700)
+os.makedirs(roots.run_dir(), mode=0o700)
+""", body="""
+import socket, subprocess, sys
+run, elsewhere = roots.run_dir(), os.path.join(os.environ["HOME"], "elsewhere")
+def audit_connect(address):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sys.audit("socket.connect", sock, address)
+good = os.path.join(run, "c.sock")
+guard.permit_unix_connect(good)
+attempt("permitted_before", lambda: audit_connect(good))
+replace = "import os, sys\\nos.rename(sys.argv[1], sys.argv[1] + '.moved')\\nos.symlink(sys.argv[2], sys.argv[1])\\n"
+results["replaced"] = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", replace, run, elsewhere]).returncode
+results["run_is_link"] = os.path.islink(run)
+attempt("run_dir_replaced", lambda: audit_connect(good))
+""")
+        self.assertEqual(results["permitted_before"], "ok")
+        self.assertEqual((results["replaced"], results["run_is_link"]), (0, True))
+        self.assertEqual(results["run_dir_replaced"], "network_refused")
 
 
 class ControlSocketTests(unittest.TestCase):

@@ -12,7 +12,7 @@ import re
 import traceback
 import unittest
 
-from betangel_suite import errors, rx
+from betangel_suite import errors, roots, rx
 from betangel_suite.errors import CODES, UPSTREAM_REASONS, SuiteError
 from tests import ARM_ENGINE, DEPS, ROOT, make_home, run_python
 
@@ -227,6 +227,18 @@ class SaltedHashTests(unittest.TestCase):
             with self.assertRaises(SuiteError) as caught:
                 errors.salted_hash("x", home_dir=other)
             self.assertEqual(caught.exception.code, "salt_invalid")
+
+    def test_a_fifo_or_directory_in_the_salts_place_is_refused_at_once(self):
+        # Nuance's PR #2 review, item 22: a blocking open of a FIFO waits for a writer for ever. Each hash runs in a
+        # child with a timeout, so a regression fails here instead of hanging the whole run.
+        for label, make in (("fifo", os.mkfifo), ("directory", os.mkdir)):
+            home = make_home(self)
+            make(roots.salt_path(home))
+            code = ("from betangel_suite import errors\n"
+                    "try:\n    errors.salted_hash('x', home_dir=%r)\n"
+                    "except errors.SuiteError as exc:\n    print(exc.code)\n") % home
+            result = run_python(code, home, timeout=20)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "salt_invalid\n", ""), label)
 
 
 class ExceptionHookTests(unittest.TestCase):

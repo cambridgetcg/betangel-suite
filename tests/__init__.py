@@ -3,8 +3,9 @@
 Run them with `bin/suite test` (python3.13) or `bin/suite test --py311`; add --heavy for the heavy tier (HEAVY
 below) and -j N for N worker interpreters (default 3; -j 1 runs every module in the runner itself). A worker runs
 whole modules, so a class's shared server and fixtures never split. Importing this package arms the
-guard in test mode (bin/_launch.py already has, when run through bin/suite) and appends the pinned deps
-clone through betangel_suite.pin, so tests may import test-only oracles from betangel_research.
+guard in test mode (bin/_launch.py already has, when run through bin/suite) and activates the pinned deps
+clone through betangel_suite.pin, so tests may import test-only oracles from betangel_research, but only
+from the 25 modules of the closure: pin's closure finder refuses any other (upstream_import_refused).
 
 The test-mode guard confines this process's writes to ~/.local/state/betangel-suite (TMPDIR is its tmp/),
 refuses all network use, and lets the runner start only isolated interpreters, this checkout's bin/suite
