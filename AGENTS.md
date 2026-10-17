@@ -273,10 +273,11 @@ reviewed PR changes them.
   Nuance's item 6).
   The config key `run_marker` accepts only that path, so no config edit can point the check at a
   file that never exists; only a reviewed change could move it. Nuance's wrapper creates the
-  marker with O_EXCL, waits at least 60 s for `engine.lock`, failing closed, and takes `LOCK_EX`
-  on `~/.local/state/betangel-suite/run/realdata.lock`, waiting 60 s or more and failing closed
-  (Nuance's PR #4 and PR #2 terms; DESIGN.md 6.8). The engine may hold both locks for about 35 s
-  after the marker appears. Lab-Claude never creates or removes the marker, and the suite never
+  marker with O_EXCL, waits for `engine.lock` and takes `LOCK_EX` on
+  `~/.local/state/betangel-suite/run/realdata.lock`, in Nuance's words: "Wait at least 60 s for
+  engine.lock, and fail closed if it is still held" (PR #4 review) and "The wrapper waits 60 s+
+  for LOCK_EX, failing closed" (PR #2 review, item 6; DESIGN.md 6.8). The engine may hold both
+  locks for about 35 s after the marker appears. Lab-Claude never creates or removes the marker, and the suite never
   creates or removes `lab-runs/ACTIVE` or `lab-runs/LOCK`: the guard refuses any suite write in
   `lab-runs/`. Every command except `stop` refuses to start while the marker is present,
   unreadable, or in an unreadable directory (DESIGN.md 6.8).

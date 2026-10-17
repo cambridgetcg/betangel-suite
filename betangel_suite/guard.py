@@ -24,7 +24,13 @@ What the hook refuses, in every mode and phase:
        permit_unix_connect (the control socket, which stop and open use to reach a running engine;
        DESIGN.md 9.1), matched exactly while the run directory still resolves where it did at arm() and the
        socket path is not itself a link (connect follows one); a path with a NUL in it (the kernel ends the
-       socket name at the first NUL) is never permitted. TCP connects and every other address stay refused;
+       socket name at the first NUL) is never permitted. TCP connects and every other address stay refused.
+       The check reads the name, not the socket behind it, so a hard link at the permitted name to a socket
+       that another process of this user made passes. Astra's re-review of #4 keeps that residual, in
+       Astra's terms "acceptable within the documented same-uid/pre-existing-hard-link limit. The 0700 run
+       directory and guarded hard-link operations address ordinary planting; the guard does not
+       authenticate a socket's provenance. Rejecting st_nlink > 1 would catch ordinary aliases, but would
+       not prove provenance after another link was removed";
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
        run directory still resolves where it did at arm() and the socket path is not itself a link (bind
@@ -115,8 +121,11 @@ journal beside a database, and its temp files if a PRAGMA sets temp_store back),
 mode, an isolated interpreter the runner starts is unguarded unless it imports betangel_suite), a file
 descriptor or hard link made before a check, a reference to os.mkfifo or _posixsubprocess.fork_exec taken
 before arm(), subprocess's private _fork_exec or _socket.socket.listen called directly, or
-sqlite3.Connection.setlimit called on a connection directly. Refusals raise GuardRefusal, whose str() is
-the code only, never the path or address.
+sqlite3.Connection.setlimit called on a connection directly. Nor does it close check-then-use gaps on the
+paths in a child's argv (lab-Claude's reading, not a reviewer's finding): engine_argv_ok, runner_git_ok and
+vendor_argv_ok judge a path, links resolved, when the child is started, and git resolves it again when it
+runs, so a process of this user that changes a link on that path in between is not covered. Refusals
+raise GuardRefusal, whose str() is the code only, never the path or address.
 Standard library only.
 """
 
