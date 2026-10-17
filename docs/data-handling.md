@@ -67,8 +67,9 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   and bootstrap-code URLs. It also fails on binary data anywhere (a NUL anywhere, or bytes that are
   not UTF-8), on `encoded_blob` (data hidden in text that decodes to an archive, a zlib stream,
   96 or more bytes of binary, or text another rule flags: base64, hex in its common dump forms,
-  `\xNN` escapes, decimal byte lists and GIT binary patches; DESIGN.md 5.6 lists the encodings
-  it does not decode, which are known gaps), and on `filter_attribute` (a
+  `\xNN` escapes, decimal byte lists and GIT binary patches; a list of full 40- or 64-digit
+  hashes, one per line, is not counted as binary; DESIGN.md 5.6 lists the encodings it does not
+  decode and the other known gaps), and on `filter_attribute` (a
   path git gives a clean filter or LFS, or a `.gitattributes` line that sets one: git stores the
   filter's output, which the scan never sees). It reads the objects git stores: replace refs and
   grafts, which show one object in another's place, are ignored. `--list-rules` lists the codes. For each finding it prints one line,
