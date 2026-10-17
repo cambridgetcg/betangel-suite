@@ -32,15 +32,26 @@ What the hook refuses, in every mode and phase:
        (arm() does it at once if socket is already loaded, and never imports socket), and refuses to create a
        socket whose class would not call that wrapper: a bare _socket.socket, or a subclass with its own listen;
   I-5  os.system, os.exec*, os.spawn*, os.fork and os.forkpty always; subprocess.Popen and os.posix_spawn
-       except as below. Always, too:
-       - a direct call of _posixsubprocess.fork_exec, which starts a child from C with no audit event of its
-         own. arm() replaces it with a wrapper that raises one, "_posixsubprocess.fork_exec", and leaves
-         subprocess its own reference to the original, behind the subprocess.Popen event. arm() refuses
-         (call_replaced_early) unless both are the C original when it runs;
+       except as below. Always, too, for the calls and loads the hook sees or arm() wraps (the limits below
+       name the routes it does not see):
+       - a call of _posixsubprocess.fork_exec through the module, which starts a child from C with no audit event
+         of its own. arm() replaces that attribute with a wrapper that raises one, "_posixsubprocess.fork_exec",
+         and leaves subprocess its own reference to the original, behind the subprocess.Popen event. arm()
+         refuses (call_replaced_early) unless both are the C original when it runs. The wrapper is on one module
+         instance, so once it is in place the hook refuses every fresh load of the extension (import_refused):
+         an import after the module was taken out of sys.modules, importlib.util.module_from_spec,
+         _imp.create_dynamic, and a load under a dotted name such as "x._posixsubprocess" (CPython finds an
+         extension's init function by the last part of the name). The import that arm() itself makes, and the
+         cached, wrapped module, are untouched; arm() refuses (module_loaded_early) a second instance already
+         in sys.modules under a dotted name (Astra's re-review of #2, finding 1; Nuance's, F4);
        - importing multiprocessing (any submodule) or concurrent.futures.process, which start children through
          fork_exec, and ctypes or _ctypes (any submodule), since _ctypes reaches libc through dlsym and
-         call_function with no dlopen (import_refused). arm() refuses (module_loaded_early) if one of them is
-         already loaded: the import event fires only for a module that is not loaded yet;
+         call_function with no dlopen (import_refused); and the modules that run code in a subinterpreter, whose
+         audit hooks are its own, not this one: _interpreters (3.13), _xxsubinterpreters (3.11), interpreters and
+         concurrent.interpreters (where present), and CPython's test modules _testcapi (run_in_subinterp) and
+         _testinternalcapi. Each extension among them (_ctypes, _interpreters, _xxsubinterpreters, _testcapi,
+         _testinternalcapi) is refused under a dotted name too. arm() refuses (module_loaded_early) if one of them
+         is already loaded: the import event fires only for a module that is not loaded yet;
        - ctypes.dlopen, plus ctypes.dlsym and ctypes.call_function as a backstop, and SQLite extension loading.
        Threads are unaffected;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
@@ -109,8 +120,13 @@ journal beside a database, and its temp files if a PRAGMA sets temp_store back),
 mode, an isolated interpreter the runner starts is unguarded unless it imports betangel_suite), a file
 descriptor or hard link made before a check, a reference to os.mkfifo or _posixsubprocess.fork_exec taken
 before arm(), subprocess's private _fork_exec or _socket.socket.listen called directly, or
-sqlite3.Connection.setlimit called on a connection directly. Refusals raise GuardRefusal, whose str() is
-the code only, never the path or address.
+sqlite3.Connection.setlimit called on a connection directly. Also left, as same-process routes (Astra's
+re-review of #2): a fresh instance of the built-in posix module (importlib.util.module_from_spec on its
+spec), whose mkfifo and mknod are the unwrapped originals: a built-in module raises no import event, so the
+hook never sees the load; and an extension module refused above that was loaded before arm() and then taken
+out of sys.modules, since CPython then serves a single-phase one (_ctypes on 3.11, _testcapi) from its
+extension cache with no import event. Refusals raise GuardRefusal, whose str() is the code only, never the
+path or address.
 Standard library only.
 """
 
@@ -174,8 +190,20 @@ _SPAWN = frozenset({"subprocess.Popen", "os.posix_spawn", "os.system", "os.exec"
 # already loaded (module_loaded_early). multiprocessing (spawn, the macOS default, and forkserver) and
 # concurrent.futures.process start children through _posixsubprocess.fork_exec, which raises no audit event of
 # its own (Nuance's PR #2 review, item 3). _ctypes calls into libc with dlsym(RTLD_DEFAULT, name) and
-# call_function, which need no dlopen (item 18); the ctypes package imports it.
-_REFUSED_IMPORTS = ("multiprocessing", "concurrent.futures.process", "ctypes", "_ctypes")
+# call_function, which need no dlopen (item 18); the ctypes package imports it. The rest run code in a
+# subinterpreter, which has audit hooks of its own and none of this one (Nuance's re-review of #2, F4: their
+# run_string "ran os.posix_spawn outside the roots"): _interpreters on 3.13, _xxsubinterpreters on 3.11,
+# interpreters and concurrent.interpreters where present, and the test modules _testcapi (run_in_subinterp, probed
+# on both interpreters by lab-Claude) and _testinternalcapi.
+_REFUSED_IMPORTS = ("multiprocessing", "concurrent.futures.process", "ctypes", "_ctypes", "_interpreters",
+                    "_xxsubinterpreters", "interpreters", "concurrent.interpreters", "_testcapi", "_testinternalcapi")
+# Extension modules refused under any name whose last part is theirs: CPython finds an extension's init function as
+# PyInit_<last part of the name>, so ExtensionFileLoader("x._ctypes", <the _ctypes file>) loads _ctypes itself
+# (Nuance's re-review of #2, F4). _posixsubprocess is here too, but only for loads after arm(): arm() imports it and
+# wraps fork_exec on that instance, and any fresh instance would carry the C original (Astra's re-review, finding 1).
+_REFUSED_EXTENSIONS = frozenset({"_posixsubprocess", "_ctypes", "_interpreters", "_xxsubinterpreters", "_testcapi",
+                                 "_testinternalcapi"})
+_FORK_EXEC_MODULE = "_posixsubprocess"
 # ctypes.dlsym, ctypes.dlsym/handle and ctypes.call_function back up the ctypes refusal: _ctypes cannot be loaded
 # once the hook is in place, but if it ever were, a symbol lookup or a raw call is refused too.
 _LIBRARY_LOADS = frozenset({"ctypes.dlopen", "ctypes.dlsym", "ctypes.dlsym/handle", "ctypes.call_function",
@@ -439,14 +467,24 @@ def _no_link_below(root, path):
 
 
 def _import_refused(name):
-    """True for a module in _REFUSED_IMPORTS or a submodule of one."""
-    return isinstance(name, str) and any(name == top or name.startswith(top + ".") for top in _REFUSED_IMPORTS)
+    """True for a module in _REFUSED_IMPORTS or a submodule of one, and for any name whose last part names an
+    extension in _REFUSED_EXTENSIONS ("_posixsubprocess" itself included: the hook sees only loads after arm()).
+
+    The name is judged as an exact str: a str subclass could answer startswith or rpartition for itself, while
+    CPython loads by the characters it holds."""
+    if not isinstance(name, str):
+        return False
+    name = str.__str__(name)
+    return (any(name == top or name.startswith(top + ".") for top in _REFUSED_IMPORTS)
+            or name.rpartition(".")[2] in _REFUSED_EXTENSIONS)
 
 
 def _refuse_loaded_modules():
     """module_loaded_early if a refused module is already loaded: the import event fires only for a module that is
-    not in sys.modules yet, so the hook could not stop it, and fail closed is the only safe answer."""
-    if any(_import_refused(name) for name in list(sys.modules)):
+    not in sys.modules yet, so the hook could not stop it, and fail closed is the only safe answer. The one module
+    that may be loaded is _posixsubprocess under its own name, whose fork_exec arm() wraps next; a second instance
+    under a dotted name would keep the C original."""
+    if any(_import_refused(name) and str.__str__(name) != _FORK_EXEC_MODULE for name in list(sys.modules)):
         raise SuiteError("module_loaded_early")
 
 
@@ -463,7 +501,12 @@ def _mknod(path, mode=0o600, device=0, *, dir_fd=None):
 
 
 def _wrap_node_calls():
-    """Make os.mkfifo and os.mknod (and their posix originals) raise an audit event the hook checks."""
+    """Make os.mkfifo and os.mknod (and their posix originals) raise an audit event the hook checks.
+
+    A limit, kept as a same-process residual (Astra's re-review of #2): the wrappers sit on the posix module
+    instance in sys.modules. A fresh instance of the built-in posix module (importlib.util.module_from_spec on its
+    spec) has the unwrapped originals, and a built-in module raises no import event, so the hook cannot refuse
+    that load as it refuses a fresh _posixsubprocess."""
     import posix
     for name, wrapper in (("mkfifo", _mkfifo), ("mknod", _mknod)):
         if name in _ORIGINAL_NODE_CALLS:
@@ -542,6 +585,12 @@ def _wrap_fork_exec():
     module attribute is then replaced. Imported after this, subprocess would bind the wrapper and every Popen,
     the startup git included, would be refused. The wrapper's event carries no arguments: there is no argv the
     hook could judge, and nothing the suite or the pinned closure runs calls fork_exec directly.
+
+    The wrapper sits on this one module instance. A fresh instance (the module taken out of sys.modules and
+    imported again, module_from_spec, _imp.create_dynamic, or a dotted name ending in _posixsubprocess) would
+    carry the C original, so the hook refuses every such load (_REFUSED_EXTENSIONS; Astra's re-review of #2,
+    finding 1). importlib.reload of this instance raises no import event and keeps the wrapper: the extension
+    sets its functions when the module is made, not when it is executed again.
     """
     import _posixsubprocess
     import subprocess

@@ -772,6 +772,103 @@ results["outside"] = sorted(os.listdir(outside))
             self.assertEqual(results[name], "dlopen_refused", name)
         self.assertEqual((results["loaded"], results["outside"]), ([], []))
 
+    # Fresh loads of a refused extension module (Astra's re-review of #2, finding 1; Nuance's re-review, F4). The
+    # wrapper sits on one _posixsubprocess instance: popping it from sys.modules and importing again, module_from_spec,
+    # _imp.create_dynamic and a dotted ExtensionFileLoader name each gave a module whose fork_exec started
+    # /usr/bin/touch outside the roots after seal(). A dotted "x._ctypes" loads _ctypes, and a subinterpreter (its own
+    # audit hooks, none of ours) ran os.mkdir outside the roots. Each helper uses what it loaded, so a load that got
+    # through leaves a name in outside/.
+    FRESH = """
+import _imp, importlib, importlib.machinery, importlib.util, subprocess, sys
+outside = os.path.join(os.environ["HOME"], "outside")
+SUBINTERPRETERS = [name for name in ("_interpreters", "_xxsubinterpreters") if importlib.util.find_spec(name)]
+def spawn_with(module, name):
+    read, write = os.pipe()
+    try:
+        pid = module.fork_exec(
+            [b"/usr/bin/touch", os.fsencode(os.path.join(outside, name))], [b"/usr/bin/touch"], True, (),
+            None, None, -1, -1, -1, -1, -1, -1, read, write, False, False, -1, None, None, None, -1, None,
+            subprocess._USE_VFORK)
+    finally:
+        os.close(read)
+        os.close(write)
+    os.waitpid(pid, 0)
+def reimport():
+    saved = sys.modules.pop("_posixsubprocess")
+    try:
+        import _posixsubprocess as fresh
+    finally:
+        sys.modules["_posixsubprocess"] = saved
+    return fresh
+def from_spec():
+    return importlib.util.module_from_spec(importlib.util.find_spec("_posixsubprocess"))
+def create_dynamic():
+    return _imp.create_dynamic(importlib.util.find_spec("_posixsubprocess"))
+def dotted(name, as_name):
+    loader = importlib.machinery.ExtensionFileLoader(as_name, importlib.util.find_spec(name).origin)
+    return importlib.util.module_from_spec(importlib.util.spec_from_loader(as_name, loader))
+class Disguised(str):
+    # A name that answers the string methods for itself; CPython loads by the characters it holds.
+    def rpartition(self, sep):
+        return ("", sep, "harmless")
+    def startswith(self, *args):
+        return False
+    def __eq__(self, other):
+        return False
+    __hash__ = str.__hash__
+def disguised():
+    spec = importlib.util.find_spec("_posixsubprocess")
+    spec = importlib.util.spec_from_loader(Disguised("yy._posixsubprocess"),
+                                           importlib.machinery.ExtensionFileLoader("yy._posixsubprocess", spec.origin))
+    return importlib.util.module_from_spec(spec)
+def reloaded():
+    return importlib.reload(sys.modules["_posixsubprocess"])
+def run_inside(module, name):
+    code = "import os; os.mkdir(%r)" % os.path.join(outside, name)
+    if hasattr(module, "run_in_subinterp"):
+        module.run_in_subinterp(code)
+    else:
+        module.run_string(module.create(), code)
+def phase(suffix):
+    for label, load in (("reimport", reimport), ("from_spec", from_spec), ("create_dynamic", create_dynamic),
+                        ("dotted", lambda: dotted("_posixsubprocess", "zz._posixsubprocess")),
+                        ("disguised", disguised), ("reload", reloaded)):
+        attempt(label + suffix, lambda: spawn_with(load(), label + suffix))
+    attempt("ctypes_dotted" + suffix, lambda: dotted("_ctypes", "zz._ctypes").dlsym)
+    for name in SUBINTERPRETERS + ["_testcapi"]:
+        attempt(name + suffix, lambda: run_inside(importlib.import_module(name), name + suffix))
+        attempt(name + "_dotted" + suffix, lambda: run_inside(dotted(name, "zz." + name), name + "_dotted" + suffix))
+    attempt("_testinternalcapi" + suffix, lambda: importlib.import_module("_testinternalcapi"))
+    attempt("cached_import" + suffix, lambda: __import__("_posixsubprocess"))
+phase("")
+guard.seal()
+phase("_sealed")
+results["still_wrapped"] = type(sys.modules["_posixsubprocess"].fork_exec) is not type(len)
+results["subinterpreter_modules"] = len(SUBINTERPRETERS)
+results["loaded"] = sorted(name for name in sys.modules if name.rpartition(".")[2] in (
+    "_ctypes", "_interpreters", "_xxsubinterpreters", "_testcapi", "_testinternalcapi") or name.startswith(("yy", "zz")))
+results["outside"] = sorted(os.listdir(outside))
+"""
+
+    def test_fresh_loads_of_a_refused_extension_are_refused_in_every_mode(self):
+        home = make_home(self)
+        for mode in ("engine", "test", "vendor"):
+            results = checks(self, home, setup=self.CHILDREN_SETUP, mode=mode, body=self.FRESH)
+            with self.subTest(mode=mode):
+                self.assertEqual(results.pop("subinterpreter_modules"), 1)     # _interpreters or _xxsubinterpreters
+                for suffix in ("", "_sealed"):
+                    for label in ("reimport", "from_spec", "create_dynamic", "dotted", "disguised", "ctypes_dotted",
+                                  "_testcapi", "_testcapi_dotted", "_testinternalcapi"):
+                        self.assertEqual(results.pop(label + suffix), "import_refused", label + suffix)
+                    for name in ("_interpreters", "_xxsubinterpreters"):
+                        for label in (name, name + "_dotted"):
+                            if label + suffix in results:
+                                self.assertEqual(results.pop(label + suffix), "import_refused", label + suffix)
+                    # reload keeps the wrapper on the one instance, which refuses the call itself.
+                    self.assertEqual(results.pop("reload" + suffix), "subprocess_refused", suffix)
+                    self.assertEqual(results.pop("cached_import" + suffix), "ok", suffix)
+                self.assertEqual(results, {"still_wrapped": True, "loaded": [], "outside": []})
+
     def test_arm_fails_closed_when_a_child_route_is_already_open(self):
         # The import event fires only for a module not loaded yet, and subprocess binds fork_exec when it is
         # imported, so arm() refuses rather than trust either.
@@ -784,6 +881,17 @@ results["outside"] = sorted(os.listdir(outside))
                 ("import subprocess\nsubprocess._fork_exec = lambda *args: 0\n", "call_replaced_early"),
                 ("import _posixsubprocess\noriginal = _posixsubprocess.fork_exec\n"
                  "_posixsubprocess.fork_exec = lambda *args: original(*args)\n", "call_replaced_early"),
+                # A subinterpreter runner or a second, unwrapped _posixsubprocess already loaded (Astra's and
+                # Nuance's re-reviews of #2): the hook never sees an import that has already happened.
+                ("import importlib.util\n__import__(next(name for name in ('_interpreters', '_xxsubinterpreters')"
+                 " if importlib.util.find_spec(name)))\n", "module_loaded_early"),
+                ("import _testcapi\n", "module_loaded_early"),
+                ("import importlib.machinery, importlib.util, sys\n"
+                 "loader = importlib.machinery.ExtensionFileLoader('zz._posixsubprocess',"
+                 " importlib.util.find_spec('_posixsubprocess').origin)\n"
+                 "sys.modules['zz._posixsubprocess'] = importlib.util.module_from_spec("
+                 "importlib.util.spec_from_loader('zz._posixsubprocess', loader))\n", "module_loaded_early"),
+                ("import _posixsubprocess\n", "ok"),
                 ("import subprocess, concurrent.futures\n", "ok")):
             code = ATTEMPT + setup + "attempt('arm', lambda: guard.arm('engine'))\nprint(json.dumps(results))\n"
             result = run_python(code, home)
