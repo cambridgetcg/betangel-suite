@@ -7,8 +7,9 @@ of the package, bin/ and tools/ (test_imports.python_sources) and refuses:
 
   test_only_name   a test-only oracle name (test_imports.TEST_ONLY_NAMES), or index_archives, upstream's batch
                    form of index_archive (market_index.py:945; I-10 forbids "index_archive(s)"). Refused as a
-                   name, an attribute, an imported name, a keyword or a string outside a docstring, so
-                   getattr(x, "ingest_archive") is caught too.
+                   name, an attribute, an imported name, a keyword, a string outside a docstring, or a part of a
+                   dotted path in such a string (below), so getattr(x, "ingest_archive") and
+                   pydoc.locate("betangel_research.betfair.backtest.archive.ingest_archive") are caught too.
   rx_private       rx used other than as rx.<namespace>.<public name> (a namespace is an rx.ALLOWLIST key) or
                    as a call of rx.call or rx.map_error: so rx._archive, rx.__dict__, rx.pin, rx.guard, rx or a
                    namespace passed as a value or bound to another name (t = rx.ticks), getattr or vars on rx
@@ -18,13 +19,18 @@ of the package, bin/ and tools/ (test_imports.python_sources) and refuses:
                    named rx, however its object was reached (betangel_suite.rx, engine.rx, x.rx), since every
                    suite module that imports rx holds it as one. The string "rx" is refused anywhere outside a
                    docstring, so getattr(x, "rx"), x["rx"], x.get("rx") (vars, __dict__ or globals()),
-                   x.__getattribute__("rx") and operator.methodcaller("get", "rx") are, and so is an
-                   operator.attrgetter path with an rx part ("rx._archive"). So every upstream name that suite
+                   x.__getattribute__("rx") and operator.methodcaller("get", "rx") are. So is an rx part of a
+                   dotted path in any string outside a docstring, split on ".", ":", "[" and "]" as
+                   operator.attrgetter, pydoc.locate, pkgutil.resolve_name and string.Formatter.get_field split
+                   one ("rx._archive", "0.rx", "0[rx]"), whatever resolves it: an attrgetter alias,
+                   functools.partial or a starred list included (round 4b's recheck, item 1). An attrgetter call's
+                   literal paths are judged at the call too. So every upstream name that suite
                    code reaches by a spelling this rule reads is spelt rx.<namespace>.<name>, which
                    tests/test_upstream_contract.py's CoverageTests reads; a name built at run time is read by
                    neither (see the end).
   globals_escape   __globals__, and the two other doors to a module's globals: f_globals (a frame's) and
-                   __builtins__ (which holds __import__). Refused as a name, an attribute or a string.
+                   __builtins__ (which holds __import__). Refused as a name, an attribute, a string or a part
+                   of a dotted path in one.
   sys_modules      .modules on anything at all, but a literal read on sys: sys.modules.get("<name>") or
                    sys.modules["<name>"], with sys a name `import sys` binds or a .sys attribute (os.sys,
                    rx.pin.sys), naming a module outside betangel_research and betangel_suite that is not sys
@@ -33,34 +39,38 @@ of the package, bin/ and tools/ (test_imports.python_sources) and refuses:
                    s.modules after s = sys) is refused. Also `from <any module> import sys` or `modules` (sys
                    only by `import sys`), getattr, vars or __dict__ on sys, and the strings "modules" and "sys"
                    anywhere outside a docstring (getattr(x, "modules"), x.get("modules"), x.__dict__["sys"],
-                   object.__getattribute__(s, "modules"), and an attrgetter path with either part). Plus the
-                   allowlisted functions below.
+                   object.__getattribute__(s, "modules"), and a dotted path in a string with either part). Plus
+                   the allowlisted functions below.
   computed_import  import_module or __import__ with anything but a literal string first, or with any literal
                    argument that is relative, names betangel_research or betangel_suite (the suite's own
                    modules are imported by import statements only), or is sys or builtins; any import by file
                    or loader (spec_from_file_location, module_from_spec, exec_module, SourceFileLoader, runpy,
-                   reload, ...), pkgutil.resolve_name (an import by a dotted name, attributes included) and
-                   inspect.getmodule; exec, eval and compile as builtins or as attributes of the builtins
+                   reload, ...), pkgutil.resolve_name and pydoc.locate (imports by a dotted name, attributes
+                   included) and inspect.getmodule; exec, eval and compile as builtins or as attributes of the builtins
                    module; getattr, vars or __dict__ on builtins, and the string "builtins" anywhere outside a
                    docstring (vars(m)["builtins"]); `from <any module> import builtins`; and `from ... import` of
                    any of these names, which would hide later calls from this rule.
 
 ALLOWED lists the only exceptions, each with its reason, by (file, enclosing function, rule). A class statement's
 bases and keywords count as enclosed by the class, and module level, class bodies included, by None. An entry that
-no longer matches anything fails the test, so the list cannot quietly outlive its reason.
+no longer matches anything fails the test, so the list cannot quietly outlive its reason. ALLOWED_LITERALS lists,
+the same way, the only literals whose dotted parts are not judged, by (file, exact value): one label in
+tools/export_ticks.py.
 
 Like the guard (guard.py docstring), this catches mistakes and the paths Nuance and the reviewers listed,
-including the short spellings lab-Claude's round-3 review found on adb7c63 and the literal keys and attrgetter
-paths round 4b's review found on d00436e (PlantedViolationTests). It is not proof against code written to evade
-it. It reads names and literal strings, not values: getattr with a computed name on a local that holds an
-upstream object is not refused, because suite code uses computed getattr on its own objects (engine.py,
-synthetic.py); nor is a name or key built at run time ("r" + "x"), an import by a route it does not name
-(pickle, say), or a module object reached some way it does not spell out (through gc, a frame other than by
-f_globals, or an object's class, say).
+including the short spellings lab-Claude's round-3 review found on adb7c63, the literal keys and attrgetter
+paths round 4b's review found on d00436e, and the aliases and other resolvers of dotted paths round 4b's recheck
+found on 1a58314 (PlantedViolationTests). It is not proof against code written to evade it. It reads names and
+literal strings, not values: getattr with a computed name on a local that holds an upstream object is not
+refused, because suite code uses computed getattr on its own objects (engine.py, synthetic.py); nor is a name or
+key built at run time ("r" + "x"), a key carried in a docstring and read back through __doc__ (docstrings are
+not judged, and rx.py copies one), an import by a route it does not name (pickle, say), or a module object
+reached some way it does not spell out (through gc, a frame other than by f_globals, or an object's class, say).
 """
 
 import ast
 import os
+import re
 import unittest
 
 from betangel_suite import rx
@@ -72,7 +82,7 @@ GLOBALS_NAMES = frozenset({"__globals__", "f_globals", "__builtins__"})
 IMPORT_CALLS = frozenset({"import_module", "__import__"})
 LOADER_NAMES = frozenset({"spec_from_file_location", "spec_from_loader", "module_from_spec", "exec_module",
                           "load_module", "SourceFileLoader", "SourcelessFileLoader", "ExtensionFileLoader",
-                          "run_path", "run_module", "reload", "getmodule", "resolve_name"})
+                          "run_path", "run_module", "reload", "getmodule", "resolve_name", "locate"})
 CODE_BUILTINS = frozenset({"exec", "eval", "compile"})
 # Modules whose objects open every other door: an import_module, __import__ or sys.modules read may not name them.
 DOOR_MODULES = frozenset({"sys", "builtins"})
@@ -80,6 +90,10 @@ DOOR_MODULES = frozenset({"sys", "builtins"})
 # breaks: each names a door that x.get(...), x.pop(...), __getattribute__, methodcaller or a subscript would open
 # with no attribute this rule reads (vars(engine).get("rx"), x.__dict__.get("modules"); round 4b's review).
 DOOR_KEYS = {"rx": "rx_private", "modules": "sys_modules", "sys": "sys_modules", "builtins": "computed_import"}
+# How a dotted-name resolver splits its path: operator.attrgetter and pydoc.locate on ".", pkgutil.resolve_name on "."
+# and ":", string.Formatter.get_field on "." and "[...]". Every non-docstring literal is split this way and each part
+# judged as a name (round 4b's recheck: an attrgetter alias, pydoc.locate and get_field passed with no finding).
+PATH_SEPARATORS = re.compile(r"[.:\[\]]")
 REFLECTION = frozenset({"getattr", "setattr", "delattr", "hasattr", "vars", "dir"})
 UPSTREAM = "betangel_research"
 SUITE = "betangel_suite"
@@ -109,6 +123,17 @@ ALLOWED = {
         "I-13: the class statement of pin._PinnedLoader names its base SourceFileLoader, so that a closure module is "
         "loaded from its pinned bytes only and no bytecode is written. A class's bases are reported under the class's "
         "name (_Checker.function_of), so this covers that base list only, not pin.py's module level or class bodies",
+}
+
+
+# Literals whose parts are not judged, by (path relative to the checkout, exact value) -> why. Only the part check is
+# skipped: the literal is still refused if it is a door key or a refused name as a whole, and as an attrgetter path.
+# An entry that no longer matches a literal the part check would refuse fails the test, as for ALLOWED.
+ALLOWED_LITERALS = {
+    (os.path.join("tools", "export_ticks.py"), "rx.ticks.LADDER_CLASSIC"):
+        "export_ticks writes this label as ui/ticks.json's \"source\", to say where the ladder comes from; nothing "
+        "resolves it. The tool reads the ladder in code as rx.ticks.LADDER_CLASSIC, which this rule and "
+        "test_upstream_contract.CoverageTests read",
 }
 
 
@@ -146,8 +171,10 @@ def _docstrings(tree):
 class _Checker:
     """Collects (line, function, rule) findings for one parsed module."""
 
-    def __init__(self, tree):
+    def __init__(self, tree, allowed_literals=frozenset()):
         self.tree = tree
+        self.allowed_literals = frozenset(allowed_literals)
+        self.allowed_met = set()                # the allowed literal values the part check would have refused
         self.parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         self.docstrings = _docstrings(tree)
         self.rx_names, self.sys_names, self.builtins_names = set(), set(), set()
@@ -236,7 +263,29 @@ class _Checker:
                     self.add(node, "globals_escape")
                 if node.value in DOOR_KEYS:
                     self.add(node, DOOR_KEYS[node.value])     # getattr(x, "rx"), x["modules"], x.get("sys")
+                self.literal_parts(node)
         return self.findings
+
+    def literal_parts(self, node):
+        """Each part of a dotted path in a literal, judged as a name: whoever resolves the path, by any spelling
+        (an attrgetter alias, functools.partial, pydoc.locate, Formatter.get_field, resolve_name), reaches each part
+        as an attribute or key. An ALLOWED_LITERALS value is skipped here, and noted."""
+        parts = PATH_SEPARATORS.split(node.value)
+        if len(parts) < 2:
+            return                                  # a whole string is judged in run()
+        rules = set()
+        for part in parts:
+            if part in DOOR_KEYS:
+                rules.add(DOOR_KEYS[part])
+            if part in FORBIDDEN_NAMES:
+                rules.add("test_only_name")
+            if part in GLOBALS_NAMES:
+                rules.add("globals_escape")
+        if rules and node.value in self.allowed_literals:
+            self.allowed_met.add(node.value)
+            return
+        for rule in sorted(rules):
+            self.add(node, rule)
 
     def import_from(self, node):
         names = [alias.name for alias in node.names]
@@ -357,20 +406,35 @@ class _Checker:
         return _literal_str(key) and not _import_target_refused(key.value)
 
 
-def check_source(text, filename="<planted>"):
+def check_source(text, filename="<planted>", allowed_literals=frozenset()):
     """Sorted (line, enclosing function, rule) findings for one module's source text."""
-    return sorted(set(_Checker(ast.parse(text, filename)).run()), key=lambda item: (item[0], item[2]))
+    return sorted(set(_Checker(ast.parse(text, filename), allowed_literals).run()),
+                  key=lambda item: (item[0], item[2]))
+
+
+def _suite_checkers():
+    """(relative path, run _Checker) for every suite module, each with its own ALLOWED_LITERALS values."""
+    for path in python_sources():
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        name = relative(path)
+        checker = _Checker(ast.parse(text, path), {value for (file, value) in ALLOWED_LITERALS if file == name})
+        checker.run()
+        yield name, checker
 
 
 def suite_findings():
     """{(path, function, rule): [lines]} over every suite module, before the allowlist is applied."""
     found = {}
-    for path in python_sources():
-        with open(path, encoding="utf-8") as handle:
-            text = handle.read()
-        for line, function, rule in check_source(text, path):
-            found.setdefault((relative(path), function, rule), []).append(line)
+    for name, checker in _suite_checkers():
+        for line, function, rule in sorted(set(checker.findings), key=lambda item: (item[0], item[2])):
+            found.setdefault((name, function, rule), []).append(line)
     return found
+
+
+def allowed_literals_met():
+    """The ALLOWED_LITERALS keys whose literal is still in its file, where the part check would refuse it."""
+    return {(name, value) for name, checker in _suite_checkers() for value in checker.allowed_met}
 
 
 class SuiteModuleTests(unittest.TestCase):
@@ -381,6 +445,8 @@ class SuiteModuleTests(unittest.TestCase):
     def test_every_allowlist_entry_is_still_needed(self):
         found = suite_findings()
         self.assertEqual([key for key in ALLOWED if key not in found], [])
+        met = allowed_literals_met()
+        self.assertEqual([key for key in ALLOWED_LITERALS if key not in met], [])
 
     def test_the_scan_covers_the_package_bin_and_tools(self):
         scanned = {relative(path) for path in python_sources()}
@@ -437,7 +503,8 @@ class PlantedViolationTests(unittest.TestCase):
             {"rx_private", "sys_modules"},
         "import betangel_suite\nmodule = betangel_suite.rx._archive\n": {"rx_private"},
         "import betangel_suite.engine\nmodule = betangel_suite.rx._archive\n": {"rx_private"},
-        "import importlib\nmodule = importlib.import_module('betangel_suite.rx')._archive\n": {"computed_import"},
+        "import importlib\nmodule = importlib.import_module('betangel_suite.rx')._archive\n":
+            {"computed_import", "rx_private"},
         "import builtins\nbuiltins.exec(code)\n": {"computed_import"},
         "import importlib\nmodule = importlib.import_module('.backtest.archive', 'betangel_research.betfair')\n":
             {"computed_import"},
@@ -470,8 +537,8 @@ class PlantedViolationTests(unittest.TestCase):
             {"sys_modules"},
         "import sys\nmodule = sys.modules.get('sys').modules['betangel_research.betfair.backtest.archive']\n":
             {"sys_modules"},
-        "import sys\nmodule = sys.modules['betangel_suite.rx']._archive\n": {"sys_modules"},
-        "import sys\nmodule = sys.modules['betangel_suite.rx'].pin\n": {"sys_modules"},
+        "import sys\nmodule = sys.modules['betangel_suite.rx']._archive\n": {"sys_modules", "rx_private"},
+        "import sys\nmodule = sys.modules['betangel_suite.rx'].pin\n": {"sys_modules", "rx_private"},
         "import sys\nsys.modules['builtins'].exec(code)\n": {"computed_import", "sys_modules"},
         "__import__('builtins').exec(code)\n": {"computed_import"},
         "import importlib\nimportlib.import_module('builtins').exec(code)\n": {"computed_import"},
@@ -517,8 +584,32 @@ class PlantedViolationTests(unittest.TestCase):
         "from . import engine\nfacade = vars(engine).pop('rx')\n": {"rx_private"},
         "import inspect\nloader = vars(inspect)['builtins'].exec\n": {"computed_import"},
         "import pkgutil\nfind = pkgutil.resolve_name('betangel_research.betfair.backtest.archive:ingest_archive')\n":
-            {"computed_import"},
+            {"computed_import", "test_only_name"},
         "from pkgutil import resolve_name\n": {"computed_import"},
+        # Round 4b's recheck, item 1, on 1a58314: an attrgetter alias and other resolvers of dotted paths, and a
+        # test-only name inside a dotted string, each of which passed with no finding then.
+        "from operator import attrgetter as get\nfrom . import engine\nmodule = get('rx._archive')(engine)\n":
+            {"rx_private"},
+        "import operator\nfrom . import engine\ngetter = operator.attrgetter\nmodule = getter('rx._archive')(engine)\n":
+            {"rx_private"},
+        "import functools\nimport operator\nfrom . import engine\n"
+        "module = functools.partial(operator.attrgetter, 'rx._archive')()(engine)\n": {"rx_private"},
+        "import operator\nfrom . import engine\nmodule = operator.attrgetter(*['rx._archive'])(engine)\n":
+            {"rx_private"},
+        "import pydoc\nfind = pydoc.locate('betangel_research.betfair.backtest.archive.ingest_archive')\n":
+            {"computed_import", "test_only_name"},
+        "import pydoc\nmodule = pydoc.locate('betangel_suite.engine.rx._archive')\n": {"computed_import", "rx_private"},
+        "from pydoc import locate\n": {"computed_import"},
+        "import string\nfrom . import engine\n"
+        "module = string.Formatter().get_field('0.rx._archive', [engine], {})[0]\n": {"rx_private"},
+        "import string\nfrom . import engine\nfacade = string.Formatter().get_field('0[rx]', [vars(engine)], {})[0]\n":
+            {"rx_private"},
+        "import os\nimport string\ntable = string.Formatter().get_field('0.sys.modules', [os], {})[0]\n":
+            {"sys_modules"},
+        "import importlib\nloader = string.Formatter().get_field('0.builtins.exec', [importlib], {})[0]\n":
+            {"computed_import"},
+        "find = lookup('betangel_research.betfair.backtest.archive:ingest_archive')\n": {"test_only_name"},
+        "door = lookup('function.__globals__')\n": {"globals_escape"},
     }
     ALLOWED_SOURCE = (
         "from . import rx\nrx.ticks.snap(345, 'down')\nrx.call(rx.book.MarketBookCache, key_type='historical')\n",
@@ -538,6 +629,9 @@ class PlantedViolationTests(unittest.TestCase):
         "def f():\n    \"\"\"rx\"\"\"\n    return {'port': 8765}.get('port')\n",   # the door keys in a docstring only
         "import operator\nname = operator.attrgetter('name', 'market.id')\n",
         "import os\nvalue = os.environ.get('LANG')\n",
+        # The door words inside other text, not as a part of a dotted path.
+        "message = 'the sys path, rx calls and modules: %d'\n",
+        "label = 'version 1.2.3 of market.id'\n",
     )
 
     def test_each_planted_violation_is_refused(self):
@@ -549,6 +643,18 @@ class PlantedViolationTests(unittest.TestCase):
         for text in self.ALLOWED_SOURCE:
             with self.subTest(text=text):
                 self.assertEqual(check_source(text), [])
+
+    def test_the_allowed_literal_is_let_through_only_as_that_literal(self):
+        # ALLOWED_LITERALS skips the part check for its exact value only: the same label resolved by attrgetter is
+        # still refused at the call, and any other dotted literal in that file is refused.
+        label = "rx.ticks.LADDER_CLASSIC"
+        allowed = {label}
+        self.assertEqual(check_source("SOURCE = %r\n" % label), [(1, None, "rx_private")])
+        self.assertEqual(check_source("SOURCE = %r\n" % label, allowed_literals=allowed), [])
+        self.assertEqual(check_source("import operator\nfrom . import engine\nvalue = operator.attrgetter(%r)(engine)\n"
+                                      % label, allowed_literals=allowed), [(3, None, "rx_private")])
+        self.assertEqual(check_source("SOURCE = 'rx._archive'\n", allowed_literals=allowed), [(1, None, "rx_private")])
+        self.assertEqual({value for (_file, value) in ALLOWED_LITERALS}, allowed)
 
     def test_findings_name_the_enclosing_function(self):
         text = "import sys\ndef activate():\n    return [name for name in sys.modules]\n"
