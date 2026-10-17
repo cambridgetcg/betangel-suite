@@ -14,6 +14,7 @@ this test and the temporary HOME: on an ephemeral port, or refused before any en
 against the real HOME.
 """
 
+import fcntl
 import json
 import os
 import re
@@ -23,12 +24,12 @@ import subprocess
 import time
 import unittest
 
-from betangel_suite import roots
+from betangel_suite import roots, runmarker
 from betangel_suite.errors import SuiteError
 from tests import (LAUNCHER, PYTHON, ROOT, child_env, require_no_run_marker, run_suite, stand_in_marker,
                    tree_listing)
 from tests import test_http_support as support
-from tests import test_session_state
+from tests import test_runmarker, test_session_state
 
 URL_RE = re.compile(r"http://127\.0\.0\.1:([0-9]+)/#c=([A-Za-z0-9_-]{22})\n")
 # tree_listing of ~/betangel-data once an engine command has made its TMPDIR, the suite root's tmp/, and left it empty.
@@ -681,6 +682,144 @@ results["controller"] = query(open(os.path.join(HOME, "token-1")).read())[1]["co
                                 (["ssh-session", "--port", "0"], {}, "ssh_session_outside_ssh")):
             result = run_suite(args, home, env=child_env(home, **env))
             self.assertEqual((result.returncode, result.stdout, result.stderr), (2, "", "refused:%s\n" % code), args)
+
+
+def lock_free(home):
+    """True when LOCK_EX on the temporary HOME's realdata lock is granted at once (and let go again); no lock file is
+    free, as for Nuance's wrapper."""
+    try:
+        fd = os.open(runmarker.lock_path(home), os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def wrapper_result(case, home, wait_s=60.0):
+    """Run the stand-in for Nuance's wrapper (test_runmarker.WRAPPER) on the temporary HOME: it makes the marker, then
+    waits up to wait_s for LOCK_EX on the realdata lock. Returns its JSON result (result, waited_s)."""
+    wrapper = subprocess.Popen([PYTHON, "-I", "-S", "-B", "-c", test_runmarker.WRAPPER % (
+        runmarker.marker_path(None, home), runmarker.lock_path(home), wait_s)], env=child_env(home), cwd=home,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    case.addCleanup(lambda: wrapper.poll() is None and (wrapper.kill(), wrapper.communicate()))
+    out, err = wrapper.communicate(timeout=wait_s + 60)
+    case.assertEqual((wrapper.returncode, err), (0, ""))
+    return json.loads(out)
+
+
+# ssh-session through cli.main in an engine-mode child, as bin/_launch.py runs it (test_runmarker.HOLDER: the engine
+# guard armed, run(argv) prints the refusal line); %(before)s runs first, then the command.
+CLI_SESSION = test_runmarker.HOLDER + """
+%(before)s
+sys.exit(run(["ssh-session", "--port", "0"]))
+"""
+# Holds the child, after bin/_launch.py's marker check, until the test's gate-go file exists in its state root.
+GATE = """
+from betangel_suite import runmarker
+runmarker.require_absent(runmarker.marker_path())      # bin/_launch.py's check, passed
+open(os.path.join(roots.state_dir(), "gate-waiting"), "w").close()
+deadline = time.monotonic() + 60
+while not os.path.exists(os.path.join(roots.state_dir(), "gate-go")) and time.monotonic() < deadline:
+    time.sleep(0.02)
+"""
+
+
+class RealDataLockTests(unittest.TestCase):
+    """I-17 for ssh-session (DESIGN.md 6.8). cli.main takes run/realdata.lock shared before the TMPDIR and checks the
+    marker again under it; the lock is then held while the session hosts its engine or watches one attached.
+    Hosting, it goes when that engine ends, within the engine's grace of the marker appearing, as for serve and
+    open (tests/test_engine_process.py). Attached, the session checks the marker on every poll and leaves at once,
+    without waiting for the other engine's grace (round 4b; before it, about 50 s after the marker).
+
+    Everything runs under a temporary HOME: bin/suite ssh-session only with --port 0 and this test's SSH_CONNECTION,
+    or cli.main in an engine-mode child with SUITE_VIA_SSH=1, as bin/suite passes it. The engines a session attaches
+    to run server.run directly (support.run_child), so only the session holds the lock."""
+
+    def cli_session(self, home, before=""):
+        tmp = roots.tmp_dir("ssh-session", home)
+        return PipeChild(self, home, "", name="ssh-cli", argv=[PYTHON, "-I", "-S", "-B", "-c",
+                                                               CLI_SESSION % {"before": before}],
+                         env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp, SUITE_VIA_SSH="1"))
+
+    def test_an_attached_session_leaves_at_once_when_the_marker_appears(self):
+        home = support.short_home(self)
+        serving = support.run_child(self, home, SERVE % (60.0, 120))
+        port = serving.wait_ready()
+        session = PipeChild(self, home, "", name="ssh-attached",
+                            argv=["/bin/sh", LAUNCHER, "ssh-session", "--port", "0"],
+                            env=child_env(home, SSH_CONNECTION=SSH))
+        (attached_port, _code), = session.wait_urls(1)
+        self.assertEqual(int(attached_port), port, "attached to the running engine, not a second one")
+        self.assertFalse(lock_free(home), "the attached session holds the lock shared")
+        result = wrapper_result(self, home)
+        self.assertEqual(result["result"], "locked")
+        self.assertLess(result["waited_s"], 10)                # the engine's own grace is 30 s
+        self.assertEqual(session.wait_exit(20), 2, shape(session.stderr()))
+        self.assertEqual(session.stderr(), "refused:run_marker_present\n")
+        self.assertRegex(shape(session.stdout()), r"\Ahttp://127\.0\.0\.1:%d/#c=<code>\n(heartbeat [0-9:]+\n)*"
+                                                  r"ended reason=run_marker\n\Z" % port)
+        self.assertIsNone(serving.process.poll(), "the engine is still in its grace: the session did not wait for it")
+
+    def test_a_hosting_session_lets_the_lock_go_within_the_grace_of_the_marker(self):
+        home = support.short_home(self)
+        grace = 2
+        hosting = self.cli_session(home, "from betangel_suite import engine\nengine.MARKER_GRACE_S = %d" % grace)
+        (port, _code), = hosting.wait_urls(1)
+        self.assertFalse(lock_free(home), "the hosting session holds the lock shared")
+        result = wrapper_result(self, home)
+        self.assertEqual(result["result"], "locked")
+        self.assertGreaterEqual(result["waited_s"], grace - 0.1)         # held while its engine was frozen
+        self.assertLess(result["waited_s"], grace + 5)
+        self.assertEqual(hosting.wait_exit(20), 2, shape(hosting.stderr()))
+        self.assertEqual(hosting.stderr(), "refused:run_marker_present\n")
+        self.assertRegex(shape(hosting.stdout()), r"\Ahttp://127\.0\.0\.1:%s/#c=<code>\n(heartbeat [0-9:]+\n)*"
+                                                  r"ended reason=run_marker\n\Z" % port)
+        self.assertFalse(os.path.lexists(support.control_path(home)))
+
+    def test_a_held_lock_or_a_marker_under_it_refuses_before_any_takeover(self):
+        # The wrapper holds LOCK_EX: refused at once, before the takeover, so the running engine's tab keeps control.
+        home = support.short_home(self)
+        serving = support.run_child(self, home, SERVE % (60.0, 120))
+        port = serving.wait_ready()
+        before = support.client(self, home, port, """
+token = bootstrap()
+fd = os.open(os.path.join(HOME, "token-1"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+os.write(fd, token.encode())
+os.close(fd)
+results["controller"] = query(token)[1]["controller"]
+""")
+        self.assertEqual(before, {"controller": True})
+        fd = os.open(runmarker.lock_path(home), os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            refused = run_suite(["ssh-session", "--port", "0"], home, env=child_env(home, SSH_CONNECTION=SSH))
+        finally:
+            os.close(fd)
+        self.assertEqual((refused.returncode, refused.stdout, refused.stderr), (2, "", "refused:run_lock_busy\n"))
+        after = support.client(self, home, port, """
+results["controller"] = query(open(os.path.join(HOME, "token-1")).read())[1]["controller"]
+""")
+        self.assertEqual(after, {"controller": True})
+        self.assertEqual(serving.terminate(), 0)
+        # The marker appears between bin/_launch.py's check and the lock: refused under the lock, before the TMPDIR,
+        # engine.lock or any engine.
+        home = support.short_home(self)
+        gated = self.cli_session(home, GATE)
+        gated.wait_path(os.path.join(roots.state_dir(home), "gate-waiting"))
+        marker = runmarker.marker_path(None, home)
+        os.makedirs(os.path.dirname(marker), mode=0o700)
+        open(marker, "w").close()
+        open(os.path.join(roots.state_dir(home), "gate-go"), "w").close()
+        self.assertEqual(gated.wait_exit(60), 2, shape(gated.stderr()))
+        self.assertEqual((gated.stdout(), gated.stderr()), ("", "refused:run_marker_present\n"))
+        self.assertEqual(sorted(os.listdir(roots.run_dir(home))), [roots.REALDATA_LOCK_NAME])     # no engine.lock
+        self.assertEqual(os.listdir(roots.data_home(home)), [])                                   # no TMPDIR
+        self.assertTrue(lock_free(home))
 
 
 class RunnerMarkerTests(unittest.TestCase):

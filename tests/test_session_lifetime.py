@@ -17,7 +17,7 @@ import time
 import unittest
 from unittest import mock
 
-from betangel_suite import cli
+from betangel_suite import cli, runmarker
 from betangel_suite.api import auth, lifetime, routes, server, sshsession
 from betangel_suite.errors import SuiteError
 
@@ -479,6 +479,40 @@ class AppTests(unittest.TestCase):
             port, _code, generation = sshsession.ControlLink(None, 0).attach()             # --port 0: any port
         self.assertEqual((port, generation, self.engine.pauses), (8766, 1, ["takeover"]))
 
+    def test_an_attached_viewer_leaves_at_once_for_the_run_marker(self):
+        # Session.run_attached checks the marker before every poll (DESIGN.md 6.8; round 4b). Present or unreadable,
+        # the viewer leaves at once with its end line and the refusal: no further poll, nothing sent to the engine.
+        # The seal and the signal handlers are the real process's (tests/test_session_process.py), not this runner's.
+        for found, code in ((runmarker.PRESENT, "run_marker_present"), (runmarker.UNREADABLE, "run_marker_unreadable")):
+            with self.subTest(code):
+                app = self.make()
+                checked, sent = [], []
+
+                def state(path):
+                    checked.append(path)
+                    return found if len(checked) == 3 else None
+
+                def request(command, home_dir=None, *, timeout=None, args=None):
+                    sent.append(command)
+                    return app.control(command, args)
+
+                stdin, stdout = Stdin(), Stdout()
+                self.addCleanup(stdin.close)
+                session = sshsession.Session(stdin, stdout, clock=Clock(), sleep=lambda seconds: None,
+                                             heartbeat_s=1e9, marker="/synthetic/lab-runs/ACTIVE")
+                with mock.patch.object(sshsession.control, "request", request), \
+                        mock.patch.object(sshsession.guard, "seal"), \
+                        mock.patch.object(sshsession.Session, "_install_signal_handlers"), \
+                        mock.patch.object(sshsession.runmarker, "state", state):
+                    with self.assertRaises(SuiteError) as caught:
+                        session.run_attached()
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(checked, ["/synthetic/lab-runs/ACTIVE"] * 3)
+                self.assertEqual(sent, ["attach_viewer"])
+                self.assertRegex(shape(stdout.getvalue()),
+                                 r"\Ahttp://127\.0\.0\.1:8765/#c=<code>\nended reason=run_marker\n\Z")
+                self.assertEqual(self.engine.pauses, ["takeover"])
+
     def test_the_lifetime_check_pauses_and_ends_the_session(self):
         app = self.make(grace_s=10, max_session_s=100)
         app.control("attach_viewer", {"port": 0})
@@ -542,6 +576,8 @@ class ViewerPortTests(unittest.TestCase):
     key's permitopen and the Air's LocalForward (DESIGN.md 8.6 item 2). server.run is replaced: nothing starts here."""
 
     def main(self, cfg, port):
+        from betangel_suite import config
+        cfg = dict(config.DEFAULTS, **cfg)          # as config.load() gives it
         stdout = Stdout()
         with mock.patch.object(server, "run", return_value=0) as run:
             try:
@@ -560,6 +596,8 @@ class ViewerPortTests(unittest.TestCase):
                 self.assertEqual((result, len(calls), out), (0, 1, ""))
                 self.assertEqual((calls[0].kwargs["command"], calls[0].kwargs["port"]), ("ssh-session", expected))
                 self.assertEqual(calls[0].kwargs["session"].port, expected)     # what an attach will expect
+                # the run marker an attached session checks on every poll: the config's (DESIGN.md 6.8)
+                self.assertEqual(calls[0].kwargs["session"].marker, runmarker.marker_path(None))
 
     def test_the_viewer_port_is_the_config_default(self):
         from betangel_suite import config

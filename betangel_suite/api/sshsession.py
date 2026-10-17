@@ -16,6 +16,12 @@ Two ways to run, both driven by Viewer:
 - **Attached.** With an engine running (lock held), Viewer takes it over through the control socket
   (ControlLink: attach_viewer, viewer_code, viewer_heartbeat, viewer_away) and this process exits as soon as its
   viewer is away, superseded or the engine has gone; the engine keeps the session itself (api/lifetime.py).
+  It also checks the run marker on every poll and leaves at once when Nuance's run is announced (Session.run_attached).
+
+Both hold run/realdata.lock shared for their life: cli.main takes it before the handler (cli.REALDATA_COMMANDS;
+DESIGN.md 6.8). Hosting, the engine in this process freezes when the marker appears and ends after its grace, so the
+lock goes within about 35 s, as for serve and open. Attached, the engine is another process's, and waiting for its end
+would hold the lock past that bound, so the viewer does not wait for it.
 
 The forced command (no --port) uses only VIEWER_PORT, 8765, the one port the viewer key's permitopen and the Air's
 LocalForward name: with another config port it refuses viewer_port_mismatch before any engine starts, and an engine
@@ -41,7 +47,7 @@ import sys
 import threading
 import time
 
-from .. import guard
+from .. import guard, runmarker
 from ..errors import SuiteError
 from . import auth as auth_module
 from . import control
@@ -286,9 +292,10 @@ class Session:
     """What server.run needs for ssh-session: the viewer in the engine's own process, or attached to another."""
 
     def __init__(self, stdin, stdout, *, clock=time.monotonic, sleep=time.sleep, heartbeat_s=HEARTBEAT_S,
-                 poll_s=POLL_S, home_dir=None, on_fail=None, port=0, write_timeout_s=WRITE_TIMEOUT_S):
+                 poll_s=POLL_S, home_dir=None, on_fail=None, port=0, write_timeout_s=WRITE_TIMEOUT_S, marker=None):
         self.terminal = Terminal(stdin, stdout, on_fail=on_fail, write_timeout_s=write_timeout_s)
         self.port = port                        # the port an attached engine must serve (ControlLink)
+        self.marker = marker                    # the run marker's path, checked on every attached poll (main sets it)
         self._clock = clock
         self._sleep = sleep
         self._heartbeat_s = heartbeat_s
@@ -321,16 +328,33 @@ class Session:
     # --- attached to an engine in another process ---------------------------------------------------
 
     def run_attached(self):
-        """Take a running engine over through the control socket, then serve the viewer until it is done."""
+        """Take a running engine over through the control socket, then serve the viewer until it is done.
+
+        The run marker is checked before every poll (DESIGN.md 6.8; lab-Claude's decision, sent to Nuance on
+        2026-10-17). Once it is present or cannot be checked, this viewer leaves at once: its terminal gets
+        "ended reason=run_marker", and the process exits with run_marker_present or run_marker_unreadable, which
+        lets run/realdata.lock go. It does not wait for the engine, which freezes and ends only after its own grace
+        (30 s) and which the viewer would notice only at its next heartbeat (HEARTBEAT_S, after a write that can
+        take WRITE_TIMEOUT_S): about 50 s in all, past the 35 s bound Nuance accepted. A poll already in a control
+        request or a write when the marker appears finishes it first: at most control.CONNECTION_TIMEOUT_S or
+        WRITE_TIMEOUT_S, then POLL_S. Nothing is sent to the engine; it sees the marker itself.
+        """
         self.viewer = Viewer(ControlLink(self._home, self.port), self.terminal, clock=self._clock,
                              heartbeat_s=self._heartbeat_s)
         self.viewer.attach()                    # the control connect is permitted here, before the seal
         guard.seal()
         self._install_signal_handlers()
         self.terminal.start()
-        while self.viewer.step() == ACTIVE:
+        while True:
+            found = None if self.marker is None else runmarker.state(self.marker)
+            if found is not None:
+                self.terminal.write(end_line("run_marker"))
+                if found == runmarker.PRESENT:
+                    raise SuiteError("run_marker_present")
+                raise SuiteError("run_marker_unreadable")
+            if self.viewer.step() != ACTIVE:
+                return EXIT_OK
             self._sleep(self.poll_s)
-        return EXIT_OK
 
     def _install_signal_handlers(self):
         if threading.current_thread() is not threading.main_thread():
@@ -358,6 +382,7 @@ def main(cfg, *, port=None, stdin=None, stdout=None, home_dir=None, **options):
     session_keys = ("clock", "sleep", "heartbeat_s", "poll_s", "write_timeout_s")
     session = Session(_stdin() if stdin is None else stdin, sys.stdout if stdout is None else stdout,
                       home_dir=home_dir, on_fail=_silence_stdout if stdout is None else None, port=port,
+                      marker=runmarker.marker_path(cfg, home_dir),
                       **{key: options.pop(key) for key in session_keys if key in options})
     return server.run(cfg, command="ssh-session", port=port, session=session, home_dir=home_dir, **options)
 

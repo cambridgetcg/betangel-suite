@@ -507,7 +507,7 @@ def run(cfg, *, command, port, opener=None, on_ready=None, marker_grace_s=None, 
     lock_fd = control.acquire_lock(home_dir)
     if lock_fd is None:
         if command == "open":
-            return attach(opener=opener, out=out, home_dir=home_dir, print_url=print_url)
+            return attach(opener=opener, out=out, home_dir=home_dir, print_url=print_url, marker=marker)
         if command == "ssh-session":
             return session.run_attached()
         raise SuiteError("engine_running")
@@ -615,9 +615,16 @@ def _install_signal_handlers(app, session=None):
         signal.signal(signum, handler)
 
 
-def attach(*, opener=None, out=None, home_dir=None, print_url=False):
+def attach(*, opener=None, out=None, home_dir=None, print_url=False, marker=None):
     """open with an engine already running: a takeover through the control socket, then /usr/bin/open (or, with
-    print_url, the URL on out instead)."""
+    print_url, the URL on out instead).
+
+    open holds run/realdata.lock shared from cli.main until it exits (DESIGN.md 6.8), and this path waits on nothing
+    after the hand-over. server.run checked the marker just before; at marker it is checked once more after the
+    takeover's reply (which can take control.CONNECTION_TIMEOUT_S) and before the hand-over: a run announced
+    meanwhile refuses with run_marker_present or run_marker_unreadable, and no URL goes to /usr/bin/open or out
+    for an engine that is freezing for the run. The takeover itself has happened (the engine paused, earlier codes
+    and tokens dead)."""
     out = sys.stdout if out is None else out
     reply = control.request("attach", home_dir)
     if reply is None:
@@ -626,6 +633,8 @@ def attach(*, opener=None, out=None, home_dir=None, print_url=False):
     if (not reply.get("ok") or type(port) is not int or not 0 < port <= 65535 or not isinstance(code, str)
             or not auth_module.CODE_RE.fullmatch(code)):
         raise SuiteError("control_failed")
+    if marker is not None:
+        runmarker.require_absent(marker)
     if print_url:
         guard.seal()
         out.write(bootstrap_url(port, code) + "\n")

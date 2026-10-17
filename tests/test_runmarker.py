@@ -536,6 +536,28 @@ sys.exit(run(["stop"]))
             os.close(fd)
         self.assertEqual(os.listdir(roots.data_home(self.home)), [])        # no suite root, no tmp/
 
+    def test_test_and_uisnap_neither_take_nor_wait_for_the_lock(self):
+        # lab-Claude's decision, asked of Nuance on 2026-10-17, not answered (DESIGN.md 6.8): test and uisnap refuse
+        # under the marker at start (StartTimeTests) but never take run/realdata.lock. So while the wrapper holds
+        # LOCK_EX (with no marker), both still start: bin/suite test runs and finds no test, and bin/suite uisnap gets
+        # past cli.main to its own refusal of a configured data root. Neither makes anything under ~/betangel-data.
+        os.makedirs(os.path.dirname(self.lock), 0o700)
+        fd = os.open(self.lock, os.O_RDONLY | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            tested = run_suite(["test", "-k", "zzz_no_such_test"], self.home)
+            config_path = roots.config_path(self.home)
+            with open(config_path, "w", encoding="ascii") as handle:
+                json.dump({"data_roots": ["~/betangel-data/historic-pro"]}, handle)
+            os.chmod(config_path, 0o600)
+            snapped = run_suite(["uisnap"], self.home)
+        finally:
+            os.close(fd)
+        self.assertEqual(tested.returncode, 0, tested.stderr[-2000:])
+        self.assertIn("Ran 0 tests", tested.stderr)
+        self.assertEqual((snapped.returncode, snapped.stdout, snapped.stderr), (2, "", "refused:synthetic_only\n"))
+        self.assertEqual(os.listdir(roots.data_home(self.home)), [])
+
     def test_no_tmpdir_under_the_data_home_without_the_lock(self):
         # A command that may touch real data but is missing from REALDATA_COMMANDS refuses before its TMPDIR.
         body = r"""

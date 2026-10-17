@@ -654,7 +654,8 @@ def main():
 class RealDataLockTests(unittest.TestCase):
     """I-17 for serve and open (DESIGN.md 6.8, "Owed on phase0/http and phase0/viewing"): each takes run/realdata.lock
     shared in cli.main before its TMPDIR, checks the marker again under it, refuses with the existing codes, and
-    holds it for the engine's life, letting it go within the grace period of the marker appearing. Everything runs
+    holds it for the engine's life, letting it go within the grace period of the marker appearing. open's attach path
+    holds it while it takes a running engine over, and hands on no URL once the marker appears. Everything runs
     under a temporary HOME: serve through bin/suite or cli.main, and open only through cli.main with OPEN_SAFE's
     recorder in place of /usr/bin/open."""
 
@@ -787,6 +788,46 @@ sys.exit(run(["serve", "--port", "0"]))
         self.assertEqual(serving.wait_exit(), 2)
         self.assertEqual(serving.stderr(), "refused:run_marker_present\n")
         self.assertFalse(control.engine_running(home))
+
+    def test_open_attaching_holds_the_lock_and_hands_on_no_url_once_the_marker_appears(self):
+        # open's attach path (an engine already running): cli.main took the lock, which open holds while it takes the
+        # engine over and until it exits. A run announced during the takeover refuses before the hand-over
+        # (server.attach checks the marker after the reply; round 4b): no URL goes to /usr/bin/open. The engine runs
+        # server.run directly (support.run_child), so only open holds the lock; open's attach request waits after
+        # its reply for the test's go file, while the test makes the marker.
+        home = support.short_home(self)
+        serving = support.run_child(self, home, "def main():\n    return server.run(cfg, command='serve', port=0)\n")
+        serving.wait_ready()
+        held = r"""
+import time
+inner_request = control.request
+def request_then_wait(command, *args, **kwargs):
+    reply = inner_request(command, *args, **kwargs)
+    if command == "attach":
+        open(os.path.join(roots.state_dir(), "attached"), "w").close()
+        deadline = time.monotonic() + 60
+        while not os.path.exists(os.path.join(roots.state_dir(), "go")) and time.monotonic() < deadline:
+            time.sleep(0.02)
+    return reply
+control.request = request_then_wait
+"""
+        opening = open_cli(self, home, code=OPEN_SAFE + held + 'sys.exit(run(["open", "--port", "0"]))\n')
+        state = roots.state_dir(home)
+        deadline = time.monotonic() + 60
+        while not os.path.exists(os.path.join(state, "attached")):
+            if opening.process.poll() is not None or time.monotonic() > deadline:
+                self.fail("no takeover: exit=%r stderr=%r" % (opening.process.poll(), opening.stderr()[-300:]))
+            time.sleep(0.02)
+        self.assertFalse(self.lock_free(home), "open holds the lock while it takes the engine over")
+        marker = runmarker.marker_path(None, home)
+        os.makedirs(os.path.dirname(marker), mode=0o700)
+        open(marker, "w").close()
+        open(os.path.join(state, "go"), "w").close()
+        self.assertEqual(opening.wait_exit(60), 2, opening.stderr())
+        self.assertEqual((opening.stdout(), opening.stderr()), ("", "refused:run_marker_present\n"))
+        self.assertFalse(os.path.lexists(opened_path(home)), "no URL was handed on")
+        self.assertEqual(read_recorded(home, "requests"), ["attach"])
+        self.assertTrue(self.lock_free(home))
 
 
 class RunnerMarkerTests(test_engine.EngineCase):
