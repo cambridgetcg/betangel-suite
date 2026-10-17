@@ -1048,15 +1048,16 @@ results["partial_made"] = os.path.lexists(partial)
         self.assertFalse(ok(["/opt/homebrew/bin/python3", "-I", "-S", "-B", "-c", "pass"], launch_env))
         self.assertTrue(ok(["/bin/sh", guard.LAUNCHER, "selfcheck"], launch_env))
         # Every child, not only a launcher one, needs an explicit environment whose HOME keeps it out of the runner's
-        # data home (Nuance's re-review of #2, F2; the hook-level cases are in
-        # test_launcher_children_keep_out_of_the_runners_data_home and test_engine_children_keep_out_of_the_runners_data_home).
+        # data home (Nuance's re-review of #2, F2; the hook-level cases are in the two tests
+        # test_launcher_children_keep_out_of_the_runners_data_home and test_engine_children_...).
         # Lab-Claude's round-5 review: -c code that arms the guard itself, and a launcher after one more interpreter
         # option, passed with env None or the runner's own HOME.
         shapes = [[python, "-I", "-S", "-B", "-c", "pass"], [python, "-I", "-S", "-B", "-c", engine],
                   [python, "-I", "-S", "-B", launch, "selfcheck"], [python, "-I", "-S", "-B", "bin/_launch.py", "test"],
                   ["/opt/homebrew/bin/python3.11", "-I", "-S", "-B", "-c", engine]]
         for extra in (["-X", "utf8"], ["-u"], ["-W", "error"], ["-E"], ["-X", "utf8", "-u"]):
-            shapes += [[python, "-I", "-S", "-B", *extra, launch, "vendor"], [python, "-I", "-S", "-B", *extra, "-c", engine]]
+            shapes += [[python, "-I", "-S", "-B", *extra, launch, "vendor"],
+                       [python, "-I", "-S", "-B", *extra, "-c", engine]]
         shapes.append(["/bin/sh", guard.LAUNCHER, "selfcheck"])
         for argv in shapes:
             self.assertTrue(ok(argv, launch_env), argv)
@@ -1230,8 +1231,8 @@ results["stderr"] = sorted(results["stderr"])
         for home in (runner, control):
             os.makedirs(os.path.join(roots.data_home(home), "suite.noindex"), mode=0o700)
         code = PRELUDE + ("from betangel_suite import guard\nguard.arm('engine')\nimport os\n"
-                          "with open(os.path.join(os.environ['HOME'], 'betangel-data', 'suite.noindex', 'written'), 'x'):\n"
-                          "    pass\n")
+                          "target = os.path.join(os.environ['HOME'], 'betangel-data', 'suite.noindex', 'written')\n"
+                          "with open(target, 'x'):\n    pass\n")
         results = checks(self, runner, mode="test", setup="import subprocess, sys\n", body="""
 code, control = %r, %r
 def engine(env, *extra):
