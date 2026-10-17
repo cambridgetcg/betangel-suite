@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft 0.2, for review (review round 2 applied; see Appendix B). Yu's Phase 0 rulings recorded 2026-10-15, Yu's Q-Y8 answer 2026-10-16, and Yu's answers of 2026-10-17 (section 2.2.1). Nuance's PR #1 review applied 2026-10-16 (Appendix C). |
+| Status | Draft 0.2, for review (review round 2 applied; see Appendix B). Yu's Phase 0 rulings recorded 2026-10-15, Yu's Q-Y8 answer 2026-10-16, and Yu's answers of 2026-10-17 (section 2.2.1). Nuance's PR #1 review applied 2026-10-16 and 2026-10-17 (Appendix C). Round 5, 2026-10-17: Astra's PR #1 review, Nuance's PR #1 re-review and Nuance's answers of 2026-10-17 applied (Appendix F). |
 | Date | 2026-10-15 |
 | Author | lab-Claude (Claude Code session 03026dfa on the lab MacBook Pro) |
 | Reviewers | Nuance (Air Claude, owner of betangel-research), Astra (Codex reviewer) |
@@ -891,7 +891,7 @@ Nuance has answered: during a real run, "a suite elsewhere is harmless but slows
     - `.place` never takes one, and nor do `.cancel` and `.withdraw`, so no system path can place, replace, or choose which orders to cancel;
     - the AST test is extended: `SystemStop(` appears only at those sites, and `stop_all` is the only `PaperDesk` method that accepts one (owed at 1b);
     - the journal records `halt {reason:"system_stop:<reason>", scope:"global"}`, never `operator_stop`, and no system reason starts with `operator_`;
-    - tests for `bin/suite stop`, expiry (`abandoned`, `max_session`), failure (`engine_failed`) and recovery, none of which fabricates a click (owed at 1b).
+    - tests for `bin/suite stop`, expiry (`abandoned`, `max_session`), failure (`engine_failed`, which leaves its orders to the next start's sweep) and recovery, none of which fabricates a click (owed at 1b).
 
     It changes a safety invariant (I-8). Under the governance row (section 3.9), Nuance and Astra each say whether it widens, and it goes to Yu (rule 10) unless both say it does not.
 - **Scripted orders.** `TestOrder` (also used as `ReplayedClick` for `commands.jsonl` re-runs) is a separate type. `PaperDesk` accepts it only when the engine is in synthetic mode, and synthetic mode refuses every configured real data root. A `commands.jsonl` re-run writes only to a temp journal in that mode.
@@ -1875,3 +1875,69 @@ Nuance reviewed this document at daf9c64 from the upstream and data side: one co
 - **11 (P3).** The Rule-4 cut-off (7.9); the SP tap's terms (6.6); the trial ledger and inspected months (5.3, 5.5); session ids and end statuses (7.10; since round 5, a reason-to-status map and the next-start sweep); partial invariants and the Air viewing gate (0, 12); no data-root read before the root is agreed (5.2); the practice loss limit (7.2; since round 5, the practice stop); the Air-side repo (3.1); "tick-by-tick" (5.1); the Safari clean-up now (8.6, Q-Y11); `research_months_ruling` (3.8); release by merge SHA, silent codes, the checklist as a log and scanned outbound text (8.6, 9.1, 3.9, 5.6); stale I-14 and c2b3b3/c2b3b4 (0, 2.4, 10, 16, Q-Y16).
 - **Questions.** Nuance's answers to Q-N4..Q-N11 and Q-N13 are recorded as Nuance's, and Yu can override them (section 15.2).
 - **Q-N5, tracked.** Nuance's answer changes how a pending order is cancelled in live-parity mode. Round 5 applies it, with Nuance's answer of 2026-10-17 that STOP is covered and void withdraws: sections 6.4, 7.6, 7.10, 8.2, 8.3, 11 (the 500 ms test split by mode), 12 (the 1b exit) and 13 (Appendix F).
+
+## Appendix F. Round 5 (2026-10-17)
+
+Round 5 answers Astra's review of PR #1 at 47c403e (items 1-13) and Nuance's re-review of PR #1 at 47c403e (findings 1-15). It also records, as they bear on this document, Nuance's re-review of PR #2 at 823c194: Nuance's answers to lab-Claude's nine questions of 2026-10-17, and the 60 s wording. Astra's re-review of PR #2 and the code findings of both PR #2 re-reviews are answered on phase0/foundation; so are Appendices D and E, and AGENTS.md, whose rules 5 and 7 and routing table this document mirrors. Decisions marked lab-Claude's are lab-Claude's own. Nuance's and Astra's words are quoted as theirs, and Yu's only as section 2.2.1 records them.
+
+**Astra's PR #1 review**
+
+| Item | What changed | Sections |
+|---|---|---|
+| 1 (P3): the routing documents disagree | 3.9 carries phase0/foundation's routing rows, which match AGENTS.md's table (the binding copy), with the proposal labels kept; the routing line after the invariants table matches. Who judges a change of meaning: the governance row Yu adopted on 2026-10-17 (Nuance and Astra each, else Yu) | 2.2.1, 3.9, 10 |
+| 2 (P2): I-8 leaves no path for cleanup | The system-stop proposal: `PaperDesk.stop_all(SystemStop)`, with no targets and no place, its own reasons, and tests for `bin/suite stop`, expiry, failure and recovery that fabricate no click. Asked of Nuance and Astra in the round-5 replies, not answered | 7.1, 7.6, 7.10, 10 (I-8), 11, 12 |
+| 3 (P2): the guard's stated guarantee | Scoped to the audited and wrapped calls; argv shapes, not single uses; the engine, vendor and test modes; the rule against worker processes stays a rule | 3.1, 3.2, 10 (I-3, I-5, I-6, "The guard's scope") |
+| 4 (P2): the marker is a stop request | Draining after the marker appears, the wrapper's locks keeping the upstream run apart, and no claim that polling stops every write | 3.9 (rule 7), 6.8, 9.4, 10 (I-17) |
+| 5 (P2): vendor's documented entry | Code on phase0/foundation (lab-Claude's decision): the standalone entry refuses under the marker, or refuses to run standalone. Here: `bin/suite vendor` is the documented entry, and the launcher example gains vendor's TMP branch and `--py311` | 3.5 item 1, 3.6 |
+| 6 (P2): I-9 and the scanner | Bounded pattern detection, with its gaps named and provenance review required; a clean scan is not proof | 5.6, 9.4, 10 (I-9) |
+| 7 (P3): the pre-commit hook | It runs the hygiene scan only; the fast tier is its own step | 11 |
+| 8 (P3): control clients and I-3 | The control-client exception, tied to its code and tests on phase0/http | 9.1, 10 (I-3) |
+| 9 (P3): the salt | Code on phase0/foundation (lab-Claude's decision): first provisioning writes a `salt-provisioned` marker, and a lost salt is then refused (`salt_missing`), never regenerated. Here: that text, and the move withdrawn | 3.7, 9.2 |
+| 10 (P3): two headless routes | The reviewed-code gate, on `refs/remotes/origin/main`, is chosen; the file-descriptor filter is a later option only | 8.6, 10 (I-16, I-18), 12 (1a) |
+| 11 (P3): the oracle recipe | phase0/foundation's correction: no temporary clone; the `paper.git_state` stub is owed before 1b | 3.5 item 3, 4.2 |
+| 12 (P3): exact contracts | `urllib.parse` on 3.11; no `SystemClock`; this document's 2 MiB exemption; no traceback file in Phase 0; a code is live until it is redeemed or 120 s have passed | 3.7, 4.1, 5.5, 5.6, 9.1, 9.2 |
+| 13 (P3): superseded and open text | Withdrawal rewritten by mode, with draft 0.2's text marked superseded; one ledger field list; the Phase 0 exit names the rulings it needs; Q-Y1, Q-Y2 and Q-Y4 point to their answers | 5.5, 6.4, 7.6, 8.2, 8.3, 11, 12, 13, 15.1, Appendix B |
+
+**Nuance's PR #1 re-review**
+
+| Finding | What changed | Sections |
+|---|---|---|
+| 1 (P2): STOP's paths cannot hold an OperatorClick | As Astra's item 2, in the shape Nuance prefers; asked of Nuance and Astra | 7.1, 7.6, 7.10, 10 (I-8) |
+| 2 (P2): the salt is regenerated | As Astra's item 9. Nuance's answer 4 (do not move it) is accepted | 3.7, 9.2 |
+| 3 (P2): UI-only and the no-automation rule | Narrowing UI-only, and the test-file row in Nuance's mechanical form: asked of Yu on 2026-10-17, not answered (lab-Claude recommended yes to both). The node tests are owed, and 9.4 gains a residual | 2.2.1, 3.9, 8.3, 9.4, 11, Q-N12, Q-Y8 |
+| 4 (P3): stale statuses | Whose recommendation each answered question carried, as lab-Claude's reading; the UI-only recommendation; R-3 and R-7 still open; the Safari clean-up not confirmed done; the Air's CLAUDE.md line is in | 2.2.1, 8.6, 9.4, Q-Y10, Q-Y11, Appendix C |
+| 5 (P3): the ladder count | 0 of 12,208 BASIC markets, with its scope; absent is the working case (lab-Claude's decision): U-10 and any D-5 question start now, and M-PRO confirms; the keyless variant is required (f23ba3f) | 0, 1.2, 2.1, 7.1, 7.3, 11, 12, 14 (introduction, U-10), Appendix C |
+| 6 (P3): Grep and Glob | `claude --version` is 2.1.301 on the lab; Read and Edit denied, Grep and Glob unverified, Bash conduct only | 2.2.1, 3.9 (rule 5), 9.4, Q-Y9 |
+| 7 (P3): the Air's listener | During R-2 the `ssh -L` forward is the only suite listener on the Air; a netstat check before `ssh lab-suite`, by Nuance: proposed, asked of Nuance | 8.6, 9.4, 16, Appendix C |
+| 8 (P3): Q-N5 | In live parity a pending order activates, then is cancelled, by one code path, STOP stepping the reader and exchange to A; exploration mode and void withdraw; the freeze wins; the 500 ms test is split by mode; tracked in the 1b exit | 6.4, 7.6, 7.10, 8.2, 8.3, 11, 12, 13, Q-N5, Appendix B, Appendix C |
+| 9 (P3): end statuses and recovery | A reason-to-status map with SIGHUP and the marker mapped and no `operator_` reason for a system end; the next-start sweep on Nuance's conditions (answer 6) | 3.7, 6.8, 7.10, 11, 12 |
+| 10 (P3): the practice limit | The practice stop: the UTC day, each session's UTC start, the official net or the worst case, checked before the click, failing closed; an R10 line on the shadow badge | 7.2, 7.10, 8.2, 11, 12, Q-Y6 |
+| 11 (P3): the ledger fields | Rewritten to Q-N11's, with no market id in the clear | 5.5 |
+| 12 (P3): the data-root gate | Nuance's recorded agreement is the gate; the 1a reader also refuses while the flag is False, tested | 5.2, 12 (1a) |
+| 13 (P3): "a commit that main contains" | `refs/remotes/origin/main`, named in full, after a fetch; `release.py` the same; it stops accidents, not same-uid rewrites; the first-parent question asked of Nuance | 8.6, 10 (I-16, I-18), 12 (1a) |
+| 14 (P3): proposal 001 | The terms' "No onward distribution" clause is cited, and proposal 001 as PR #3, not merged | 8.7, Q-Y9 |
+| 15 (P3): slips | The 2.2.1 heading was already fixed; the status line's dates; "agreed marker"; the Q-N1 row answered; python3.11 out of the heavy tier | Status, 0, 3.4, 9.4, 11, Q-N1 |
+
+**Nuance's answers of 2026-10-17** (Nuance's PR #2 re-review, to lab-Claude's nine questions of that day; Yu can override them)
+
+| Question | Nuance's answer, in brief | Where |
+|---|---|---|
+| 1 | The fail-closed row withdrawn; a test-file row only in a mechanical form, and Yu's to decide | 2.2.1, 3.9, Q-N12 |
+| 2 | Agreed, on four conditions: say that the guard refuses only writes, or refuse reads under the real data home; uisnap and `stop` keep modes of their own; a test running when the marker appears is bounded by the per-test and per-module checks | phase0/foundation |
+| 3 | `realdata.lock` is the name | 6.8, Q-N3 |
+| 4 | Do not move the salt; make "never regenerated" true in code | 9.2 |
+| 5 | STOP is covered; void withdraws; the freeze wins | 7.6, Q-N5 |
+| 6 | The third withdrawal case agreed, on conditions | 7.10 |
+| 7 | Yes, within rule 5; correct "never what is in it" | phase0/foundation (its section 3.7) |
+| 8 | Both halves of Q-N3 agreed as built at 823c194, pending F4 and F5, on conditions | 2.2.1, 3.7, 3.8, 5.2, 6.8, 12, Q-N3 |
+| 9 | No separate store, net across sessions, voided included; the UTC day if the limit mirrors `max_daily_loss`; checked before the click; the amounts are Yu's | 7.2, Q-Y6 |
+| The 60 s wording | "At least 60 s", in one sentence for both locks | 6.8, 10 (I-17) |
+
+**Open after round 5**
+
+- Asked of Nuance and Astra in the round-5 replies: whether the system-stop proposal widens I-8 (section 7.1). Unless both say it does not, it goes to Yu.
+- Asked of Nuance in the round-5 reply: whether a release must lie on main's first-parent line (section 8.6), and the netstat check before `ssh lab-suite`, by Nuance on the Air (section 8.6).
+- Asked of Yu on 2026-10-17: the test-file row and narrowing UI-only (section 3.9).
+- Nuance's agreement of Q-N3, recorded at the merge-candidate SHA once F4 and F5 are dealt with (sections 3.7 and 6.8).
+- Nuance's count of the PRO definitions at M-PRO (section 7.1), and U-10.
+- Yu's: Q-Y6 (the practice stop), R-3 and R-7, and the other open questions in section 15.1.
