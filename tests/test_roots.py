@@ -317,6 +317,38 @@ class LiesInTests(unittest.TestCase):
             os.remove(clone)
             self.assertFalse(roots.lies_in(os.path.join(home, "firmlink", "deeper"), clone, "research_clone_on_path"))
 
+    def test_a_path_that_cannot_be_judged_is_refused(self):
+        # The final recheck of 26fb4c4: the clone side was fixed, but the path side still read a failed stat as
+        # missing. Here vault (no search permission) holds a link into a real, searchable clone, so a path through
+        # vault was judged at vault itself and found outside the clone, and the guard's partial check allowed it.
+        from betangel_suite import guard
+        home = make_home(self)
+        clone = roots.research_clone(home)
+        os.makedirs(os.path.join(clone, "sub"))
+        vault = os.path.join(home, "vault")
+        os.makedirs(vault)
+        os.symlink(os.path.join(clone, "sub"), os.path.join(vault, "x"))
+        path = os.path.join(vault, "x", "deeper")
+        deps = os.path.join(vault, "x", "deps")
+        partial = os.path.join(deps, "betangel-research-0123456789ab.partial")
+        argv = list(guard.VENDOR_GIT_PREFIX) + ["-C", partial, "remote", "remove", "origin"]
+        env = dict(guard.VENDOR_GIT_ENV, HOME=home)
+        self.addCleanup(os.chmod, vault, 0o700)
+        with self.subTest(vault="searchable"):
+            self.assertTrue(roots.lies_in(path, clone, "research_clone_on_path"))
+        os.chmod(vault, 0)
+        try:
+            with self.subTest(vault="not searchable"):
+                with self.assertRaises(SuiteError) as caught:
+                    roots.lies_in(path, clone, "research_clone_on_path")
+                self.assertEqual(caught.exception.code, "research_clone_on_path")
+            with self.subTest(guard="partial clone path, vault not searchable"):
+                self.assertFalse(guard.vendor_argv_ok(argv, env, clone, deps, home))
+        finally:
+            os.chmod(vault, 0o700)
+        with self.subTest(path="missing, below a searchable directory"):   # still judged at its nearest ancestor
+            self.assertFalse(roots.lies_in(os.path.join(home, "nowhere", "deps"), clone, "research_clone_on_path"))
+
 
 if __name__ == "__main__":
     unittest.main()

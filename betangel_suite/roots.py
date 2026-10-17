@@ -271,7 +271,10 @@ def lies_in(path, directory, code):
     exist has no identity, and nothing lies in it but by text. A stat of directory that fails for any other reason
     (no search permission, a link loop) cannot be judged: SuiteError(code), as check_placement does since 57fc0c9.
     Read as missing, a clone behind a directory with no search permission let a path linked into it through the
-    firmlink spelling pass (the guard fix's question 3).
+    firmlink spelling pass (the guard fix's question 3). The same holds for path and its resolved text: a stat that
+    fails otherwise than missing raises SuiteError(code), as check_placement does, so a path through a directory with
+    no search permission that holds a link into the clone is not judged at that directory's text parent and passed
+    (the final recheck of 26fb4c4). A missing path is still judged at its nearest existing ancestor.
     """
     real = os.path.realpath(path)
     forms = (directory.casefold(), os.path.realpath(directory).casefold())
@@ -280,6 +283,8 @@ def lies_in(path, directory, code):
     target = _known_identity(directory, code)
     if target is None:
         return False
+    for candidate in (path, real):
+        _known_identity(candidate, code)  # a path that cannot be stat()ed but is not missing cannot be judged either
     return any(target in _lineage(candidate, code) for candidate in (path, real))
 
 
