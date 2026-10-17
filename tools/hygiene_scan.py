@@ -533,7 +533,7 @@ _HEX_TOKEN = {short: re.compile(
 _HEX_DUMP = {short: re.compile(
     r"\s*[0-9a-fA-F]{6,10}:?\s+(?P<hex>[0-9a-fA-F]{2}(?: {0,2}[0-9a-fA-F]{2}){%s})(?:\s{2,}.*)?\s*" % count)
     for short, count in ((False, "3,"), (True, "0,"))}
-_OCT_DUMP = {short: re.compile(r"\s*[0-7]{7,}(?P<oct>(?:[ \t]+[0-7]{6}){%s})\s*" % count)
+_OCT_DUMP = {short: re.compile(r"\s*[0-7]{7,}(?P<oct>(?:[ \t]+[01][0-7]{5}){%s})\s*" % count)   # 16-bit words
              for short, count in ((False, "4,"), (True, "1,"))}
 _DEC_BYTE = r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
 _DEC_TOKEN = {short: re.compile(
