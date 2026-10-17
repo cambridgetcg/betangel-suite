@@ -266,6 +266,57 @@ class LiesInTests(unittest.TestCase):
         self.assertFalse(judged("firm"))
         self.assertTrue(judged("betangel-research", "sub"))
 
+    def test_a_clone_that_cannot_be_judged_is_refused(self):
+        # The guard fix's question 3: lies_in read every failed stat of the clone as "no clone", as check_placement
+        # did before 57fc0c9. Here the clone links to vault/clone, and vault has no search permission, so the clone
+        # cannot be stat()ed (EACCES), and a link into it is spelt through the firmlink or /.vol, which the text check
+        # does not see. lies_in returned False, so vendor and the guard's partial clone check let such a path through.
+        from betangel_suite import guard
+        home = make_home(self)
+        vault = os.path.join(home, "vault")
+        sub = os.path.join(vault, "clone", "sub")
+        os.makedirs(sub)
+        clone = roots.research_clone(home)
+        os.symlink(os.path.join(vault, "clone"), clone)
+        info = os.stat(sub)
+        spellings = {"firmlink": "/System/Volumes/Data" + os.path.realpath(sub),
+                     "vol": "/.vol/%d/%d" % (info.st_dev, info.st_ino)}
+        for name, target in spellings.items():
+            self.assertTrue(os.path.samestat(os.stat(target), info), name)
+            os.symlink(target, os.path.join(home, name))
+        deps = os.path.join(home, "firmlink", "deps")   # a deps root that the share directory's link put in the clone
+        partial = os.path.join(deps, "betangel-research-0123456789ab.partial")
+        argv = list(guard.VENDOR_GIT_PREFIX) + ["-C", partial, "remote", "remove", "origin"]
+        env = dict(guard.VENDOR_GIT_ENV, HOME=home)
+        self.addCleanup(os.chmod, vault, 0o700)
+        for name in spellings:
+            path = os.path.join(home, name, "deeper")
+            with self.subTest(spelling=name, vault="searchable"):
+                self.assertTrue(roots.lies_in(path, clone, "research_clone_on_path"))
+            os.chmod(vault, 0)
+            try:
+                with self.subTest(spelling=name, vault="not searchable"):
+                    with self.assertRaises(SuiteError) as caught:
+                        roots.lies_in(path, clone, "research_clone_on_path")
+                    self.assertEqual(caught.exception.code, "research_clone_on_path")
+            finally:
+                os.chmod(vault, 0o700)
+        os.chmod(vault, 0)
+        try:
+            with self.subTest(guard="partial clone path, vault not searchable"):
+                self.assertFalse(guard.vendor_argv_ok(argv, env, clone, deps, home))
+        finally:
+            os.chmod(vault, 0o700)
+        with self.subTest(clone="a link loop"):     # cannot be judged either (ELOOP)
+            os.remove(clone)
+            os.symlink(clone, clone)
+            with self.assertRaises(SuiteError) as caught:
+                roots.lies_in(os.path.join(home, "firmlink", "deeper"), clone, "research_clone_on_path")
+            self.assertEqual(caught.exception.code, "research_clone_on_path")
+        with self.subTest(clone="missing"):         # still judged by its text alone
+            os.remove(clone)
+            self.assertFalse(roots.lies_in(os.path.join(home, "firmlink", "deeper"), clone, "research_clone_on_path"))
+
 
 if __name__ == "__main__":
     unittest.main()

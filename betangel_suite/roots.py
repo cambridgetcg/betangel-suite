@@ -193,18 +193,18 @@ def _overlaps_data_home(path, home_dir):
     return path_id is not None and (path_id == data_id or path_id in _lineage(os.path.dirname(real_data)))
 
 
-def _known_identity(path):
+def _known_identity(path, code="root_overlaps_data_home"):
     """(st_dev, st_ino) of path, or None when it does not exist (a missing name, or a component that is not a
-    directory). SuiteError(root_overlaps_data_home) when stat fails otherwise (no search permission, a link loop, a
-    name too long): that cannot be judged. Read as missing, a data home behind a directory with no search permission
-    at arm() let a root linked into it through the firmlink spelling pass, to take writes there once the directory
-    was searchable again (the guard-paths review)."""
+    directory). SuiteError(code) when stat fails otherwise (no search permission, a link loop, a name too long): that
+    cannot be judged. Read as missing, a data home behind a directory with no search permission at arm() let a root
+    linked into it through the firmlink spelling pass, to take writes there once the directory was searchable again
+    (the guard-paths review), and lies_in read a deploy clone behind such a directory as one nothing lies in."""
     try:
         info = os.stat(path)
     except (FileNotFoundError, NotADirectoryError):
         return None
     except OSError:
-        raise SuiteError("root_overlaps_data_home") from None
+        raise SuiteError(code) from None
     return info.st_dev, info.st_ino
 
 
@@ -216,14 +216,6 @@ def _real_dir_or_missing(path):
     except OSError:
         return False
     return stat.S_ISDIR(info.st_mode)
-
-
-def _identity(path):
-    try:
-        info = os.stat(path)
-    except OSError:
-        return None
-    return info.st_dev, info.st_ino
 
 
 def _directory(path):
@@ -276,13 +268,16 @@ def lies_in(path, directory, code):
     (_lineage, which follows ".." as the kernel resolves it, through a link on any ancestor). So a path that does
     not exist yet, such as a deps directory under a ~/.local/share that links into the clone, is judged at its
     nearest existing ancestor, and a dangling link into the clone by its resolved text. A directory that does not
-    exist has no identity, and nothing lies in it but by text.
+    exist has no identity, and nothing lies in it but by text. A stat of directory that fails for any other reason
+    (no search permission, a link loop) cannot be judged: SuiteError(code), as check_placement does since 57fc0c9.
+    Read as missing, a clone behind a directory with no search permission let a path linked into it through the
+    firmlink spelling pass (the guard fix's question 3).
     """
     real = os.path.realpath(path)
     forms = (directory.casefold(), os.path.realpath(directory).casefold())
     if any(within(mine.casefold(), form) for mine in (os.path.normpath(path), real) for form in forms):
         return True
-    target = _identity(directory)
+    target = _known_identity(directory, code)
     if target is None:
         return False
     return any(target in _lineage(candidate, code) for candidate in (path, real))
