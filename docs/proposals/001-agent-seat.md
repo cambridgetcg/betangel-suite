@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft for review, round 3 (reviewers' fixes applied 2026-10-15, Codex review fixes 2026-10-16). A proposal, not a decision. It adds about one day to Phase 1b (section 7) and otherwise leaves the MVP's scope and dates alone. |
+| Status | Draft for review, round 3 (reviewers' fixes applied 2026-10-15, Codex review fixes 2026-10-16). AS-1..AS-5 answered by Yu on 2026-10-17 ("Lets go with what you recommended for all :)"), each as recommended (section 8.1). AS-3's rows take effect after MVP sign-off, subject to Nuance's answer to Q-SN1, Astra's review of the rows marked (Astra), and the PR that writes them into AGENTS.md and DESIGN being accepted under the governance row (section 3.8). Everything else is a proposal, not a decision. It adds about one day to Phase 1b (section 7) and otherwise leaves the MVP's scope and dates alone. |
 | Date | 2026-10-15 |
 | Author | lab-Claude (Claude Code session 03026dfa on the lab MacBook Pro) |
 | Reviewers | Nuance (data and paper paths, upstream AGENTS.md), Astra (seat socket, guard, control socket, boundary tests, the bridge) |
@@ -19,7 +19,7 @@ Sources are in Appendix A (all read 2026-10-15). The research only read public p
 
 ---
 
-## 1. Summary and the decision asked of Yu
+## 1. Summary and Yu's decisions (AS-1..AS-5 answered 2026-10-17)
 
 **The idea.** An agent seat is a second trader using the same replay engine, `PaperExchange` (paper-v1), `validate_place`, cap code and journal format as Yu, in its own sessions. It gets a narrowed, spoiler-free observation and sends typed commands, which go through the same checks as Yu's clicks. In v1 a seat trades **headless only**: no UI, one seat per run, a batch of markets. Trading beside Yu and advising Yu come later (Step F).
 
@@ -43,7 +43,7 @@ So a synthetic seat needs AS-3, which amends rule 3 for synthetic mode, and Nuan
 
 **"For you to use", in practice.** Lab-Claude's own seat use stays on synthetic markets until Betfair agrees in writing and an API-key route is approved. Synthetic markets are generated fixtures, so that use is a plumbing test with no trading signal.
 
-**Asked of Yu now:** AS-1..AS-5 (section 8). The rest waits for the step that needs it.
+**AS-1..AS-5: answered by Yu on 2026-10-17** ("Lets go with what you recommended for all :)"), each as recommended (section 8.1). The rest waits for the step that needs it.
 
 ---
 
@@ -246,21 +246,21 @@ Every command is `{seat_id, nonce, obs_seq, cmd, reason}` plus the exact keys it
 
 ### 3.8 Rule changes this proposal needs, and what stays
 
-Each row takes effect only through the AS item in its last column. AS-1 adopts no rule text.
+Each row takes effect only through the AS item in its last column. AS-1 adopts no rule text. Yu answered AS-3 Yes on 2026-10-17 (section 8.1), so the rows it adopts take effect after MVP sign-off, subject to Nuance's answer to Q-SN1, Astra's review of the rows marked (Astra), and the PR that writes them into AGENTS.md and DESIGN being accepted under the governance row Yu adopted on 2026-10-17 (DESIGN 2.2.1 and 3.9 on `design/mvp-draft-0.2`). AS-6 and the later items named here wait for their steps.
 
 | Rule | Today | Proposed | Through |
 |---|---|---|---|
-| Rule 3, synthetic | "There are no rule-generated orders"; `TestOrder` (scripted tests) in synthetic mode only | Add: "In synthetic mode an armed agent seat may send `AgentIntent` paper orders, consumed only by `PaperExchange`." | AS-3 |
+| Rule 3, synthetic | "There are no rule-generated orders"; `TestOrder` (scripted tests) in synthetic mode only | Add: "In synthetic mode an armed agent seat may send `AgentIntent` paper orders, consumed only by `PaperExchange`." | AS-3, answered Yes by Yu on 2026-10-17 (8.1): after MVP sign-off, subject to Q-SN1 |
 | Rule 3, real data | Every paper order on real data is an `OperatorClick` | "...or an `AgentIntent` from a seat Yu armed for that run, of a kind in `SEAT_REAL_DATA_KINDS`, under a ruling id recorded in `session.json`. Agent intents are consumed only by `PaperExchange`. There are no other rule-generated orders." | AS-6 |
 | Rule 5 | A model context counts as an upload | Add: "A seat observation is a model context. Agents never read real-data seat observations, seat logs, seat session folders, decision envelopes or seat-host output; `bin/suite seat-report` is the only reader and prints only what AS-7 allows. S3 and S4 seats receive real-data observations only under a ruling id whose scope (provider, endpoint, pinned model, observation-profile hash, spend cap, end date) is recorded, and only when Betfair's specific written agreement permitting this use for the named provider is recorded." | AS-6, AS-7; the S3/S4 clause with AS-13(b), AS-14(b) |
 | Rule 6 | Commands agents never run | Add: "On an engine with real data roots, agents never run `seat-arm`, `seat-cli` or a bridge, never connect to `run/seat.sock`, and never read seat tokens. Yu starts real-data seat runs. Agents may run `seat-stop`." | AS-6 |
-| I-3, I-4 (guard) | Every connect refused except one: an absolute Unix socket path directly in the run dir, permitted before `seal()` with `permit_unix_connect` (the control socket, which `stop` and the takeovers by `open` and `ssh-session` use); binds only to 127.0.0.1:port and the control socket | Engine also binds `run/seat.sock`; `seat-arm` and `seat-cli` may connect to exactly that path, and `seat-arm` also to `run/control.sock` until its strategy runs; `seat-arm` read-deny before any strategy code executes (3.1) | AS-3 (Astra) |
-| Control socket (DESIGN 9.1) | `attach`, `new_code`, `pause`, `stop`, plus `ssh-session`'s `attach_viewer`, `viewer_code`, `viewer_heartbeat` and `viewer_away` | Add `seat_arm` (which starts a headless run) and `seat_stop`; the verb test changes | AS-3 (Astra) |
-| I-8 | Orders on real data come only through the operator-click path | "...or the armed-seat path. `AgentIntent` is minted only in the seat-socket handler for an armed seat. Neither converts into the other." | AS-3 (synthetic), AS-6 (real) |
+| I-3, I-4 (guard) | Every connect refused except one: an absolute Unix socket path directly in the run dir, permitted before `seal()` with `permit_unix_connect` (the control socket, which `stop` and the takeovers by `open` and `ssh-session` use); binds only to 127.0.0.1:port and the control socket | Engine also binds `run/seat.sock`; `seat-arm` and `seat-cli` may connect to exactly that path, and `seat-arm` also to `run/control.sock` until its strategy runs; `seat-arm` read-deny before any strategy code executes (3.1) | AS-3 (Astra), answered Yes by Yu on 2026-10-17 (8.1): after MVP sign-off, subject to Q-SN1 and Astra's review (Q-SA2) |
+| Control socket (DESIGN 9.1) | `attach`, `new_code`, `pause`, `stop`, plus `ssh-session`'s `attach_viewer`, `viewer_code`, `viewer_heartbeat` and `viewer_away` | Add `seat_arm` (which starts a headless run) and `seat_stop`; the verb test changes | AS-3 (Astra), answered Yes by Yu on 2026-10-17 (8.1): after MVP sign-off, subject to Q-SN1 and Astra's review (Q-SA7) |
+| I-8 | Orders on real data come only through the operator-click path | "...or the armed-seat path. `AgentIntent` is minted only in the seat-socket handler for an armed seat. Neither converts into the other." | AS-3 (synthetic), answered Yes by Yu on 2026-10-17 (8.1): after MVP sign-off, subject to Q-SN1; AS-6 (real) |
 | I-16 | Agents are not handed Yu's token or real rows by the code | Add: "`seat-arm`, `seat-cli` and `seat-report` print codes and AS-7 aggregates only. The seat socket hands real-data observations only to one connection at a time holding a token bound to an armed kind in `SEAT_REAL_DATA_KINDS`." | AS-6 |
-| I-19 | Pause unless watched | Scoped to UI sessions; headless runs are bounded by the wall cap | AS-3 |
+| I-19 | Pause unless watched | Scoped to UI sessions; headless runs are bounded by the wall cap | AS-3, answered Yes by Yu on 2026-10-17 (8.1): after MVP sign-off, subject to Q-SN1 |
 | R-6 (Yu) | No rule-generated paper orders in the MVP | MVP unchanged. After the MVP, superseded by AS-6 and AS-11. | AS-6 |
-| betangel-research AGENTS.md:9 (Nuance) | Simulated intents only inside `betfair/backtest` | Nuance to answer or draft: suite seats consumed only by `PaperExchange`, on synthetic files (Q-SN1), and later on local historical files | AS-3, AS-6 |
+| betangel-research AGENTS.md:9 (Nuance) | Simulated intents only inside `betfair/backtest` | Nuance to answer or draft: suite seats consumed only by `PaperExchange`, on synthetic files (Q-SN1), and later on local historical files | AS-3, answered Yes by Yu on 2026-10-17 (8.1); the upstream wording is Nuance's (Q-SN1); AS-6 |
 
 `SEAT_REAL_DATA_KINDS = frozenset()` sits in `betangel_suite/seat/policy.py`, following the `STATE_ROOT_AGREED` pattern, so nothing becomes more permissive by configuration alone. Advise mode and beside-Yu placement need further rows (a `place` body key, frame fields, a UI stop control); they are Step F's, not v1's.
 
@@ -366,6 +366,8 @@ Every seat report carries `paper_simulation_not_execution_evidence` (paper.py:62
 
 ### 5.3 The question for Betfair (for Yu to send; lab-Claude never contacts Betfair)
 
+**AS-4, answered Yes by Yu on 2026-10-17 (section 8.1):** lab-Claude drafts this question and Yu sends it to Betfair Developer Support, with no hurry. The text below is the current draft.
+
 > I hold a personal UK Betfair account and downloaded the free 2015-05..2016-04 horse-racing PRO Historical Data for my personal, internal use. I am writing paper-trading software for myself, on my own computer. Nothing would be published, sold or shared with other people. I would like your view, and where needed a specific written agreement, on four uses:
 >
 > (a) Aggregate statistics from my own simulated runs over the data (counts, fill rates, and profit and loss in coarse bands over at least 20 markets) shown to an AI coding assistant (Anthropic's Claude, hosted in the US) that helps me write the software.
@@ -429,15 +431,17 @@ An agent placing real bets would need all of the following, each through its own
 
 ### 8.1 Decisions for Yu
 
-**Asked now:**
+**Asked with this proposal; answered by Yu on 2026-10-17:**
 
-| ID | Decision | Recommendation |
-|---|---|---|
-| **AS-1** | Accept the agent seat as a post-MVP track under this proposal. This adopts no rule text: each section 3.8 row takes effect only through the AS item named there, and section 6 is adopted by no AS item. | **Yes.** |
-| **AS-2** | Build the Phase 1b seams (section 7, first row). | **Yes.** About one day added to 1b, plus Nuance's review. |
-| **AS-3** | Step A: a headless seat on synthetic markets. It adopts the synthetic rule 3 row, I-8 (synthetic), the I-19 scope, the guard change and the control verbs (3.8), subject to Nuance's answer on AGENTS.md:9 (Q-SN1). Lab-Claude may then drive synthetic seats from its own shell. **It authorises no account, key, install or network egress** (see AS-12..AS-14). | **Yes, after MVP sign-off.** |
-| **AS-4** | Send the section 5.3 question to Betfair Developer Support (lab-Claude drafts it; Yu sends it). | **Yes, ask; no hurry.** |
-| **AS-5** | Latency accounting: lockstep with measured latency; uncharged mode labelled and excluded from results. | **Yes.** |
+Yu's answer on 2026-10-17, to lab-Claude's message of that day, which put AS-1..AS-5 with the recommendations below: "Lets go with what you recommended for all :)". So each of AS-1..AS-5 is answered as recommended. The answer covers nothing else in this proposal: AS-6..AS-16 and the questions for Nuance (8.2) and Astra (8.3) stay open.
+
+| ID | Decision | Recommendation | Yu's answer (2026-10-17) |
+|---|---|---|---|
+| **AS-1** | Accept the agent seat as a post-MVP track under this proposal. This adopts no rule text: each section 3.8 row takes effect only through the AS item named there, and section 6 is adopted by no AS item. | **Yes.** | **Yes**, as recommended. It adopts no rule text. |
+| **AS-2** | Build the Phase 1b seams (section 7, first row). | **Yes.** About one day added to 1b, plus Nuance's review. | **Yes**, as recommended. |
+| **AS-3** | Step A: a headless seat on synthetic markets. It adopts the synthetic rule 3 row, I-8 (synthetic), the I-19 scope, the guard change and the control verbs (3.8), subject to Nuance's answer on AGENTS.md:9 (Q-SN1). Lab-Claude may then drive synthetic seats from its own shell. **It authorises no account, key, install or network egress** (see AS-12..AS-14). | **Yes, after MVP sign-off.** | **Yes, after MVP sign-off**, as recommended. Still subject to Nuance's answer to Q-SN1; it authorises no account, key, install or network egress. |
+| **AS-4** | Send the section 5.3 question to Betfair Developer Support (lab-Claude drafts it; Yu sends it). | **Yes, ask; no hurry.** | **Yes, ask; no hurry**, as recommended. Lab-Claude drafts the section 5.3 question; Yu sends it. |
+| **AS-5** | Latency accounting: lockstep with measured latency; uncharged mode labelled and excluded from results. | **Yes.** | **Yes**, as recommended: lockstep with measured latency; uncharged mode labelled and excluded from results. |
 
 **At Step B (S1 on real data):**
 
