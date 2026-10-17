@@ -1082,10 +1082,23 @@ results["partial_made"] = os.path.lexists(partial)
                      ["-C", repo, "--exec-path=/x", "init"], ["-C", repo]):
             self.assertFalse(ok(argv), argv)
         self.assertFalse(guard.runner_git_ok([guard.GIT, "-C", repo, "init"], None, self.TMP))
+        # The environment is an exact allowlist (Nuance's re-review of #2, F6): the keys test_hygiene's _git_env and
+        # test_vendor give, with HOME and TMPDIR under the temp root, pass; any other key or value does not.
+        full = dict(self.GIT_ENV, HOME=self.TMP + "/hygiene-x/home", TMPDIR=self.TMP + "/hygiene-x", LANG="en_GB.UTF-8",
+                    GIT_AUTHOR_NAME="Synthetic Tester", GIT_AUTHOR_EMAIL="tester@example.invalid",
+                    GIT_COMMITTER_NAME="Synthetic Tester", GIT_COMMITTER_EMAIL="tester@example.invalid",
+                    GIT_TERMINAL_PROMPT="0")
+        self.assertTrue(ok(["-C", repo, "init"], full))
+        self.assertTrue(ok(["-C", repo, "init"], {key: full[key] for key in guard.TEST_GIT_ENV}))
         for change in ({"GIT_CONFIG_GLOBAL": None}, {"GIT_CONFIG_NOSYSTEM": None}, {"GIT_CONFIG_GLOBAL": "/h/.gitconfig"},
                        {"GIT_DIR": research + "/.git"}, {"GIT_WORK_TREE": research}, {"GIT_CONFIG_COUNT": "1"},
-                       {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='x'"}, {"GIT_SSH_COMMAND": "ssh"}, {"GIT_EXEC_PATH": "/x"}):
-            env = {key: value for key, value in dict(self.GIT_ENV, **change).items() if value is not None}
+                       {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='x'"}, {"GIT_SSH_COMMAND": "ssh"}, {"GIT_EXEC_PATH": "/x"},
+                       {"DEVELOPER_DIR": "/x"}, {"SDKROOT": "/x"}, {"XDG_CONFIG_HOME": "/h/.config"}, {"PAGER": "/bin/sh"},
+                       {"EDITOR": "/bin/sh"}, {"DYLD_INSERT_LIBRARIES": "/x"}, {"PYTHONPATH": "/x"},
+                       {"PATH": "/x:/usr/bin:/bin"}, {"GIT_TERMINAL_PROMPT": "1"}, {FORBID: None}, {FORBID: "0"},
+                       {"HOME": "/h"}, {"HOME": research}, {"HOME": self.TMP + "/../x"}, {"HOME": "relative"},
+                       {"TMPDIR": "/private/tmp"}, {"TMPDIR": self.TMP + "/x/"}, {"LANG": "../../x"}, {"LANG": ""}):
+            env = {key: value for key, value in dict(full, **change).items() if value is not None}
             self.assertFalse(ok(["-C", repo, "init"], env), change)
 
     def test_test_runner_children_keep_the_switch_and_a_clean_git_config(self):
@@ -1099,6 +1112,34 @@ results["partial_made"] = os.path.lexists(partial)
         with self.assertRaises(guard.GuardRefusal):     # the switch, but the user's git config
             subprocess.run([guard.GIT, "-C", home, "init", "-q"], env=child_env(home), capture_output=True, timeout=30)
         self.assertFalse(os.path.lexists(os.path.join(home, ".git")))
+
+    def test_test_runner_git_refuses_developer_dir(self):
+        # Nuance's re-review of #2, F6: runner_git_ok accepted any non-GIT_ key, and a test-armed child ran /usr/bin/git
+        # with DEVELOPER_DIR=<fake>, which made git run <fake>/usr/bin/xcrun. Here a test-mode child with a temporary
+        # HOME tries it; the fake xcrun would leave a name in outside/.
+        home = make_home(self)
+        fake = os.path.join(home, "developer", "usr", "bin")
+        os.makedirs(fake)
+        os.makedirs(os.path.join(home, "outside"))
+        with open(os.path.join(fake, "xcrun"), "w") as handle:
+            handle.write("#!/bin/sh\n/usr/bin/touch %s\nexit 1\n" % os.path.join(home, "outside", "xcrun-ran"))
+        os.chmod(os.path.join(fake, "xcrun"), 0o755)
+        results = checks(self, home, mode="test", setup="import subprocess\n", body="""
+home = os.environ["HOME"]
+repo = os.path.join(os.environ["TMPDIR"], "repo")
+os.mkdir(repo)
+env = {"PATH": "/usr/bin:/bin", "HOME": home + "/.local/state/betangel-suite/tmp", "GIT_CONFIG_GLOBAL": "/dev/null",
+       "GIT_CONFIG_NOSYSTEM": "1", guard.FORBID_NETWORK_ENV: "1"}
+def git(env):
+    subprocess.run([guard.GIT, "-C", repo, "init", "-q", "--template="], env=env, capture_output=True, timeout=60)
+attempt("developer_dir", lambda: git(dict(env, DEVELOPER_DIR=os.path.join(home, "developer"))))
+attempt("sdkroot", lambda: git(dict(env, SDKROOT=os.path.join(home, "developer"))))
+attempt("plain", lambda: git(env))
+results["repo_made"] = os.path.isdir(os.path.join(repo, ".git"))
+results["outside"] = sorted(os.listdir(os.path.join(home, "outside")))
+""")
+        self.assertEqual(results, {"developer_dir": "subprocess_refused", "sdkroot": "subprocess_refused", "plain": "ok",
+                                   "repo_made": True, "outside": []})
 
     def test_launcher_children_keep_out_of_the_runners_data_home(self):
         # Nuance's re-review of #2, F2: a child of the test runner started with env=None inherits the runner's HOME,

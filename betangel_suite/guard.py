@@ -116,7 +116,8 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
   test    the test runner never seals. It may start /opt/homebrew/bin/python3.13 or 3.11 (or this
           interpreter) with -I -S -B, /bin/sh on this checkout's bin/suite, and /usr/bin/git only as
           git -C <dir under TMPDIR> [-c <test identity key>=...] <local subcommand> with relative operands,
-          no user or system git config and no other GIT_* variable (runner_git_ok). A launcher child
+          no user or system git config and an environment of allowed keys only (runner_git_ok: no other
+          GIT_* variable and no DEVELOPER_DIR or any other key; HOME and TMPDIR under TMPDIR). A launcher child
           (bin/suite, or an interpreter running _launch.py) needs an explicit environment whose HOME, roots
           under it and TMPDIR stay out of, and do not contain, the runner's data home, judged by realpath and
           (st_dev, st_ino) (_launcher_env_ok). Tests of the engine policy run in fresh engine-mode
@@ -182,9 +183,16 @@ TEST_GIT_SUBCOMMANDS = frozenset({"init", "add", "commit", "update-index", "chec
 TEST_GIT_CONFIG_KEYS = frozenset({"init.defaultBranch", "user.name", "user.email"})
 TEST_GIT_OPTIONS = frozenset({"-q", "--quiet", "--template=", "-f", "-A", "--", "-m", "--add", "--cacheinfo",
                               "--no-index", "--verify"})
-TEST_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
-TEST_GIT_ENV_EXTRA = frozenset({"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
-                                "GIT_TERMINAL_PROMPT"})
+# Its environment is an exact allowlist of keys, as vendor's is (Nuance's re-review of #2, F6; Astra's re-review:
+# "adopt an exact key/value allowlist, as vendor does"): any other key can change what git runs, DEVELOPER_DIR
+# (which made /usr/bin/git run <DEVELOPER_DIR>/usr/bin/xcrun) among them. TEST_GIT_ENV must be there with these
+# values; TEST_GIT_ENV_FIXED may be, with these values only; HOME and TMPDIR may be, each a directory under the
+# runner's TMPDIR (test_hygiene's _git_env names both); LANG a locale name; and the synthetic identity any text.
+TEST_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", FORBID_NETWORK_ENV: "1"}
+TEST_GIT_ENV_FIXED = {"PATH": "/usr/bin:/bin", "GIT_TERMINAL_PROMPT": "0"}
+TEST_GIT_ENV_DIRS = frozenset({"HOME", "TMPDIR"})
+TEST_GIT_ENV_EXTRA = frozenset({"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"})
+_LANG_RE = re.compile(r"[A-Za-z0-9_.@-]{1,64}")
 
 _NETWORK = {
     "socket.connect": "network_refused", "socket.connect_ex": "network_refused",
@@ -898,21 +906,15 @@ def _launcher_env_ok(env, home):
 def runner_git_ok(argv, env, tmp_root):
     """git -C <dir under tmp_root> [-c key=value ...] <local subcommand> <allowed options, relative operands>.
 
-    The environment must be explicit, with no user or system git config and no other GIT_* variable (which
-    could inject config, a git dir or an ssh command). No network transport is reachable: every allowed
-    subcommand is local. The -C directory must lie under the test temp root, so neither the deploy clone
-    nor this checkout is ever touched.
+    The environment must be explicit and hold only the keys above (TEST_GIT_ENV and the rest; Nuance's re-review of
+    #2, F6): no user or system git config, no other GIT_* variable (which could inject config, a git dir or an ssh
+    command), and no other key at all, such as DEVELOPER_DIR, which picks the git that /usr/bin/git runs. No network
+    transport is reachable: every allowed subcommand is local. The -C directory, and HOME and TMPDIR if given, must
+    lie under the test temp root, so neither the deploy clone nor this checkout is ever touched.
     """
-    if env is None or any(env.get(key) != value for key, value in TEST_GIT_ENV.items()):
+    if env is None or not tmp_root or not _runner_git_env_ok(env, tmp_root):
         return False
-    if any(key.startswith("GIT_") and key not in TEST_GIT_ENV and key not in TEST_GIT_ENV_EXTRA for key in env):
-        return False
-    if len(argv) < 4 or argv[0] != GIT or argv[1] != "-C" or not tmp_root:
-        return False
-    directory = argv[2]
-    if not (os.path.isabs(directory) and os.path.normpath(directory) == directory
-            and roots.within(directory, tmp_root)
-            and roots.within(os.path.realpath(directory), os.path.realpath(tmp_root))):
+    if len(argv) < 4 or argv[0] != GIT or argv[1] != "-C" or not _under_tmp_root(argv[2], tmp_root):
         return False
     rest = argv[3:]
     while len(rest) >= 2 and rest[0] == "-c":
@@ -929,6 +931,30 @@ def runner_git_ok(argv, env, tmp_root):
         elif os.path.isabs(item) or ".." in item.replace("\\", "/").split("/"):
             return False
     return True
+
+
+def _runner_git_env_ok(env, tmp_root):
+    """The test runner's git environment: exactly the allowed keys, each with an allowed value (runner_git_ok)."""
+    if any(env.get(key) != value for key, value in TEST_GIT_ENV.items()):
+        return False
+    for key, value in env.items():
+        if key in TEST_GIT_ENV or key in TEST_GIT_ENV_EXTRA:
+            continue
+        if key in TEST_GIT_ENV_FIXED:
+            if value != TEST_GIT_ENV_FIXED[key]:
+                return False
+        elif key in TEST_GIT_ENV_DIRS:
+            if not _under_tmp_root(value, tmp_root):
+                return False
+        elif key != "LANG" or not _LANG_RE.fullmatch(value):
+            return False
+    return True
+
+
+def _under_tmp_root(path, tmp_root):
+    """path is absolute and normalised and lies under tmp_root, as text and with its links resolved."""
+    return (os.path.isabs(path) and os.path.normpath(path) == path and roots.within(path, tmp_root)
+            and roots.within(os.path.realpath(path), os.path.realpath(tmp_root)))
 
 
 def _check_env_change(event, args):
