@@ -38,7 +38,8 @@ of the package, bin/ and tools/ (test_imports.python_sources) and refuses:
                    builtins`; and `from ... import` of any of these names, which would hide later calls from
                    this rule.
 
-ALLOWED lists the only exceptions, each with its reason, by (file, enclosing function, rule). An entry that
+ALLOWED lists the only exceptions, each with its reason, by (file, enclosing function, rule). A class statement's
+bases and keywords count as enclosed by the class, and module level, class bodies included, by None. An entry that
 no longer matches anything fails the test, so the list cannot quietly outlive its reason.
 
 Like the guard (guard.py docstring), this catches mistakes and the paths Nuance and the reviewers listed,
@@ -91,11 +92,16 @@ ALLOWED = {
         "I-13: pin._ClosureFinder gives each of the 25 closure modules a spec at its pinned file in the deps clone "
         "(spec_from_file_location), loaded by _PinnedLoader from the pinned bytes only; any other betangel_research "
         "name is refused (upstream_import_refused)",
-    (os.path.join("betangel_suite", "pin.py"), None, "computed_import"):
-        "I-13: the class statement of pin._PinnedLoader, at module level, names its base SourceFileLoader, so that a "
-        "closure module is loaded from its pinned bytes only and no bytecode is written; nothing else at module level "
-        "in pin.py imports",
+    (os.path.join("betangel_suite", "pin.py"), "_PinnedLoader", "computed_import"):
+        "I-13: the class statement of pin._PinnedLoader names its base SourceFileLoader, so that a closure module is "
+        "loaded from its pinned bytes only and no bytecode is written. A class's bases are reported under the class's "
+        "name (_Checker.function_of), so this covers that base list only, not pin.py's module level or class bodies",
 }
+
+
+def refused_findings(found):
+    """The findings of suite_findings() that ALLOWED does not cover."""
+    return {key: lines for key, lines in found.items() if key not in ALLOWED}
 
 
 def _upstream_name(value):
@@ -157,10 +163,15 @@ class _Checker:
                         self.rx_names.add(alias.asname)
 
     def function_of(self, node):
+        """The enclosing function's name; for a node in a class statement's bases or keywords, that class's name
+        (pin._PinnedLoader names its base SourceFileLoader there); None at module level, a class body included."""
         while node in self.parents:
-            node = self.parents[node]
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                return node.name
+            parent = self.parents[node]
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return parent.name
+            if isinstance(parent, ast.ClassDef) and any(node is item for item in parent.bases + parent.keywords):
+                return parent.name
+            node = parent
         return None
 
     def add(self, node, rule):
@@ -349,9 +360,7 @@ def suite_findings():
 class SuiteModuleTests(unittest.TestCase):
 
     def test_suite_modules_reach_upstream_only_through_public_rx_names(self):
-        found = suite_findings()
-        refused = {key: lines for key, lines in found.items() if key not in ALLOWED}
-        self.assertEqual(refused, {})
+        self.assertEqual(refused_findings(suite_findings()), {})
 
     def test_every_allowlist_entry_is_still_needed(self):
         found = suite_findings()
@@ -500,6 +509,36 @@ class PlantedViolationTests(unittest.TestCase):
     def test_findings_name_the_enclosing_function(self):
         text = "import sys\ndef activate():\n    return [name for name in sys.modules]\n"
         self.assertEqual(check_source(text), [(3, "activate", "sys_modules")])
+
+    def test_a_class_base_is_named_by_its_class_and_a_class_body_by_its_function(self):
+        text = ("import importlib.machinery\n"
+                "class _Loader(importlib.machinery.SourceFileLoader, metaclass=exec):\n"
+                "    exec(code)\n"
+                "    def load(self):\n"
+                "        exec(code)\n")
+        self.assertEqual(check_source(text), [(2, "_Loader", "computed_import"), (3, None, "computed_import"),
+                                              (5, "load", "computed_import")])
+
+    def test_the_pin_allowance_covers_only_the_pinned_loaders_base(self):
+        # The http merge's allowance first named pin.py's whole module level, so any module-level exec, __import__ or
+        # loader there passed (round 4b's merge review). Planted in a pin.py-shaped source, each is refused now.
+        pin_path = os.path.join("betangel_suite", "pin.py")
+
+        def refused(text):
+            found = {}
+            for line, function, rule in check_source(text):
+                found.setdefault((pin_path, function, rule), []).append(line)
+            return refused_findings(found)
+
+        loader = ("import importlib.machinery\n"
+                  "class _PinnedLoader(importlib.machinery.SourceFileLoader):\n"
+                  "    pass\n")
+        self.assertEqual(refused(loader), {})
+        self.assertEqual(refused(loader + "exec('_PROBE = 1')\n"), {(pin_path, None, "computed_import"): [4]})
+        self.assertEqual(refused(loader.replace("pass", "load = __import__")),
+                         {(pin_path, None, "computed_import"): [3]})
+        self.assertEqual(refused(loader + "class _Other(importlib.machinery.SourceFileLoader):\n    pass\n"),
+                         {(pin_path, "_Other", "computed_import"): [4]})
 
 
 if __name__ == "__main__":
