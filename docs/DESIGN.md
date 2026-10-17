@@ -2156,3 +2156,19 @@ One commit message to correct, since commits are not rewritten: f23ba3f says `va
 **Left, owed on the branches below this one first, then merged up:**
 - design/mvp-draft-0.2: sections 0 and 1.2, 7.1 items 1-3, the Phase 1b exit (section 12), U-10 (section 14) and Appendix C item 1 still read the BASIC count as pending. Nuance's note: "Section 0, 1.2, 14 and the 1b exit can drop "conditional on the count" for BASIC". 9.1's `new_code` line is design text too.
 - phase0/foundation: 6.8's "Who does not take it" and `runmarker.py`'s reason (the guard and reads), and the 9.1 line from design.
+
+**viewing, round 4b's review** (phase0/viewing, 2026-10-17). What round 4b's review found on this branch (fcbf7cd..80b834b), after phase0/http's fixes for it were merged here (cbf9810). Each behaviour fix has a test that failed on a scratch copy with only that fix taken out, before the copy was restored.
+
+| Item | Fix | Sections |
+|---|---|---|
+| `uisnap` checked the marker only at start and at `server.run`. Between them, a wait of up to 900 s for another uisnap's `build.lock` and a `swiftc` run of up to 600 s had no check, so a build could start long after a run was announced (reproduced on an archive copy of 80b834b) | e1a046c: the marker is checked in the wait, once the lock is held and just before `swiftc`; a build already running finishes first. Four tests, each failing without the checks | 6.8, 11, I-17 |
+| 6.8 and `Session.run_attached` put an attached session's worst case at one control request or stalled write plus `POLL_S`; one poll can make two control requests and three writes. AGENTS.md E said the session always leaves with `ended reason=run_marker` and exit 2; one whose engine went in that poll leaves as `engine_gone` with exit 0. The 35 s bound holds | 5cfe691: text only | 6.8, AGENTS.md E, `api/sshsession.py` |
+| The I-17 row's at-start list left out `uisnap` and `release` | 5cfe691 | I-17 |
+| Appendix D row 6 still called the wiring owed on both branches; round 4b added two whitespace-only lines in 6.8 | 5cfe691, and cbf9810 for one line | Appendix D row 6, 6.8 |
+| Attribution: 8.6 gave lab-Claude's reasons for taking the merge SHA after Nuance's words as if they were Nuance's, and "(item 2)" read like Nuance's item 2; 9.1, `api/control.py` and the `new_code` row above credited "opened or paused" and "asks for this text" to Nuance; 8.6 item 1 said nothing of `ssh-session` while an engine starts | 5cfe691: Nuance's words quoted, lab-Claude's labelled; `ssh-session` refuses `control_unavailable` as `open` does, by the code (no test of its own) | 8.6, 9.1, `api/control.py` |
+| The e9729a6 row did not say that phase0/http's `server.attach` has the same gap | 5cfe691; recorded on phase0/http in afe426f; moving the check down is lab-Claude's open question | 6.8 |
+
+**Left, for the merges still to come:**
+- Nuance's mailbox notes of 2026-10-17 08:37Z (the vendor ref: the Q-N2 row, AGENTS.md C) and 08:48Z (the Air's screen-capture line: rule 5, 8.6, 9.4, Q-Y10, Appendix C item 6, AGENTS.md rule 5, `docs/data-handling.md`) are recorded on design/mvp-draft-0.2 or phase0/foundation first, then merged up. They are not yet on any branch.
+- When phase0/foundation's next round is merged here, the viewing-only status text is swept by hand, starting with the 15.2 intro: a three-way merge keeps this branch's lines wherever phase0/foundation did not change the same lines.
+- The count, 9.1's `new_code` line and the guard-and-reads text are owed below too (the http block above, "Left").
