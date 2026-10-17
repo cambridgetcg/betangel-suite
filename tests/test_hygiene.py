@@ -792,6 +792,8 @@ class EncodedDataTests(_RepoCase):
             "bytes repr": f"DATA = {member!r}\n",
             "wrapped repr": "DATA = (\n" + "".join(f"    {piece!r}\n" for piece in pieces) + ")\n",
             "C string": f'const char d[] = "{_escaped(member)}";\n',
+            # A quote that never closes comes first: the other kind is still read (round-4 finishing review).
+            "C string after an unclosed quote": f'/* it\'s */ const char d[] = "{_escaped(member)}";\n',
         })
 
     def test_runs_joined_across_lines(self):
@@ -945,7 +947,9 @@ class EncodedDataTests(_RepoCase):
 class ScanTimeTests(_RepoCase):
     """One long line scans in linear time (round-4 recheck, issue 1). _SECRET_LOOSE took 212 s on one 120 KB
     snake_case line, and an audit of every pattern found more that backtrack the same way: a secret name repeated
-    in one word, a JWT-like run, and whitespace after a token (the end-of-line checks were quadratic or cubic)."""
+    in one word, a JWT-like run, and whitespace after a token (the end-of-line checks were quadratic or cubic). The
+    round-4 finishing review found one more: an unclosed string literal full of escaped quotes, on a line holding
+    "\\x", was read again from every quote (16 minutes for 512 KB)."""
 
     SIZE = 200 * 1024
     BOUND = 10  # seconds for one 200 KB line; the quadratic versions took minutes, the cubic ones far longer
@@ -962,6 +966,8 @@ class ScanTimeTests(_RepoCase):
         "spaces after a 0x list": (", ".join(["0x5a"] * 8), " ", "!"),
         "tabs after a byte list": (" ".join(["7"] * 16), "\t", "!"),
         "spaces after an escaped literal": ('"' + "\\x5a" * 4 + '"', " ", "!"),
+        "an unclosed literal of escaped single quotes": ("\\x41 '", "\\'", ""),
+        "an unclosed literal of escaped double quotes": ('\\x41 "', '\\"', ""),
         "letters": ("", "a", ""),
         "digits": ("", "7", ""),
         "'=' and ':'": ("token", "=:", ""),

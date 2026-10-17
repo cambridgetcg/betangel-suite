@@ -557,7 +557,10 @@ _DEC_TOKEN = {short: re.compile(
     for short, count in ((False, "15,"), (True, "0,"))}
 _DEC_NUMBER = re.compile(r"[0-9]+")
 _HEX_DROP = re.compile(r"0[xX]|[^0-9a-fA-F]")
-_ESC_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+# A string literal, by its quote: the quote, then characters other than it and "\", or a "\" and any one character,
+# then the quote again. Read only through _esc_literals.
+_ESC_LITERAL = {"'": re.compile(r"'(?:[^'\\]|\\.)*+'", re.S), '"': re.compile(r"\"(?:[^\"\\]|\\.)*+\"", re.S)}
+_QUOTE = re.compile(r"['\"]")
 _HAS_XNN = re.compile(r"\\x[0-9a-fA-F]{2}")
 _ESC = re.compile(r"\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|.)", re.S)
 _ESC_SIMPLE = {"n": 10, "r": 13, "t": 9, "a": 7, "b": 8, "f": 12, "v": 11, "\\": 92, "'": 39, '"': 34}
@@ -600,6 +603,33 @@ def _unescape(body: str) -> bytes:
     return bytes(out)
 
 
+def _esc_literals(line: str) -> list:
+    """The string literals on one line, left to right, as a search for either kind of literal finds them, in time
+    linear in the line's length.
+
+    A literal that does not close has read every later quote of its kind as the second half of an escape ("\\'"),
+    and a literal started at any of them reads on, in step, to the same end of the line without closing either. So
+    after its first failure a kind of quote is not tried again. Retrying every start took time quadratic in the
+    line's length: a line holding "\\x" and an unclosed literal of 512 KB of escaped quotes took 16 minutes to scan
+    (round-4 finishing review).
+    """
+    found = []
+    dead = set()
+    pos = 0
+    while True:
+        quote = _QUOTE.search(line, pos)
+        if quote is None:
+            return found
+        kind = quote.group()
+        m = None if kind in dead else _ESC_LITERAL[kind].match(line, quote.start())
+        if m is None:
+            dead.add(kind)
+            pos = quote.end()
+        else:
+            found.append(m)
+            pos = m.end()
+
+
 def _segments(kind: str, line: str, short: bool = False) -> list:
     """[(start, end, payload, ends_line, pure, digest)] for one kind of token on one line.
 
@@ -624,7 +654,7 @@ def _segments(kind: str, line: str, short: bool = False) -> list:
     else:
         if "\\x" not in line:
             return []
-        matches = [m for m in _ESC_LITERAL.finditer(line) if _HAS_XNN.search(m.group())]
+        matches = [m for m in _esc_literals(line) if _HAS_XNN.search(m.group())]
     segments = []
     for m in matches:
         token = m.group()
