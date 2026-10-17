@@ -960,6 +960,9 @@ class EncodedDataTests(_RepoCase):
             "(- sha1 x5, then sha1 x5) x6": "".join("".join(f"- {h}\n" for h in sha1[k:k + 5])
                                                     + "".join(f"{h}\n" for h in sha1[k + 5:k + 10])
                                                     for k in range(0, 60, 10)),
+            # Short lists split by blank lines, 64 lines in all: not past the count, so still not binary data.
+            "bare sha256 x64, in lists of 2": "\n".join(f"{a}\n{b}\n" for a, b in zip(sha256[::2], sha256[1::2])),
+            "- sha1 x64, in lists of 4": "\n".join("".join(f"- {h}\n" for h in sha1[k:k + 4]) for k in range(0, 64, 4)),
             # A hash with words after it on its line is tested alone and not counted.
             "70 lines of a hash and a subject, then - sha1 x8": "".join(f"{h} synthetic subject\n" for h in log)
                                                                + "\n" + "".join(f"- {h}\n" for h in sha1[:8]),
@@ -1081,20 +1084,57 @@ class EncodedDataTests(_RepoCase):
             self.assertEqual(len(digits), 128 * width)
             return _wrap(digits[:64 * width], width, fmt) + between + _wrap(digits[64 * width:], width, fmt)
 
+        def short_lists(width: int, fmt: str, per: int) -> str:
+            # 128 lines of width hex digits, in lists of per lines (each under 96 bytes) split by blank lines.
+            digits = raw[:64 * width].hex()
+            self.assertEqual(len(digits), 128 * width)
+            lists = [digits[i:i + per * width] for i in range(0, len(digits), per * width)]
+            self.assertLess(per * width // 2, 96)
+            return "\n".join(_wrap(part, width, fmt) for part in lists)
+
+        def base64_runs(width: int, fmt: str, lines: int, runs: int) -> str:
+            # runs base64 runs, split by blank lines, each decoding to a list of lines lines of width hex digits.
+            digits = raw[:runs * lines * width // 2].hex()
+            self.assertEqual(len(digits), runs * lines * width)
+            size = lines * width
+            texts = [base64.b64encode(_wrap(digits[i:i + size], width, fmt).encode()).decode()
+                     for i in range(0, len(digits), size)]
+            return "\n".join(_wrap(text, 76) for text in texts)
+
+        def plain_then_base64(width: int) -> str:
+            digits = raw[:64 * width].hex()  # 64 plain lines, then a base64 run of a list of 64 more
+            self.assertEqual(len(digits), 128 * width)
+            inner = base64.b64encode(_wrap(digits[64 * width:], width).encode()).decode()
+            return _wrap(digits[:64 * width], width) + "\n" + _wrap(inner, 76)
+
         shapes = {
             "64 + 64 lines of 64, split by a blank line": two_runs(64, "{}\n", "\n"),
             "64 + 64 lines of - 40, split by a blank line": two_runs(40, "- {}\n", "\n"),
             "64 + 64 lines of 40, split by a line of words": two_runs(40, "{}\n", "part two\n"),
+            # The recheck of 7126190: a decoded run kept a count of its own, so base64 runs that each decoded to a
+            # list of up to 64 lines carried any amount; a list in a decoded run is now never exempt.
+            "2 base64 runs, each 64 lines of 64": base64_runs(64, "{}\n", 64, 2),
+            "4 base64 runs, each 64 lines of - 40": base64_runs(40, "- {}\n", 64, 4),
+            "7 base64 runs, each 40 lines of 40": base64_runs(40, "{}\n", 40, 7),
+            "64 lines of 64, then a base64 run of 64 more": plain_then_base64(64),
+            # The same recheck: past the count, lists under 96 bytes (two sha256 lines, two to four sha1 lines) split
+            # by blank lines still passed; past it, a list that is not text is now binary data at any length.
+            "lists of 2 lines of 64, split by blank lines": short_lists(64, "{}\n", 2),
+            "lists of 2 lines of - 64, split by blank lines": short_lists(64, "- {}\n", 2),
+            "lists of 2 lines of 40, split by blank lines": short_lists(40, "{}\n", 2),
+            "lists of 2 lines of - 40, split by blank lines": short_lists(40, "- {}\n", 2),
+            "lists of 4 lines of 40, split by blank lines": short_lists(40, "{}\n", 4),
+            "lists of 4 lines of - 40, split by blank lines": short_lists(40, "- {}\n", 4),
         }
         for name, text in shapes.items():
             with self.subTest(shape=name):
                 self.setUp()
                 self.plant("docs/dump.md", text, code="encoded_blob")
-        with self.subTest(shape="64 + 64 lines of - 40, split by a blank line", mode="--message"):
-            self.write(".git/MSG", "synthetic subject\n\n" + shapes["64 + 64 lines of - 40, split by a blank line"])
-            rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
-            self.assertEqual(rc, 1, out)
-            self.assertEqual(self.codes(out), {"encoded_blob"})
+            with self.subTest(shape=name, mode="--message"):
+                self.write(".git/MSG", "synthetic subject\n\n" + text)
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.codes(out), {"encoded_blob"})
 
 
 class ScanTimeTests(_RepoCase):

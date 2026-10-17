@@ -537,31 +537,38 @@ def _plain_findings(lines) -> list:
 # its first byte, and also looks for an image or document signature (PNG, JPEG, GIF, WebP, ISO
 # media, TIFF, PDF) (round-4 finishing review: with one real hash line first, as a commit message
 # cites a commit, or with one NUL or 0xFF byte, data passed, and so did images and PDFs; its
-# recheck: UTF-16 text passed, one character a line). In one text (a file, a message, or a decoded
-# run read as text) the lines of its lists of two or more such lines are counted, each line once,
-# though both readings (with and without line markers) may see it. Past ENCODED_MAX_HASH_LINES,
-# every such list in that text is tested as binary data like any other run, so the gap below
-# carries at most 64 lines, about 2 KiB, in one file or message (the finishing review's recheck:
-# the count was per run, so runs of 64 lines split by a blank line carried any amount). A single
-# line is not counted: alone it is too short for the second test either way.
+# recheck: UTF-16 text passed, one character a line). In a file or a message the lines of its
+# lists of two or more such lines are counted, each line once, though both readings (with and
+# without line markers) may see it. Past ENCODED_MAX_HASH_LINES, every such list in that file or
+# message is binary data, and so is every such list in a decoded run read as text, whatever the
+# count: a list that holds a NUL or is not UTF-8 is flagged at any length, not only from 96 bytes
+# (the finishing review's recheck: the count was per run, so runs of 64 lines split by a blank
+# line carried any amount; the recheck of that fix: a decoded run kept a count of its own, so
+# base64 runs that each decoded to a list of 64 lines carried any amount, and past the count lists
+# of two to four lines, under 96 bytes, still passed when split by blank lines). So the exemption
+# of lists of hashes carries at most 64 lines, about 2 KiB, in one file or message. A single line
+# is not a list and is not counted: alone it is too short for the second test either way.
 # Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
 # patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
 # characters (groups of 8, or a list whose first piece is that short), and lists split by commas.
 # Not flagged (known gaps): in lists of hashes (up to 64 whole lines of exactly 40 or 64 digits in
-# one file or message), binary data with no signature above and no zlib stream at the start of a
-# line (raw deflate, a compressed file without its header, encrypted bytes, or a signature that
-# starts mid-line); and a dump with other text before or after the token on each line (a numbered
-# list, trailing words): no line joins the next, so each line is tested alone. Flagged although
-# not data (known false positives, failing closed): lists of md5, sha224, sha384, sha512 or
-# blake2b sums, or of lines that hold two or more hashes split by spaces
-# (`git log --format='%H %P'`), and more than 64 lines of lists of hashes in one file or
-# message. A word after each hash on its line avoids them.
+# one file or message, outside a decoded run), binary data with no signature above and no zlib
+# stream at the start of a line (raw deflate, a compressed file without its header, encrypted
+# bytes, or a signature that starts mid-line); and, older than 2ae7640 and with no bound, binary
+# data with no signature in runs of under 96 bytes each, however many: a blank or other line every
+# few lines, a change of marker, or text before or after the token on each line (a numbered list,
+# trailing words), so that no run is long enough for the second test (one hash line alone between
+# blank lines is such a run). Flagged although not data (known false positives, failing closed):
+# lists of md5, sha224, sha384, sha512 or blake2b sums, or of lines that hold two or more hashes
+# split by spaces (`git log --format='%H %P'`), more than 64 lines of lists of hashes in one file
+# or message, and a list of two or more hashes in a decoded run (base64 of a text that lists
+# commits). A word after each hash on its line avoids them.
 
 ENCODED_MIN_MAGIC = 24
 ENCODED_MIN_BINARY = 96
 ENCODED_MIN_TEXT = 16
 ENCODED_MAX_DEPTH = 1   # a decoded run is searched for encoded runs once more, no deeper
-ENCODED_MAX_HASH_LINES = 64  # lines in lists of hashes in one text; past it, each of those lists is binary data
+ENCODED_MAX_HASH_LINES = 64  # lines in lists of hashes in a file or message; past it, each of those lists is binary
 
 # The token patterns, by kind: for any token, and for the short last line of a run.
 _B64_TOKEN = {False: re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}"), True: re.compile(r"[A-Za-z0-9+/_-]{2,}={0,2}")}
@@ -855,11 +862,12 @@ def _hash_list_starts(payloads: list) -> list:
 def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
     """Whether one decoded run is flagged (the three tests above).
 
-    starts: for a list of hashes (a hex run whose every line is one whole 40- or 64-digit token, in a text whose
-    lists hold at most ENCODED_MAX_HASH_LINES lines in all), where each line's bytes start. Such a run is never
-    binary data, so a magic, an image or document signature, or a zlib stream counts at the start of any of its
-    lines, and its text is read with NULs as line ends and other bytes that are not UTF-8 replaced, and again with
-    the NULs removed (UTF-16 text). Any other run too short to count as binary data is read as text in the same way.
+    starts: for a list of hashes (a hex run whose every line is one whole 40- or 64-digit token, in a file or message
+    whose lists hold at most ENCODED_MAX_HASH_LINES lines in all, not in a decoded run), or for one such line alone,
+    where each line's bytes start. Such a run is never binary data, so a magic, an image or document signature, or a
+    zlib stream counts at the start of any of its lines, and its text is read with NULs as line ends and other bytes
+    that are not UTF-8 replaced, and again with the NULs removed (UTF-16 text). Any other run too short to count as
+    binary data is read as text in the same way.
     """
     view = memoryview(blob)
     for start in starts or (0,):
@@ -886,7 +894,9 @@ def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
 def _encoded_blob_lines(lines, depth: int = 0) -> list:
     """The first line number of every encoded run that decodes to something flagged.
 
-    Lists of hashes of two or more lines are tested last, once the lines of all of them are counted.
+    Lists of hashes of two or more lines are tested last, once the lines of all of them are counted. At depth 0 (a
+    file or a message) they are exempt from the binary test while they hold at most ENCODED_MAX_HASH_LINES lines in
+    all; in a decoded run (depth 1) they never are.
     """
     views = [(lines, range(len(lines)))]
     stripped = _without_prefixes(lines)
@@ -907,9 +917,13 @@ def _encoded_blob_lines(lines, depth: int = 0) -> list:
                 elif _blob_flagged(blob, mixed, depth, _hash_list_starts(payloads) if digests else None):
                     flagged.add(number)
         flagged.update(number for number, blob in _git_binary_hunks(view) if _blob_flagged(blob, True, depth))
-    binary = len(listed) > ENCODED_MAX_HASH_LINES
+    # A list in a decoded run read as text is never exempt: its lines would count in a total of their own, apart
+    # from the file's or message's. Past the count, and in a decoded run, a list that holds a NUL or is not UTF-8 is
+    # binary data at any length: runs of two to four lines, split by blank lines, are each under ENCODED_MIN_BINARY.
+    binary = depth > 0 or len(listed) > ENCODED_MAX_HASH_LINES
     flagged.update(number for number, blob, mixed, payloads in lists
-                   if _blob_flagged(blob, mixed, depth, None if binary else _hash_list_starts(payloads)))
+                   if (binary and mixed and (b"\0" in blob or not _is_utf8(blob)))
+                   or _blob_flagged(blob, mixed, depth, None if binary else _hash_list_starts(payloads)))
     return sorted(flagged)
 
 # ------------------------------------------------------------- scan an entry
