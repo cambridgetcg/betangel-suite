@@ -142,6 +142,23 @@ def _git_binary_patch(data: bytes) -> str:
             f"literal {len(data)}\n" + "\n".join(lines) + "\n\nliteral 0\nHcmV?d00001\n\n")
 
 
+def _png(width: int = 24, height: int = 24) -> bytes:
+    """A small synthetic RGB image in PNG form, as a screenshot tool writes one."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return len(data).to_bytes(4, "big") + kind + data + zlib.crc32(kind + data).to_bytes(4, "big")
+    rows = b"".join(b"\0" + bytes((x * 7 + y * 3) % 256 for x in range(width * 3)) for y in range(height))
+    header = width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 2, 0, 0, 0])
+    return bytes([0x89]) + b"PNG\r\n" + bytes([0x1a]) + b"\n" + chunk(b"IHDR", header) + chunk(
+        b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def _pdf() -> bytes:
+    """A minimal synthetic PDF with a compressed page stream."""
+    body = zlib.compress(b"BT /F1 12 Tf 72 712 Td (synthetic page) Tj ET\n" * 8)
+    return (b"%PDF-1.4\n%" + bytes([0xe2, 0xe3, 0xcf, 0xd3]) + b"\n1 0 obj << /Length " + str(len(body)).encode()
+            + b" /Filter /FlateDecode >>\nstream\n" + body + b"\nendstream\nendobj\ntrailer << /Root 1 0 R >>\n%%EOF\n")
+
+
 def _without_nul(make) -> bytes:
     """The first of make(0), make(1), ... that holds no NUL byte."""
     for salt in range(1000):
@@ -895,16 +912,19 @@ class EncodedDataTests(_RepoCase):
         # Round-4 recheck: read without its markers, a bulleted or commented list of full commit or file hashes was
         # one hex run of 96+ bytes, flagged as binary, in a file and in a commit message. A run whose every line is
         # one whole 40- or 64-digit token is a list of hashes: only a magic, a zlib stream or flagged text counts.
-        sha1 = [hashlib.sha1(f"synthetic {i}".encode()).hexdigest() for i in range(8)]
-        sha256 = [hashlib.sha256(f"synthetic {i}".encode()).hexdigest() for i in range(4)]
+        sha1 = [hashlib.sha1(f"synthetic {i}".encode()).hexdigest() for i in range(64)]
+        sha256 = [hashlib.sha256(f"synthetic {i}".encode()).hexdigest() for i in range(64)]
         lists = {
-            "- sha1 x8": "".join(f"- {h}\n" for h in sha1),
-            "# sha1 x8": "".join(f"# {h}\n" for h in sha1),
-            "- sha256 x4": "".join(f"- {h}\n" for h in sha256),
+            "- sha1 x8": "".join(f"- {h}\n" for h in sha1[:8]),
+            "# sha1 x8": "".join(f"# {h}\n" for h in sha1[:8]),
+            "- sha256 x4": "".join(f"- {h}\n" for h in sha256[:4]),
             "* sha1 and words x6": "".join(f"* {h} synthetic subject words\n" for h in sha1[:6]),
-            "- `sha1` x8": "".join(f"- `{h}`\n" for h in sha1),
-            "bare sha256 x4": "".join(f"{h}\n" for h in sha256),
+            "- `sha1` x8": "".join(f"- `{h}`\n" for h in sha1[:8]),
+            "bare sha256 x4": "".join(f"{h}\n" for h in sha256[:4]),
             "indented, both lengths": "".join(f"  - {h}\n" for h in sha1[:3] + sha256[:3]),
+            # The longest run that still counts as a list of hashes (round-4 finishing review).
+            "- sha1 x64": "".join(f"- {h}\n" for h in sha1),
+            "bare sha256 x64": "".join(f"{h}\n" for h in sha256),
         }
         for name, text in lists.items():
             with self.subTest(shape=name):
@@ -976,6 +996,36 @@ class EncodedDataTests(_RepoCase):
                 self.assertEqual(rc, 1, out)
                 self.assertEqual(self.codes(out), {"encoded_blob"})
                 self.assertNotIn(MARKET_2015, out)
+
+    def test_images_documents_and_long_runs_in_hash_lines_are_caught(self):
+        # Round-4 finishing review: a list of hashes is never binary data, so images and PDFs, which have no archive
+        # magic, passed in its layouts, as did any binary data with no magic, however long. Images and documents now
+        # count by their signatures, and a run of more than 64 such lines is binary data again.
+        lead = hashlib.sha1(b"synthetic lead").hexdigest()
+        packer = zlib.compressobj(9, zlib.DEFLATED, -15)  # raw deflate: no header, no magic
+        raw = packer.compress(_stream_text(lines=400).encode() + bytes(range(256)) * 8) + packer.flush()
+        self.assertGreater(len(raw), 64 * 32)
+
+        def lines(data: bytes, width: int, fmt: str) -> str:
+            return _wrap((data + b" " * (-len(data) % (width // 2))).hex(), width, fmt)
+
+        shapes = {
+            "PNG, - 40": lines(_png(), 40, "- {}\n"),
+            "PNG after a hash, bare 64": lead + "\n" + lines(_png(), 64, "{}\n"),
+            "PDF, # 64": lines(_pdf(), 64, "# {}\n"),
+            "PDF after a hash, - 40": f"- {lead}\n" + lines(_pdf(), 40, "- {}\n"),
+            "raw deflate, 65+ lines of 64": lines(raw, 64, "{}\n"),
+            "raw deflate, 65+ lines of - 40": lines(raw, 40, "- {}\n"),
+        }
+        for name, text in shapes.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.plant("docs/dump.md", text, code="encoded_blob")
+        with self.subTest(shape="PNG, - 40", mode="--message"):
+            self.write(".git/MSG", "synthetic subject\n\nThe fixes:\n" + shapes["PNG, - 40"])
+            rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+            self.assertEqual(rc, 1, out)
+            self.assertEqual(self.codes(out), {"encoded_blob"})
 
 
 class ScanTimeTests(_RepoCase):

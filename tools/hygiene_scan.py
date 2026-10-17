@@ -529,19 +529,29 @@ def _plain_findings(lines) -> list:
 # A hex run whose every line gave one whole token of exactly 40 or 64 digits is a list of commit
 # or file hashes, one per line (bare, quoted or after a marker), so the second test never applies
 # to it (round-4 recheck: lists of full hashes were binary). The first applies where any of its
-# lines starts, not only at its first byte, and the third reads its bytes with each NUL as a line
+# lines starts, not only at its first byte, and also looks for an image or document signature
+# (PNG, JPEG, GIF, WebP, ISO media, TIFF, PDF); the third reads its bytes with each NUL as a line
 # end and any other byte that is not UTF-8 replaced (round-4 finishing review: with one real hash
-# line first, as a commit message cites a commit, or with one NUL or 0xFF byte, data passed).
+# line first, as a commit message cites a commit, or with one NUL or 0xFF byte, data passed, and
+# so did images and PDFs). A run of more than ENCODED_MAX_HASH_LINES such lines is not a list of
+# hashes but binary data, so what the gap below can carry stays under 2 KiB.
 # Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
 # patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
 # characters (groups of 8, or a list whose first piece is that short), and lists split by commas.
-# Not flagged (known gap): binary data with no magic and no zlib stream, hex-encoded in whole
-# lines of exactly 40 or 64 digits, as a list of hashes is.
+# Not flagged (known gaps): in a list of hashes (up to 64 whole lines of exactly 40 or 64 digits),
+# binary data with no signature above and no zlib stream at the start of a line (raw deflate, a
+# compressed file without its header, encrypted bytes, or a signature that starts mid-line); and a
+# dump with other text after the token on each line, which ends its run at every line, so each
+# line is tested alone. Flagged although not data (known false positives, failing closed): lists
+# of md5, sha224, sha384, sha512 or blake2b sums, or of lines that hold two or more hashes split by
+# spaces (`git log --format='%H %P'`), and more than 64 hashes in one run. A word after each hash
+# on its line avoids them.
 
 ENCODED_MIN_MAGIC = 24
 ENCODED_MIN_BINARY = 96
 ENCODED_MIN_TEXT = 16
 ENCODED_MAX_DEPTH = 1   # a decoded run is searched for encoded runs once more, no deeper
+ENCODED_MAX_HASH_LINES = 64  # a longer run of whole 40- or 64-digit lines is binary data, not a list of hashes
 
 # The token patterns, by kind: for any token, and for the short last line of a run.
 _B64_TOKEN = {False: re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}"), True: re.compile(r"[A-Za-z0-9+/_-]{2,}={0,2}")}
@@ -737,10 +747,16 @@ def _decode_run(kind: str, payloads: list):
         return None, False
 
 
-def _blob_magic(blob: bytes) -> bool:
+# Images and documents (a screenshot, a PDF report): binary data with no archive magic. Only a list of hashes, which is
+# never binary data, is tested for them; anywhere else they are binary data already, and a small icon is not flagged.
+_MEDIA_MAGIC = re.compile(rb"\x89PNG\r\n\x1a\n|\xff\xd8\xff|GIF8[79]a|RIFF....WEBP|....ftyp|II\*\x00|MM\x00\*|%PDF-",
+                          re.S)
+
+
+def _blob_magic(blob: bytes, media: bool = False) -> bool:
     if blob[:2] == b"\x1f\x8b":  # gzip: also the deflate method byte and clear reserved flags
         return blob[2] == 8 and blob[3] & 0xE0 == 0
-    return _magic_code(blob[:SNIFF_BYTES]) is not None
+    return _magic_code(blob[:SNIFF_BYTES]) is not None or (media and _MEDIA_MAGIC.match(blob) is not None)
 
 
 def _zlib_stream(blob: bytes) -> bool:
@@ -823,13 +839,14 @@ def _hash_list_starts(payloads: list) -> list:
 def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
     """Whether one decoded run is flagged (the three tests above).
 
-    starts: for a list of hashes (a hex run whose every line is one whole 40- or 64-digit token), where each line's
-    bytes start. Such a run is never binary data, so a magic or a zlib stream counts at the start of any of its lines,
-    and its text is read with NULs as line ends and other bytes that are not UTF-8 replaced.
+    starts: for a list of hashes (a hex run of at most ENCODED_MAX_HASH_LINES lines, each one whole 40- or 64-digit
+    token), where each line's bytes start. Such a run is never binary data, so a magic, an image or document
+    signature, or a zlib stream counts at the start of any of its lines, and its text is read with NULs as line ends
+    and other bytes that are not UTF-8 replaced.
     """
     view = memoryview(blob)
     for start in starts or (0,):
-        if len(blob) - start >= ENCODED_MIN_MAGIC and (_blob_magic(blob[start:start + SNIFF_BYTES])
+        if len(blob) - start >= ENCODED_MIN_MAGIC and (_blob_magic(blob[start:start + SNIFF_BYTES], starts is not None)
                                                         or _zlib_stream(view[start:])):
             return True
     if not mixed:
@@ -857,7 +874,7 @@ def _encoded_blob_lines(lines, depth: int = 0) -> list:
         for kind in ("b64", "hex", "esc", "dec"):
             for number, payloads, digests in _runs(kind, view):
                 blob, mixed = _decode_run(kind, payloads)
-                starts = _hash_list_starts(payloads) if digests else None
+                starts = _hash_list_starts(payloads) if digests and len(payloads) <= ENCODED_MAX_HASH_LINES else None
                 if blob is not None and _blob_flagged(blob, mixed, depth, starts):
                     flagged.add(number)
         flagged.update(number for number, blob in _git_binary_hunks(view) if _blob_flagged(blob, True, depth))
