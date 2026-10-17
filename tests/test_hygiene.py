@@ -201,10 +201,11 @@ class _RepoCase(unittest.TestCase):
     def add(self, *rels: str, force: bool = False) -> None:
         self.git("add", *(["-f"] if force else []), "--", *rels)
 
-    def scan(self, *args: str, root: str | None = None, env: dict | None = None, stdin: bytes = b""):
+    def scan(self, *args: str, root: str | None = None, env: dict | None = None, stdin: bytes = b"",
+             timeout: float = 120):
         proc = subprocess.run(
             [sys.executable, "-I", "-S", "-B", str(SCANNER), "--root", root or self.repo, *args],
-            env=env or self.env, input=stdin, capture_output=True, timeout=120)
+            env=env or self.env, input=stdin, capture_output=True, timeout=timeout)
         out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
         return proc.returncode, out
 
@@ -939,6 +940,51 @@ class EncodedDataTests(_RepoCase):
                 self.assertEqual(rc, 1, out)
                 self.assertEqual(self.codes(out), {"encoded_blob"})
                 self.assertNotIn(MARKET_2015, out)
+
+
+class ScanTimeTests(_RepoCase):
+    """One long line scans in linear time (round-4 recheck, issue 1). _SECRET_LOOSE took 212 s on one 120 KB
+    snake_case line, and an audit of every pattern found more that backtrack the same way: a secret name repeated
+    in one word, a JWT-like run, and whitespace after a token (the end-of-line checks were quadratic or cubic)."""
+
+    SIZE = 200 * 1024
+    BOUND = 10  # seconds for one 200 KB line; the quadratic versions took minutes, the cubic ones far longer
+
+    # (head, unit repeated to SIZE characters, tail). Each line is its own file: two of them would be oversize.
+    SHAPES = {
+        "snake_case": ("", "x_", ""),
+        "kebab-case": ("", "a-", ""),
+        "underscores": ("", "_", "!"),
+        "base64url alphabet": ("", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", ""),
+        "a secret name repeated in one word": ("", "token_", ""),
+        "JWT-like run": ("", "eyJ-", ""),
+        "spaces after a base64 token": ("A" * 24, " ", "!"),
+        "spaces after a 0x list": (", ".join(["0x5a"] * 8), " ", "!"),
+        "tabs after a byte list": (" ".join(["7"] * 16), "\t", "!"),
+        "spaces after an escaped literal": ('"' + "\\x5a" * 4 + '"', " ", "!"),
+        "letters": ("", "a", ""),
+        "digits": ("", "7", ""),
+        "'=' and ':'": ("token", "=:", ""),
+        "quotes": ("", "\"'`", ""),
+        "hex digits": ("", "0123456789abcdef", "!"),
+        "key words": ("", "key key app ", ""),
+        "table cells": ("", "| Aaaa | 1.5 ", "|"),
+        "box drawing": ("", "│ 1.5 ", ""),
+    }
+
+    def test_long_lines_scan_in_linear_time(self):
+        for index, (name, (head, unit, tail)) in enumerate(self.SHAPES.items()):
+            line = head + (unit * (self.SIZE // len(unit) + 1))[:self.SIZE] + tail + "\n"
+            rel = f"docs/long{index}.txt"
+            self.write(rel, line)
+            with self.subTest(shape=name):
+                try:
+                    rc, out = self.scan(rel, timeout=self.BOUND)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"no result within {self.BOUND} s")
+                self.assertIn(rc, (0, 1), out)
+                self.assertRegex(out.splitlines()[-1], r"^hygiene_scan: (OK|FAIL) ")
+                self.assert_withheld(out)
 
 
 class FilterAttributeTests(_RepoCase):

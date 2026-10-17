@@ -265,8 +265,14 @@ _SECRET_KEYS = (
     r"(?:api[_-]?key|app[_-]?key|application[_-]?key|x-application|x-authentication"
     r"|authorization|secret|password|passwd|passphrase|token|ssoid|cookie|session[_-]?id"
     r"|private[_-]?key)")
+# Linear time (round-4 recheck). A search tries a match at every place a name could start. A pattern that reads
+# from each of them to the end of a word of [A-Za-z0-9_-] takes time quadratic in the word's length: one
+# snake_case, kebab-case or base64url line of 120 KB took 212 s in _SECRET_LOOSE. So _SECRET_QUOTED,
+# _SECRET_LOOSE's first form and _JWT start only at a word's first character ((?<![A-Za-z0-9_-])), and cross the
+# word at most twice. What follows a name has to follow the whole word, so a match from the word's start finds
+# the value a later start in the word would find.
 _SECRET_QUOTED = re.compile(
-    r"(?i)" + _SECRET_KEYS + r"[A-Za-z0-9_-]*[\"']?\]?\s*[:=]\s*[bru]{0,2}[\"']"
+    r"(?i)(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*?" + _SECRET_KEYS + r")[A-Za-z0-9_-]*+[\"']?\]?\s*[:=]\s*[bru]{0,2}[\"']"
     r"(?:bearer\s+)?([A-Za-z0-9_.~+/-]{16,}=*)[\"']")
 _SECRET_BARE = re.compile(
     r"(?i)(?:^|[\s;])(?:export\s+)?[A-Za-z0-9_]*(?:api_?key|app_?key|secret|password|passwd|token|ssoid)"
@@ -276,15 +282,20 @@ _SECRET_HEADER = re.compile(r"(?i)\bx-(?:authentication|application)\s*:\s*([A-Z
 # "session token is <value>", and, for the names that are secrets on their own, a bare space: "ssoid <value>",
 # "app key <value>". _looks_secret still filters every value.
 _SECRET_LOOSE = re.compile(
-    r"(?i)(?:^|[^A-Za-z0-9])(?:[A-Za-z0-9_-]*(?:(?:api|app|application)[ _-]?key|secret|password|passwd|passphrase"
+    r"(?i)(?:(?<![A-Za-z0-9_-])[A-Za-z0-9_-]*(?:(?:api|app|application)[ _-]?key|secret|password|passwd|passphrase"
     r"|token|ssoid|session[ _-]?(?:id|token))[\"'`]?(?:\s*[:=]|\s+is)\s*"
-    r"|(?:ssoid|session[ _-]?token|(?:api|app|application)[ _-]?key)\s+)"
+    r"|(?<![A-Za-z0-9])(?:ssoid|session[ _-]?token|(?:api|app|application)[ _-]?key)\s+)"
     r"[\"'`]?([A-Za-z0-9_.~+/-]{16,}=*)(?=$|[\s\"'`,;)\]}])")
 _KNOWN_TOKEN = re.compile(
     r"\b(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|(?:AKIA|ASIA)[0-9A-Z]{16}"
     r"|xox[abposr]-[A-Za-z0-9-]{10,}|sk-(?:ant-)?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}"
-    r"|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
     r"|[0-9]{8,10}:AA[A-Za-z0-9_-]{33})")
+# A JWT, read from the first "eyJ" in its word that starts a word part (\b): a later one in the same word needs the
+# same "." after the word (round-4 recheck: "eyJ-" repeated was quadratic as a branch of _KNOWN_TOKEN). As its own
+# pattern it also finds a JWT that overlaps another token, which the branch left to that token.
+_JWT = re.compile(
+    r"(?<![A-Za-z0-9_-])(?>[A-Za-z0-9_-]*?\b(?=eyJ))"
+    r"(eyJ[A-Za-z0-9_-]{10,}+\.eyJ[A-Za-z0-9_-]{10,}+\.[A-Za-z0-9_-]{10,})")
 _BOOTSTRAP = re.compile(r"#c=[A-Za-z0-9_-]{16,}")
 _NAME_FIELD_STRICT = re.compile(
     r"[\"'](?:runnerName|runner_name|selectionName|selection_name|horseName|horse_name)[\"']"
@@ -389,7 +400,7 @@ def _line_codes(line: str) -> list:
     if (_any_secret(_SECRET_QUOTED, line) or _any_secret(_SECRET_BARE, line)
             or _any_secret(_SECRET_HEADER, line) or _any_secret(_SECRET_LOOSE, line)):
         codes.append("secret_value")
-    if any(any(c.isdigit() for c in m.group(1)) for m in _KNOWN_TOKEN.finditer(line)):
+    if any(any(c.isdigit() for c in m.group(1)) for regex in (_KNOWN_TOKEN, _JWT) for m in regex.finditer(line)):
         codes.append("known_token")
     if _BOOTSTRAP.search(line):
         codes.append("bootstrap_code")
@@ -554,10 +565,13 @@ _PURE_BEFORE = {"b64": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
                 "hex": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
                 "esc": re.compile(r"\s*(?:\+\s*)?[bBrRuU]{0,2}"),
                 "dec": re.compile(r"\s*(?:[\[({]\s*)?")}
-_ENDS_LINE = re.compile(r"[\"'`]?\s*[)\]\\;+]*\s*")
-_ENDS_LINE_0X = re.compile(r"\s*,?\s*[)\]\\;+]*\s*")
-_ENDS_LINE_ESC = re.compile(r"\s*[)\]\\;+]*\s*")
-_ENDS_LINE_DEC = re.compile(r"\s*,?\s*[)\]};]*\s*")
+# What may follow a token that ends its line. Possessive (*+, ?+): with backtracking, "\s*...\s*" took time
+# quadratic, and with a comma between, cubic, in the whitespace after a token (round-4 recheck). No two neighbouring
+# parts share a character, so they match the same text.
+_ENDS_LINE = re.compile(r"[\"'`]?+\s*+[)\]\\;+]*+\s*+")
+_ENDS_LINE_0X = re.compile(r"\s*+,?+\s*+[)\]\\;+]*+\s*+")
+_ENDS_LINE_ESC = re.compile(r"\s*+[)\]\\;+]*+\s*+")
+_ENDS_LINE_DEC = re.compile(r"\s*+,?+\s*+[)\]};]*+\s*+")
 _URLSAFE = str.maketrans("-_", "+/")
 # A comment or list marker that starts a line: such lines are read a second time without it.
 _LINE_PREFIX = re.compile(r"[ \t]*(?:#+|//+|--|;+|>+|\*+|-|%+)[ \t]?")
