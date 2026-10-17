@@ -176,7 +176,7 @@ class StartTimeTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(runmarker.lock_path(home)))       # test never takes the realdata lock
 
     def test_vendor_refuses_while_the_marker_exists(self):
-        # vendor was first exempt. Nuance's answer to Q-N14 in her PR #1 review: "test and vendor refuse under
+        # vendor was first exempt. Nuance's PR #1 review, answering Q-N14: "test and vendor refuse under
         # the marker; stop stays exempt". vendor writes the deps clone, and pin/ with --bump, and clones the
         # whole of ~/betangel-research. Each run is refused before its arguments are read or anything is made.
         home = make_home(self)
@@ -289,9 +289,10 @@ class MidRunTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(tmp, "probe-2-started")))
 
 
-# A stand-in for Nuance's run wrapper, as DESIGN.md 6.8 and her PR #2 review describe it: it runs outside the suite
-# (never imports betangel_suite), creates the marker with O_EXCL, then takes LOCK_EX on the realdata lock, waiting
-# up to wait_s and failing closed. A missing lock file counts as free. It removes only its own marker, at its end.
+# A stand-in for Nuance's run wrapper, as DESIGN.md 6.8 and Nuance's PR #2 review describe it: it runs outside the
+# suite (never imports betangel_suite), creates the marker with O_EXCL, then takes LOCK_EX on the realdata lock,
+# waiting up to wait_s and failing closed. A missing lock file counts as free. It removes only its own marker, at
+# its end.
 WRAPPER = r"""
 import fcntl, json, os, sys, time
 marker, lock, wait_s = %r, %r, %r

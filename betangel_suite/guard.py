@@ -135,8 +135,8 @@ TEST_INTERPRETERS = ("/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3.
 # would make checkout write, and --bump pin, bytes that differ from the committed blobs (round-4 review).
 VENDOR_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                      "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null")
-# The branch of the deploy clone a pinned commit must be on (vendor's merge-base --is-ancestor; Nuance's Q-N2 answer
-# in her PR #2 review): cat-file -e alone accepted an unmerged or a dangling commit.
+# The branch of the deploy clone a pinned commit must be on (vendor's merge-base --is-ancestor; Nuance's PR #2
+# review, answering Q-N2): cat-file -e alone accepted an unmerged or a dangling commit.
 VENDOR_MAIN_REF = "refs/heads/main"
 # The whole environment of every vendor git child, with HOME (the guard's own) added: vendor_argv_ok refuses None
 # (this process's environment, which could hold GIT_DIR) and any other key or value (GIT_CONFIG_COUNT and its

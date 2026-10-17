@@ -1,7 +1,7 @@
 """State roots and the single writer helper (DESIGN.md 3.7; Phase 0 adaptations A and B).
 
 The flag roots.STATE_ROOT_AGREED is on since Nuance agreed the suite root (Q-N3, PR #4 review; DESIGN.md 3.7 gives its
-status since her PR #2 review). Both settings are still
+status since Nuance's PR #2 review). Both settings are still
 tested, against a temporary HOME, with mock.patch for the setting that is not the default. With the flag
 off, a write under ~/betangel-data is refused on the path text alone: the tests make that directory
 unreadable first, so any file-system access there would surface as a different error.

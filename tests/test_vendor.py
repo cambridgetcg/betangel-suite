@@ -117,7 +117,7 @@ class VendorToolTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(self.pin_file))
 
     def test_only_a_commit_on_main_is_vendored(self):
-        # Nuance's Q-N2 answer in her PR #2 review: cat-file -e also finds an unmerged or a dangling commit, so vendor
+        # Nuance's PR #2 review, answering Q-N2: cat-file -e also finds an unmerged or a dangling commit, so vendor
         # asks merge-base --is-ancestor <sha> refs/heads/main as well. Nothing is created and the clone is unchanged.
         self.point_head("side")                                   # unborn: the next commit is on side only
         with open(os.path.join(self.research, "README.md"), "a", encoding="utf-8") as handle:

@@ -2,9 +2,9 @@
 (DESIGN.md 6.8, I-17).
 
 The marker is a file Nuance's run wrapper creates, outside ~/betangel-data, at ~/.local/state/lab-runs/ACTIVE
-(Q-N3: agreed by Nuance in her PR #4 review; her PR #2 review makes the marker half conditional again, on her item 6,
-which this module's lock answers). The config key run_marker accepts only that path, so no config edit can point
-the check at a file that never exists. Lab-Claude never creates or removes the marker, and the suite never creates
+(Q-N3: agreed by Nuance in Nuance's PR #4 review; Nuance's PR #2 review makes the marker half conditional again,
+on Nuance's item 6, which this module's lock answers). The config key run_marker accepts only that path, so no
+config edit can point the check at a file that never exists. Lab-Claude never creates or removes the marker, and the suite never creates
 or removes it, or the wrapper's own lock file beside it (lab-runs/LOCK).
 
 Fail closed: any directory entry at the marker path counts as present (a dangling symlink included), and

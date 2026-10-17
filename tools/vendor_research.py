@@ -8,7 +8,7 @@ Run by hand by lab-Claude, never automatically. Steps:
      clone. If the commit is not there yet, stop (commit_not_present): wait for the Air's fast-forward.
      Nothing here ever fetches. Then git -C ~/betangel-research merge-base --is-ancestor <sha>
      refs/heads/main, read only too: only a commit on the research main branch can be pinned
-     (commit_not_on_main; Nuance's Q-N2 answer in her PR #2 review), since cat-file -e also finds an
+     (commit_not_on_main; Nuance's PR #2 review, answering Q-N2), since cat-file -e also finds an
      unmerged or a dangling commit.
   2. git clone --no-checkout --no-hardlinks into
      ~/.local/share/betangel-suite/deps/betangel-research-<sha12>.partial: a local clone, no network.

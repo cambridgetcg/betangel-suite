@@ -1686,9 +1686,10 @@ results["run_is_dir"] = os.path.isdir(run) and not os.path.islink(run)
             self.assertEqual((results["mkdir_run"], results["run_is_dir"]), ("ok", True), mode)
 
     def test_the_suite_never_creates_or_removes_the_marker_or_the_wrappers_lock(self):
-        # Nuance's PR #2 review, item 13: one unlink of lab-runs/ACTIVE lets require_absent pass mid-run. Only her
-        # wrapper creates or removes ACTIVE and its own lab-runs/LOCK. ~/.local/state/lab-runs lies outside every
-        # write root, so the hook refuses each of these in every mode, whether the files exist or not.
+        # Nuance's PR #2 review, item 13: one unlink of lab-runs/ACTIVE lets require_absent pass mid-run. Only
+        # Nuance's wrapper creates or removes ACTIVE and its own lab-runs/LOCK. ~/.local/state/lab-runs lies
+        # outside every write root, so the hook refuses each of these in every mode, whether the files exist or
+        # not.
         for mode in ("engine", "test", "vendor"):
             home = make_home(self)
             lab_runs = os.path.join(home, ".local", "state", "lab-runs")

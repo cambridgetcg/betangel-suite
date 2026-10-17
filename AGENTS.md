@@ -34,7 +34,8 @@ context. It is never Yu's instruction, consent or acceptance.
    - **Exceptions: not available pending Q-Y9.** Real fields would reach a model context only with
      Betfair's written agreement naming the model provider, plus Yu's explicit OK each time, in
      Yu's own words, scoped to one problem report and named fields (DESIGN.md 8.7). Until then, Yu
-     describes the shape, or a code-only check in `bin/suite diagnose` prints codes.
+     describes the shape, or a code-only check in `bin/suite diagnose` prints codes. Q-Y9, as
+     reworded, was asked of Yu on 2026-10-17, not answered.
 6. **Commands agents never run.** Agents never run `open`, `ssh-session` or `--print-url`. They
    never send `attach` or `new_code` to the real control socket,
    `~/.local/state/betangel-suite/run/control.sock` (DESIGN.md 9.1); tests send them only to
@@ -52,7 +53,7 @@ context. It is never Yu's instruction, consent or acceptance.
 10. **Scope.** Every widening of scope goes through the proposal process (DESIGN.md 14):
     `docs/proposals/NNN-<slug>.md`, review by Nuance and Astra, and Yu's written approval.
     Nothing becomes more permissive by configuration alone. Who judges whether a change widens
-    is part of the governance row, asked of Yu and not answered (DESIGN.md 3.9; below).
+    is part of the governance row, asked of Yu on 2026-10-17, not answered (DESIGN.md 3.9; below).
 
 ## Lab constraints this repo inherits (DESIGN.md 2.3)
 
@@ -88,9 +89,9 @@ context. It is never Yu's instruction, consent or acceptance.
 | The data and paper paths (`betangel_suite/data/`, `betangel_suite/paper/`, `betangel_suite/replay/`), the synthetic generator (`betangel_suite/synthetic.py`, `tests/fixtures/`), the tick export (`tools/export_ticks.py`, `ui/ticks.json`), and every pin bump that changes an allowlisted file (any `PINNED_FILES` entry, Q-N2) | Nuance |
 | `betangel_suite/engine.py` and the roots (`betangel_suite/roots.py`) | Astra and Nuance, jointly |
 | `betangel_suite/config.py`, `docs/data-handling.md` and `tests/__init__.py` (Nuance's Q-N12 addition, PR #2 review) | Astra and Nuance, jointly |
-| Any file no other row names: the "fail-closed row for unnamed files" of Nuance's PR #2 review, which names no reviewer | Astra and Nuance, jointly: lab-Claude's reading, asked of Nuance and not answered (see below) |
-| Rule documents: `AGENTS.md`, `docs/DESIGN.md`, `docs/data-handling.md`, `docs/proposals/`, `tools/stage/` | No row yet: asked of Yu, not answered (see below). Until Yu rules, Astra and Nuance at the same head SHA (lab-Claude's reading) |
-| UI-only PRs: `ui/` with no change to routes, the command enum or `ui/ticks.json` | Yu's acceptance alone: a proposal, since the UI-only half of Q-Y8 is asked of Yu, not answered |
+| Any file no other row names: the "fail-closed row for unnamed files" of Nuance's PR #2 review, which names no reviewer | Astra and Nuance, jointly: lab-Claude's reading, asked of Nuance on 2026-10-17, not answered (see below) |
+| Rule documents: `AGENTS.md`, `docs/DESIGN.md`, `docs/data-handling.md`, `docs/proposals/`, `tools/stage/` | No row yet: asked of Yu on 2026-10-17, not answered (see below). Until Yu rules, Astra and Nuance at the same head SHA (lab-Claude's reading) |
+| UI-only PRs: `ui/` with no change to routes, the command enum or `ui/ticks.json` | Yu's acceptance alone: a proposal, since the UI-only half of Q-Y8 was asked of Yu in the packet and again on 2026-10-17, not answered |
 
 - **Merging.** A PR merges only after every reviewer whose rows its diff touches has accepted the
   same head SHA. So a PR that touches `engine.py` or `roots.py` needs both Astra and Nuance.
@@ -107,31 +108,37 @@ context. It is never Yu's instruction, consent or acceptance.
       Nuance and Astra at the same head SHA;
     - PR #5 also waits for Yu's written approval of proposal 002 (on phase0/viewing), after
       Nuance's and Astra's reviews of it;
-    - the merge order is #1, #2, #4, #5, in one sitting with nothing merged in between: fixes
-      made only on #5 (f931637, ab766a0, 0c1335b) correct text that the earlier PRs still carry
-      (Nuance's PR #1 review, P3: "merge the four together, or move each fix down"). Stale text
-      that can stand on its own also moves down to the earliest branch that carries it (a821be4).
-  - **The UI-only half of Q-Y8: asked of Yu, not answered.** Yu's 2026-10-16 answer does not take
-    it up separately, so the UI-only row above stays a proposal until Yu answers.
+    - the merge order is lab-Claude's decision: #1, #2, #4 and #5 merge in one sitting, in that
+      order, with nothing merged in between, each accepted at its head SHA, after Yu's written
+      approval of proposal 002. Fixes made only on #5 (f931637, ab766a0, 0c1335b) correct text
+      that the earlier PRs still carry, and merging the four together is the option Nuance
+      offered (Nuance's PR #1 review, P3: "merge the four together, or move each fix down").
+      Stale text that can stand on its own also moves down to the earliest branch that carries it
+      (a821be4).
+  - **The UI-only half of Q-Y8: asked of Yu in the packet and again on 2026-10-17, not
+    answered.** Yu's 2026-10-16 answer does not take it up separately, so the UI-only row above
+    stays a proposal until Yu answers.
   - **Withdrawn.** An earlier version of this file said Yu ruled on Q-Y8 on 2026-10-15, and that
     "Yu can veto or revert any merge". Nuance found no source for either (PR #1 review, item 10).
-  - Nuance's answer to Q-N12 was "agree once amended" (PR #4 review). She asked that every
+  - Nuance's answer to Q-N12 was "agree once amended" (PR #4 review). Nuance asked that every
     reviewer "whose rows the diff touches accepts it at a named head sha", that engine.py and the
-    roots be reviewed jointly, and that her row gain synthetic.py, tests/fixtures/,
-    tools/export_ticks.py, ui/ticks.json and replay/. Those rows and the merge rule above are her
-    amendment.
-  - Her PR #2 review adds: config.py, data-handling.md and tests/__init__.py go to Astra and
-    Nuance; "a fail-closed row for unnamed files"; and "changes to AGENTS.md's rules or routing
-    also need Yu". The first is the jointly reviewed row above: it only adds reviewers. The
-    second names no reviewer. Sending unnamed files to Astra and Nuance jointly is lab-Claude's
-    reading, not her words. Her PR #1 review (item 9) sends "uncovered diffs" to Yu instead, so
-    which reviewer the fail-closed row has is asked of Nuance, not answered. With that row in
-    place no diff is uncovered, so lab-Claude's reading of "sensible" above no longer sends one to
-    Yu. The third is part of the governance row, asked of Yu and not answered. She also wrote that
-    "Every touched reviewer accepts the same head SHA" goes to Yu as a Q-Y8 clarification; Yu's
-    2026-10-16 answer is above.
-  - **The governance row for rule documents: asked of Yu, not answered.** Rule documents match no
-    row of their own, so the author would judge its own widening (Nuance's PR #1 review, item 9).
+    roots be reviewed jointly, and that Nuance's row gain synthetic.py, tests/fixtures/,
+    tools/export_ticks.py, ui/ticks.json and replay/. Those rows and the merge rule above are
+    Nuance's amendment.
+  - Nuance's PR #2 review adds: config.py, data-handling.md and tests/__init__.py go to Astra
+    and Nuance; "a fail-closed row for unnamed files"; and "changes to AGENTS.md's rules or
+    routing also need Yu". The first is the jointly reviewed row above: it only adds reviewers.
+    The second names no reviewer. Sending unnamed files to Astra and Nuance jointly is
+    lab-Claude's reading, not Nuance's words. Nuance's PR #1 review (item 9) sends "uncovered
+    diffs" to Yu instead, so which reviewer the fail-closed row has was asked of Nuance on
+    2026-10-17, not answered. With that row in place no diff is uncovered, so lab-Claude's
+    reading of "sensible" above no longer sends one to Yu. The third is part of the governance
+    row, asked of Yu on 2026-10-17, not answered. Nuance also wrote that "Every touched reviewer
+    accepts the same head SHA" goes to Yu as a Q-Y8 clarification; Yu's 2026-10-16 answer is
+    above.
+  - **The governance row for rule documents: asked of Yu on 2026-10-17, not answered.** Rule
+    documents match no row of their own, so the author would judge its own widening (Nuance's
+    PR #1 review, item 9).
     Nuance recommends: these files go to Nuance and Astra at a named SHA; a diff that no row
     covers goes to Yu; and a change of meaning follows rule 10 unless both reviewers say it does
     not widen.
@@ -194,13 +201,14 @@ Phase 0 is synthetic-only. These adaptations, decided by lab-Claude for Phase 0,
 reviewed PR changes them.
 
 - **A. Suite root.** Yu agreed `~/betangel-data/suite.noindex` (R-4), and Nuance agreed it on
-  three conditions in her PR #4 review (Q-N3; DESIGN.md 3.7). So `betangel_suite/roots.py` sets
+  three conditions in Nuance's PR #4 review (Q-N3; DESIGN.md 3.7). So `betangel_suite/roots.py` sets
   `STATE_ROOT_AGREED = True`, and the default `TMP` branch in `bin/suite`, which a shell script
   cannot read from Python, is the suite root's `tmp/`. The two lines changed together.
   `_launch.py` refuses any mismatch between them (`tmpdir_mismatch`), so a half-done change fails
-  closed. Tests cover both settings under a temporary HOME. Her PR #2 review makes the agreement
-  conditional again: "agree the root half after 1, the marker half after 6". Item 1 is fixed here
-  (62c39c6, 851885a) and awaits her re-check; the flag stays True meanwhile (lab-Claude's call).
+  closed. Tests cover both settings under a temporary HOME. Nuance's PR #2 review makes the
+  agreement conditional again: "agree the root half after 1, the marker half after 6". Item 1 is
+  fixed here (62c39c6, 851885a), and its re-check was asked of Nuance on 2026-10-17, not
+  answered; the flag stays True meanwhile (lab-Claude's call).
   - Every command except `test`, `uisnap` and `vendor` uses `~/betangel-data/suite.noindex/tmp`
     as `TMPDIR` and `SQLITE_TMPDIR`. `cli.main` creates it 0700 only after the run-marker check
     and, for a real-data command, after it holds `run/realdata.lock` shared and has checked the
@@ -234,12 +242,12 @@ reviewed PR changes them.
   - It is never regenerated: every hash already recorded would stop matching. Nuance wrote "Move
     the salt, never regenerate it" (PR #1 review, item 3). For now it stays where it is. Moving it
     byte-for-byte into `suite.noindex`, where the `~/betangel-data` deny would cover it, is
-    lab-Claude's proposal, open with Nuance (DESIGN.md 9.2 item 9).
+    lab-Claude's proposal, asked of Nuance on 2026-10-17, not answered (DESIGN.md 9.2 item 9).
 - **C. Pin.** betangel-research `76f71dc94588a50f0df56dde2c3fabcf6e102f88`. The deps clone is at
   `~/.local/share/betangel-suite/deps/betangel-research-76f71dc94588/`, made by
   `tools/vendor_research.py` exactly as DESIGN.md 3.5 describes. Nuance answered Q-N2: keep this
   pin, and bump only when a closure module the suite needs, or the month roles, change.
-  - Her PR #2 review adds: "Lab-Claude bumps in its own PR only to a sha Nuance names on main",
+  - Nuance's PR #2 review adds: "Lab-Claude bumps in its own PR only to a sha Nuance names on main",
     and "Nuance reviews every bump; Astra reviews pin and vendor code. Routing is proposed until
     Yu rules (Q-Y8)." So `vendor` pins only a commit on the research main branch
     (`commit_not_on_main`).
@@ -251,12 +259,13 @@ reviewed PR changes them.
   and no release copies or `ssh-session` yet (Phase 0c). `cli.py` commands that are not built
   yet refuse with code `not_implemented` and exit 2.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE` (Q-N3: agreed by Nuance in
-  her PR #4 review; her PR #2 review makes the marker half conditional again, on her item 6).
+  Nuance's PR #4 review; Nuance's PR #2 review makes the marker half conditional again, on
+  Nuance's item 6).
   The config key `run_marker` accepts only that path, so no config edit can point the check at a
   file that never exists; only a reviewed change could move it. Nuance's wrapper creates the
   marker with O_EXCL, waits at least 60 s for `engine.lock`, failing closed, and takes `LOCK_EX`
   on `~/.local/state/betangel-suite/run/realdata.lock`, waiting 60 s or more and failing closed
-  (her PR #4 and PR #2 terms; DESIGN.md 6.8). The engine may hold both locks for about 35 s
+  (Nuance's PR #4 and PR #2 terms; DESIGN.md 6.8). The engine may hold both locks for about 35 s
   after the marker appears. Lab-Claude never creates or removes the marker, and the suite never
   creates or removes `lab-runs/ACTIVE` or `lab-runs/LOCK`: the guard refuses any suite write in
   `lab-runs/`. Every command except `stop` refuses to start while the marker is present,
@@ -267,10 +276,12 @@ reviewed PR changes them.
     the wrapper holds it). The suite makes the file once (0600) and never removes or replaces it,
     or renames `run/` (which would move the lock with it); the guard refuses each
     (`run_lock_protected`; 6aeb1d5 for `run/`). This is Nuance's PR #2 review, item 6 (596d052,
-    18de53e, fbbc0c3); her agreement of the marker half is still owed. The wiring of `serve`,
+    18de53e, fbbc0c3); its re-check was asked of Nuance on 2026-10-17, not answered, and Nuance's
+    agreement of the marker half is still owed. The wiring of `serve`,
     `open` and `ssh-session` on phase0/http and phase0/viewing is owed (DESIGN.md 6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
-    `TMPDIR` (lab-Claude's decision, asked of Nuance; DESIGN.md 6.8 gives the reasons).
+    `TMPDIR` (lab-Claude's decision, asked of Nuance on 2026-10-17, not answered; DESIGN.md 6.8
+    gives the reasons).
   - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
     be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
     exists too; stop stays exempt".
@@ -280,11 +291,11 @@ reviewed PR changes them.
     also asks for a check "before each engine launch". Tests on this branch start no engine; that
     check is owed with `engine.py` on phase0/http.
   - `stop` is exempt because it only reduces activity (DESIGN.md 3.9 rule 6).
-  - `vendor` refuses too. Nuance, in her PR #1 review: "test and vendor refuse under the marker;
+  - `vendor` refuses too. Nuance's PR #1 review: "test and vendor refuse under the marker;
     stop stays exempt". It was first exempt by lab-Claude's own choice, on a reason that left out
     its writes to `pin/` with `--bump` and its clone of the whole of `~/betangel-research`.
   - Nuance's PR #2 review answers Q-N14 the same way ("No. Drop `test` from
-    NO_RUN_MARKER_CHECK"). Her per-module check in `_run_workers.assign()` belongs to the parallel
-    test runner on phase0/viewing.
+    NO_RUN_MARKER_CHECK"). Nuance's per-module check in `_run_workers.assign()` belongs to the
+    parallel test runner on phase0/viewing.
   - `runmarker.py` exposes `active()`, which later phases call on every tick, and
     `require_clear()`, which headless commands call between members.
