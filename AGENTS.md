@@ -277,10 +277,10 @@ reviewed PR changes them.
   `~/.local/state/betangel-suite/run/realdata.lock`, in Nuance's words: "Wait at least 60 s for
   engine.lock, and fail closed if it is still held" (PR #4 review) and "The wrapper waits 60 s+
   for LOCK_EX, failing closed" (PR #2 review, item 6; DESIGN.md 6.8). The engine may hold both
-  locks for about 35 s after the marker appears. Lab-Claude never creates or removes the marker, and the suite never
-  creates or removes `lab-runs/ACTIVE` or `lab-runs/LOCK`: the guard refuses any suite write in
-  `lab-runs/`. Every command except `stop` refuses to start while the marker is present,
-  unreadable, or in an unreadable directory (DESIGN.md 6.8).
+  locks for about 35 s after the marker appears. Lab-Claude never creates or removes the marker,
+  and the suite never creates or removes `lab-runs/ACTIVE` or `lab-runs/LOCK`: the guard refuses
+  any suite write in `lab-runs/`. Every command except `stop` refuses to start while the marker is
+  present, unreadable, or in an unreadable directory (DESIGN.md 6.8).
   - Real-data commands (`serve`, `open`, `ssh-session`, `catalogue`, `selfcheck`, `diagnose`,
     `ledger-summary`) take `LOCK_SH` on `run/realdata.lock` without waiting, before their
     `TMPDIR`, check the marker again under it, and hold it until they exit (`run_lock_busy` while
@@ -289,8 +289,10 @@ reviewed PR changes them.
     (`run_lock_protected`; 6aeb1d5 for `run/`). This is Nuance's PR #2 review, item 6 (596d052,
     18de53e, fbbc0c3); its re-check was asked of Nuance on 2026-10-17, not answered, and Nuance's
     agreement of the marker half is still owed. On phase0/http `serve` and `open` take it in
-    `cli.main`, `open`'s attach path included, and hold it for the engine's life; their I-17
-    tests came in round 4b. `ssh-session`'s, on phase0/viewing, is owed (DESIGN.md 6.8).
+    `cli.main` and hold it until they exit: for `serve`, and for an `open` that starts an engine,
+    that is the engine's life; an `open` that attaches exits once it has handed on the URL. Their
+    I-17 tests came in round 4b. The wiring of `ssh-session` on phase0/viewing is owed (DESIGN.md
+    6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
     `TMPDIR` (lab-Claude's decision, asked of Nuance on 2026-10-17, not answered; DESIGN.md 6.8
     gives the reasons).
