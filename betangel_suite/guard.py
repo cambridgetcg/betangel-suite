@@ -142,6 +142,15 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
 
 Every child must keep BETANGEL_BETFAIR_FORBID_NETWORK=1 and carry no stray BETFAIR variable.
 
+A child's environment is judged as it is handed over (_spawn_env): None, this process's own, which arm() checked;
+or exactly a dict whose keys are all str and stay distinct once encoded with os.fsencode, and whose values are each
+exactly a str or bytes. Anything else is refused (subprocess_refused). subprocess and os.posix_spawn pass the child
+every item of the mapping, and the child's getenv takes the first of two equal names. Until lab-Claude's recheck of
+round 5 the guard judged a collapsed copy instead, so a child could be handed values the guard never saw: a bytes key
+before a str key of the same name (HOME, TMPDIR, the network switch or GIT_CONFIG_GLOBAL), or a dict subclass whose
+items() differ from what dict() copies. os.environ itself is not a dict, so it is refused too: subprocess hands it to
+os.posix_spawn, for env None, only on python3.11 with close_fds=False, which no suite code uses.
+
 This is defence in depth, not a sandbox: same-user code can still write through C extensions (SQLite's
 journal beside a database, and its temp files if a PRAGMA sets temp_store back), a child process (in test
 mode, an isolated interpreter the runner starts is unguarded unless it imports betangel_suite; the runner
@@ -802,7 +811,7 @@ def _check_spawn(state, event, args):
     argv = [os.fsdecode(os.fspath(item)) for item in argv]
     if not argv or (executable is not None and os.fsdecode(os.fspath(executable)) != argv[0]):
         raise GuardRefusal("subprocess_refused")
-    names = None if env is None else {os.fsdecode(key): os.fsdecode(value) for key, value in dict(env).items()}
+    names = _spawn_env(env)
     if not _child_env_ok(names):
         raise GuardRefusal("subprocess_refused")
     if not os.path.isabs(argv[0]):
@@ -823,6 +832,35 @@ def _check_spawn(state, event, args):
         if state.mode == "vendor" and vendor_argv_ok(argv, names, state.research, state.deps_root, state.home):
             return
     raise GuardRefusal("subprocess_refused")
+
+
+def _spawn_env(env):
+    """The environment a child is handed, as names to values, or None for this process's own (checked by arm()).
+
+    subprocess.Popen and os.posix_spawn give the child every item of env, and the child's getenv takes the first of
+    two equal names, so the guard judges exactly those items or refuses (subprocess_refused; lab-Claude's recheck of
+    round 5): env must be exactly a dict, since a subclass's items() can differ from what dict() copies; every key
+    exactly a str, since a bytes key put before a str key of the same name is the one the child reads; no two keys
+    equal once encoded with os.fsencode, as subprocess encodes them; and every value exactly a str or bytes, so that
+    no __fspath__ or encode() can hand the child a value other than the one judged here.
+    """
+    if env is None:
+        return None
+    if type(env) is not dict:
+        raise GuardRefusal("subprocess_refused")
+    names, encoded = {}, set()
+    for key, value in env.items():
+        if type(key) is not str or type(value) not in (str, bytes):
+            raise GuardRefusal("subprocess_refused")
+        try:
+            raw = os.fsencode(key)
+        except UnicodeError:
+            raise GuardRefusal("subprocess_refused") from None
+        if raw in encoded:
+            raise GuardRefusal("subprocess_refused")
+        encoded.add(raw)
+        names[key] = os.fsdecode(value)
+    return names
 
 
 def _child_env_ok(names):
