@@ -7,10 +7,13 @@ or what the exception hooks print.
 
 import ast
 import hashlib
+import hmac
 import os
 import re
+import stat
 import traceback
 import unittest
+from unittest import mock
 
 from betangel_suite import errors, roots, rx
 from betangel_suite.errors import CODES, UPSTREAM_REASONS, SuiteError
@@ -239,6 +242,158 @@ class SaltedHashTests(unittest.TestCase):
                     "except errors.SuiteError as exc:\n    print(exc.code)\n") % home
             result = run_python(code, home, timeout=20)
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "salt_invalid\n", ""), label)
+            self.assertFalse(os.path.lexists(roots.salt_marker_path(home)), label)
+
+
+class SaltProvisioningTests(unittest.TestCase):
+    """The salt is made once, then never again (lab-Claude's decision, round 5: Nuance's re-review of #1, item 2,
+    Nuance's re-review of #2, F12, Astra's review of #1, item 9). Temporary HOMEs and synthetic salts only."""
+
+    def setUp(self):
+        self.home = make_home(self)
+        self.salt = roots.salt_path(self.home)
+        self.marker = roots.salt_marker_path(self.home)
+        self.addCleanup(errors._SALTS.pop, self.salt, None)
+
+    def hash_or_code(self):
+        """A fresh read of this HOME's salt in this process, as a new process would make it: its hash, or the code."""
+        errors._SALTS.pop(self.salt, None)
+        try:
+            return errors.salted_hash(MARKET, home_dir=self.home)
+        except SuiteError as exc:
+            return exc.code
+
+    def provision(self):
+        first = self.hash_or_code()
+        self.assertRegex(first, r"\Ah[0-9a-f]{16}\Z")
+        return first
+
+    def test_first_provisioning_writes_the_salt_syncs_it_then_writes_the_marker(self):
+        steps = []
+        write_new, sync = roots.write_new, errors._sync
+
+        def recording_write_new(path, data, *, home_dir=None):
+            steps.append(("write", os.path.basename(path)))
+            return write_new(path, data, home_dir=home_dir)
+
+        def recording_sync(path):
+            steps.append(("sync", os.path.basename(path)))
+            return sync(path)
+
+        with mock.patch.object(roots, "write_new", recording_write_new), \
+                mock.patch.object(errors, "_sync", recording_sync):
+            first = self.provision()
+        self.assertEqual(steps, [("write", "install-salt"), ("sync", "install-salt"),
+                                 ("write", "salt-provisioned"), ("sync", "salt-provisioned")])
+        self.assertEqual((os.lstat(self.salt).st_mode & 0o777, os.path.getsize(self.salt)), (0o600, errors.SALT_BYTES))
+        self.assertEqual((os.lstat(self.marker).st_mode & 0o777, os.path.getsize(self.marker)), (0o600, 0))
+        self.assertFalse(os.path.basename(self.marker).startswith("install-salt"))
+        self.assertEqual(self.hash_or_code(), first)          # read again, the same salt: nothing new is written
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.salt))), ["install-salt", "salt-provisioned", "tmp"])
+
+    def test_a_failed_sync_leaves_no_marker(self):
+        # The salt's directory cannot be synced (the writer helper's fsync of the file itself still works): no marker
+        # is written, and the salt is not used. The next read syncs it again and marks it.
+        real_fsync = os.fsync
+
+        def failing_on_directories(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("synthetic")
+            return real_fsync(fd)
+
+        with mock.patch.object(os, "fsync", failing_on_directories):
+            self.assertEqual(self.hash_or_code(), "write_failed")
+        self.assertFalse(os.path.lexists(self.marker))
+        first = self.provision()                                # the salt made then is kept, and now marked
+        self.assertTrue(os.path.isfile(self.marker))
+        self.assertEqual(self.hash_or_code(), first)
+
+    def test_a_lost_salt_is_refused_in_a_fresh_process_and_never_made_again(self):
+        # Nuance's probe (re-review of #1, item 2): two fresh engine processes with the salt removed between them gave
+        # two different hashes. Now the second refuses, and writes nothing.
+        home = make_home(self, deps=True)
+        code = ARM_ENGINE + ("from betangel_suite import errors\n"
+                             "try:\n    print(errors.salted_hash(%r))\n"
+                             "except errors.SuiteError as exc:\n    print(exc)\n") % MARKET
+        first = run_python(code, home)
+        self.assertEqual((first.returncode, first.stderr), (0, ""))
+        self.assertRegex(first.stdout, r"\Ah[0-9a-f]{16}\n\Z")
+        os.remove(roots.salt_path(home))
+        second = run_python(code, home)
+        self.assertEqual((second.returncode, second.stdout, second.stderr), (0, "salt_missing\n", ""))
+        self.assertFalse(os.path.lexists(roots.salt_path(home)))
+        self.assertTrue(os.path.isfile(roots.salt_marker_path(home)))
+
+    def test_with_the_marker_an_odd_salt_is_refused_as_missing_and_left_alone(self):
+        self.provision()
+
+        def plant_bytes(data, file_mode):
+            def plant():
+                with open(self.salt, "wb") as handle:
+                    handle.write(data)
+                os.chmod(self.salt, file_mode)
+            return plant
+
+        def plant_link():
+            os.symlink(os.path.join(self.home, "elsewhere"), self.salt)
+
+        def clear():
+            if os.path.isdir(self.salt) and not os.path.islink(self.salt):
+                os.rmdir(self.salt)
+            elif os.path.lexists(self.salt):
+                os.remove(self.salt)
+
+        for label, plant in (("wrong length", plant_bytes(b"short", 0o600)),
+                             ("one byte more", plant_bytes(b"s" * (errors.SALT_BYTES + 1), 0o600)),
+                             ("group readable", plant_bytes(b"s" * errors.SALT_BYTES, 0o640)),
+                             ("unreadable", plant_bytes(b"s" * errors.SALT_BYTES, 0o000)),
+                             ("directory", lambda: os.mkdir(self.salt)),
+                             ("dangling link", plant_link)):
+            with self.subTest(label):
+                clear()
+                plant()
+                before = os.lstat(self.salt)
+                self.assertEqual(self.hash_or_code(), "salt_missing")
+                after = os.lstat(self.salt)
+                self.assertEqual((after.st_ino, after.st_mode, after.st_size, after.st_mtime_ns),
+                                 (before.st_ino, before.st_mode, before.st_size, before.st_mtime_ns))
+                self.assertFalse(os.path.lexists(os.path.join(self.home, "elsewhere")))
+                self.assertTrue(os.path.isfile(self.marker))
+
+    def test_a_marker_that_cannot_be_ruled_out_counts(self):
+        # Any entry at the marker's name (a dangling link, a directory) is a marker, and so is a name that cannot be
+        # looked at: with the salt missing, each refuses, and no salt is made.
+        state = os.path.dirname(self.salt)
+        for label, plant in (("dangling link", lambda: os.symlink(os.path.join(self.home, "nowhere"), self.marker)),
+                             ("directory", lambda: os.mkdir(self.marker))):
+            with self.subTest(label):
+                plant()
+                self.assertEqual(self.hash_or_code(), "salt_missing")
+                self.assertFalse(os.path.lexists(self.salt))
+                (os.rmdir if os.path.isdir(self.marker) and not os.path.islink(self.marker) else os.remove)(self.marker)
+        with self.subTest("state root not searchable"):
+            self.addCleanup(os.chmod, state, 0o700)
+            os.chmod(state, 0o600)
+            try:
+                self.assertEqual(self.hash_or_code(), "salt_missing")
+            finally:
+                os.chmod(state, 0o700)
+            self.assertFalse(os.path.lexists(self.salt))
+        with self.subTest("control: no marker"):
+            self.provision()
+
+    def test_a_salt_from_before_the_marker_is_kept_and_marked(self):
+        # An install whose salt was made before the marker existed: the salt is read as it is, never replaced, and the
+        # marker is written then; from that moment a lost salt is refused.
+        salt = bytes(range(errors.SALT_BYTES))                  # synthetic
+        roots.write_new(self.salt, salt, home_dir=self.home)
+        expected = "h" + hmac.new(salt, MARKET.encode(), hashlib.sha256).hexdigest()[:16]
+        self.assertFalse(os.path.lexists(self.marker))
+        self.assertEqual(self.hash_or_code(), expected)
+        self.assertTrue(os.path.isfile(self.marker))
+        os.remove(self.salt)
+        self.assertEqual(self.hash_or_code(), "salt_missing")
+        self.assertFalse(os.path.lexists(self.salt))
 
 
 class ExceptionHookTests(unittest.TestCase):

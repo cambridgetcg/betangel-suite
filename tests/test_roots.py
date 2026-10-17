@@ -32,6 +32,7 @@ class RootPathTests(unittest.TestCase):
         self.assertEqual(roots.deps_root(home), "/h/.local/share/betangel-suite/deps")
         self.assertEqual(roots.suite_root(home), "/h/betangel-data/suite.noindex")
         self.assertEqual(roots.salt_path(home), "/h/.local/state/betangel-suite/install-salt")
+        self.assertEqual(roots.salt_marker_path(home), "/h/.local/state/betangel-suite/salt-provisioned")
         self.assertEqual(roots.config_path(home), "/h/.local/state/betangel-suite/config.json")
         self.assertEqual(roots.research_clone(home), "/h/betangel-research")
         # The run marker's directory, which check_placement keeps every root out of: the one config's run_marker names.

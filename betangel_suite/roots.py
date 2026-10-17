@@ -2,7 +2,8 @@
 
 Roots, under the home directory taken from $HOME (bin/suite passes the caller's HOME through env -i):
 
-    ~/.local/state/betangel-suite/            0700  config, prefs, run/ (realdata.lock), tmp/, install-salt (Phase 0)
+    ~/.local/state/betangel-suite/            0700  config, prefs, run/ (realdata.lock), tmp/, install-salt and
+                                                    salt-provisioned (Phase 0)
     ~/.local/share/betangel-suite/deps/       read-only pinned upstream code (written only by the vendor tool)
     ~/betangel-data/suite.noindex/            0700  the suite root, ONLY while STATE_ROOT_AGREED is True
 
@@ -106,6 +107,13 @@ def config_path(home_dir=None):
 
 def salt_path(home_dir=None):
     return os.path.join(state_dir(home_dir), "install-salt")       # Phase 0 adaptation B
+
+
+def salt_marker_path(home_dir=None):
+    """The salt's provisioned marker, beside it: written once, after the salt is on disk, and never read; while it
+    exists a missing salt is refused, never made again (errors._provisioned_salt). Its name does not start with
+    install-salt: it holds nothing (lab-Claude's decision, round 5)."""
+    return os.path.join(state_dir(home_dir), "salt-provisioned")
 
 
 def research_clone(home_dir=None):

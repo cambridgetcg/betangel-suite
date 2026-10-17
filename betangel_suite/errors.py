@@ -8,10 +8,16 @@ hash, so equal failures still correlate without the identifier being shown.
 
 The salt is per install: 32 random bytes in a 0600 file at ~/.local/state/betangel-suite/install-salt
 (AGENTS.md adaptation B), not under the suite root, although Yu agreed that root (R-4; AGENTS.md adaptation A).
-The first process that hashes an identifier makes it, and every guard mode may write the state root, while only
-the engine may write the suite root. Moving the salt byte for byte into suite.noindex is lab-Claude's proposal,
-asked of Nuance on 2026-10-17, not answered (DESIGN.md 9.2 item 9); if it ever moves, the same bytes must move with
-it, or earlier hashes stop matching.
+Every guard mode may write the state root, while only the engine may write the suite root. The salt stays there:
+lab-Claude withdrew its proposal to move it into suite.noindex, as Nuance's re-review of #2 (Q4) recommended.
+
+It is made once and never made again (lab-Claude's decision, round 5, answering Nuance's re-review of #1, item 2,
+Nuance's re-review of #2, F12, and Astra's review of #1, item 9). The first process that hashes an identifier writes
+it, syncs it and its directory to disk, and only then writes the provisioned marker beside it, salt-provisioned
+(roots.salt_marker_path: 0600, empty, never read). From then on a salt that is missing, unreadable or not 32 bytes
+is refused (salt_missing) and never replaced, since every hash already recorded would stop matching; restoring it
+is Yu's. A salt made before the marker existed gets its marker the first time it is read; until then, a lost salt
+cannot be told from a new install and is made again.
 
 tools/hygiene_scan.py and tools/pre-commit print their own refusal codes (refused:usage, git_failed,
 python3.13_missing, ...). They are a separate enum on purpose: the scanner must run without importing
@@ -56,6 +62,8 @@ CODES = frozenset({
     "path_not_absolute", "already_exists", "not_a_directory", "symlink_refused", "wrong_owner",
     "root_parent_missing", "write_failed", "salt_invalid", "suite_root_invalid", "suite_root_misplaced",
     "root_overlaps_data_home", "root_overlaps_lab_runs",
+    # the install salt once its provisioned marker exists (_provisioned_salt)
+    "salt_missing",
     # upstream exception kinds mapped at the rx boundary, and rx's own argument checks
     "index_problem", "archive_problem", "path_denied", "journal_error", "value_error", "rng_required",
     # a code that is not listed here is reported as this
@@ -189,18 +197,85 @@ def _salt(home_dir):
     with _SALT_LOCK:
         salt = _SALTS.get(path)
         if salt is None:
-            salt = _read_salt(path)
-            if salt is None:
-                try:
-                    roots.write_new(path, secrets.token_bytes(SALT_BYTES), home_dir=home_dir)
-                except SuiteError as exc:
-                    if exc.code != "already_exists":       # another process won the race: read its salt
-                        raise
-                salt = _read_salt(path)
-                if salt is None:
-                    raise SuiteError("salt_invalid")
+            salt = _provisioned_salt(path, roots.salt_marker_path(home_dir), home_dir)
             _SALTS[path] = salt
         return salt
+
+
+def _provisioned_salt(path, marker, home_dir):
+    """The install's salt; it is made here only while the provisioned marker is absent. SuiteError otherwise.
+
+    Marker present (or not ruled out, _marker_present): the salt was made once already, so it must be there as
+    _read_salt accepts it. Anything else (missing, unreadable, not SALT_BYTES bytes, not a private regular file of this
+    user) is a lost salt: salt_missing, and nothing is written.
+
+    Marker absent: a missing salt is made (O_EXCL; another process making it at the same moment wins, and its salt is
+    read), and an odd one is refused (salt_invalid). Then the salt's bytes and its directory entry are synced to disk,
+    and only then is the marker written and synced, so a marker never stands for a salt that a crash could still lose.
+    A salt from before the marker existed gets its marker this way the first time it is read.
+    """
+    from . import roots
+    if _marker_present(marker):
+        try:
+            salt = _read_salt(path)
+        except SuiteError:
+            salt = None
+        if salt is None:
+            raise SuiteError("salt_missing")
+        return salt
+    salt = _read_salt(path)
+    if salt is None:
+        try:
+            roots.write_new(path, secrets.token_bytes(SALT_BYTES), home_dir=home_dir)
+        except SuiteError as exc:
+            if exc.code != "already_exists":       # another process won the race: read its salt
+                raise
+        salt = _read_salt(path)
+        if salt is None:
+            raise SuiteError("salt_invalid")
+    _sync(path)
+    try:
+        roots.write_new(marker, b"", home_dir=home_dir)
+    except SuiteError as exc:
+        if exc.code != "already_exists":           # another process wrote it first, after its own sync
+            raise
+    _sync(marker)
+    return salt
+
+
+def _marker_present(marker):
+    """False only when the provisioned marker is definitely absent (no such name). Any entry there, a dangling link or
+    a directory included, and a name that cannot be looked at, count as present: fail closed, so a salt is never made
+    anew when its marker might exist. lstat only; the marker is never opened."""
+    try:
+        os.lstat(marker)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _sync(path):
+    """fsync the regular file at path (not followed if a link), then its directory, so that both its bytes and its
+    name are on disk; SuiteError(write_failed) if either cannot be opened or synced."""
+    for target, flags in ((path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY),
+                          (os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)):
+        try:
+            fd = os.open(target, flags | os.O_CLOEXEC)
+        except OSError:
+            fd = None
+        if fd is None:
+            raise SuiteError("write_failed")
+        try:
+            os.fsync(fd)
+            synced = True
+        except OSError:
+            synced = False
+        finally:
+            os.close(fd)
+        if not synced:
+            raise SuiteError("write_failed")
 
 
 def _read_salt(path):
