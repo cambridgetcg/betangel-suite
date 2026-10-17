@@ -485,7 +485,7 @@ def run(cfg, *, command, port, opener=None, on_ready=None, marker_grace_s=None, 
     lock_fd = control.acquire_lock(home_dir)
     if lock_fd is None:
         if command == "open":
-            return attach(opener=opener, out=out, home_dir=home_dir)
+            return attach(opener=opener, out=out, home_dir=home_dir, marker=marker)
         raise SuiteError("engine_running")
     httpd = control_server = app = None
     serving = None
@@ -561,8 +561,16 @@ def _install_signal_handlers(app):
         signal.signal(signum, handler)
 
 
-def attach(*, opener=None, out=None, home_dir=None):
-    """open with an engine already running: a takeover through the control socket, then /usr/bin/open."""
+def attach(*, opener=None, out=None, home_dir=None, marker=None):
+    """open with an engine already running: a takeover through the control socket, then /usr/bin/open.
+
+    open holds run/realdata.lock shared from cli.main until it exits (DESIGN.md 6.8), and this path waits on nothing
+    after the hand-over. server.run checked the marker just before; at marker it is checked once more after the
+    takeover's reply (which can take control.CONNECTION_TIMEOUT_S) and before the hand-over: a run announced
+    meanwhile refuses with run_marker_present or run_marker_unreadable, and no URL goes to /usr/bin/open or out
+    for an engine that is freezing for the run. The takeover itself has happened (the engine paused, earlier codes
+    and tokens dead). phase0/viewing's check (e9729a6), moved down to this branch in round 5 (lab-Claude's decision),
+    so that both branches behave the same."""
     out = sys.stdout if out is None else out
     reply = control.request("attach", home_dir)
     if reply is None:
@@ -571,6 +579,8 @@ def attach(*, opener=None, out=None, home_dir=None):
     if (not reply.get("ok") or type(port) is not int or not 0 < port <= 65535 or not isinstance(code, str)
             or not auth_module.CODE_RE.fullmatch(code)):
         raise SuiteError("control_failed")
+    if marker is not None:
+        runmarker.require_absent(marker)
     guard.permit_loopback_port(port)                   # the guard checks the URL's port against its permits
     (opener or system_opener)([OPEN_ARGV0, bootstrap_url(port, code)])
     guard.seal()
