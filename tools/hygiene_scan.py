@@ -531,7 +531,7 @@ def _plain_findings(lines) -> list:
 # LF and CR), as encoded data is; names, paths, hashes, decimal numbers, price ladders and lists
 # of small counts are not.
 # A hex run whose every line gave one whole token of exactly 40 or 64 digits is a list of commit
-# or file hashes, one per line (bare, quoted or after a marker), so the second test never applies
+# or file hashes, one per line (bare, quoted or after a marker), so the second test does not apply
 # to it (round-4 recheck: lists of full hashes were binary), and the third reads it as text in
 # the same way however long it is. The first applies where any of its lines starts, not only at
 # its first byte, and also looks for an image or document signature (PNG, JPEG, GIF, WebP, ISO
@@ -550,11 +550,12 @@ def _plain_findings(lines) -> list:
 # Not flagged (known gaps): in lists of hashes (up to 64 whole lines of exactly 40 or 64 digits in
 # one file or message), binary data with no signature above and no zlib stream at the start of a
 # line (raw deflate, a compressed file without its header, encrypted bytes, or a signature that
-# starts mid-line); and a dump with other text after the token on each line, which ends its run at
-# every line, so each line is tested alone. Flagged although not data (known false positives,
-# failing closed): lists of md5, sha224, sha384, sha512 or blake2b sums, or of lines that hold two
-# or more hashes split by spaces (`git log --format='%H %P'`), and more than 64 lines of lists of
-# hashes in one file or message. A word after each hash on its line avoids them.
+# starts mid-line); and a dump with other text before or after the token on each line (a numbered
+# list, trailing words): no line joins the next, so each line is tested alone. Flagged although
+# not data (known false positives, failing closed): lists of md5, sha224, sha384, sha512 or
+# blake2b sums, or of lines that hold two or more hashes split by spaces
+# (`git log --format='%H %P'`), and more than 64 lines of lists of hashes in one file or
+# message. A word after each hash on its line avoids them.
 
 ENCODED_MIN_MAGIC = 24
 ENCODED_MIN_BINARY = 96
