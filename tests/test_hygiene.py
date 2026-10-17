@@ -1321,6 +1321,20 @@ class ScanTimeTests(_RepoCase):
                 self.assertNotIn("oversize", self.codes(out))                  # its content was read
                 self.assert_withheld(out)
 
+    def test_many_table_rows_scan_in_linear_time(self):
+        # Lab-Claude's round-5 review of 1e39931: with three lead cells allowed, a 400-character row of cells split by
+        # runs of tabs took about 5 s to fail to match ("\t" is both a separator and whitespace), so a file of such
+        # rows took minutes (173 s for 30 rows), and MAX_TABLE_LINE bounds only one line. 60 rows of five shapes.
+        shapes = [("1" + "\t" * 132) * 3, ("1" + "\t" * 100) * 3 + "\t" * 97, ("13:30" + "\t" * 128) * 3,
+                  ("2015-05-03" + "\t" * 123) * 3, ("1" + "\t" * 60 + " " * 72) * 3]
+        rows = [shapes[index % len(shapes)][:400] for index in range(60)]
+        self.write("docs/rows.txt", "\n".join(rows) + "\n")
+        try:
+            rc, out = self.scan("docs/rows.txt", timeout=self.BOUND)
+        except subprocess.TimeoutExpired:
+            self.fail(f"no result within {self.BOUND} s")
+        self.assertEqual(rc, 0, out)
+
 
 class FilterAttributeTests(_RepoCase):
     """A clean filter changes what git stores, so the staged scan never sees the file itself (Nuance's #2

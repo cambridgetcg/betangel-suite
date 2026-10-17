@@ -318,11 +318,14 @@ _PRICE = re.compile(r"(?<![0-9.])([0-9]{1,3}\.[0-9]{1,2})(?![0-9.])")
 # spaces: a saddle-cloth or row number ("1", "12a", "(3)"), a longer number (an id, a time as HHMMSS, epoch seconds or
 # milliseconds), a time ("13:30", "13:30:05.250"), or a date ("2015-05-03", "03/05/2015", "3.5.15") with an optional
 # time and zone ("2015-05-03T13:30:00Z") (Nuance's re-review of #2, F8: a time or date first column hid the table).
+# The separator is an atomic group: "\t" is both a separator and whitespace, so a run of k tabs could end a cell in
+# about k+1 ways, and three lead cells failed after about (k+1)**3 steps, seconds per 400-character row (lab-Claude's
+# round-5 review). Nothing a lead cell or a name starts with is whitespace, so only the longest separator can match.
 _TIME_CELL = r"[0-9]{1,2}:[0-9]{2}(?::[0-9]{2}(?:[.,][0-9]{1,6})?)?"
 _LEAD_CELL = (r"[\"']?(?:[0-9]{1,3}[A-Za-z]?|\([0-9]{1,2}\)|[0-9]{4,13}|%s"
               r"|(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[-/.][0-9]{1,2}[-/.][0-9]{2,4})"
               r"(?:[T ]%s(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?)"
-              r"[\"']?(?:\s*[|,;\t]\s*|[.)]\s+|\s+)" % (_TIME_CELL, _TIME_CELL))
+              r"[\"']?(?>\s*[|,;\t]\s*|[.)]\s+|\s+)" % (_TIME_CELL, _TIME_CELL))
 # Names may hold Latin letters with accents (Latin-1 and Latin Extended-A and B), as runner names do.
 _LATIN = [chr(code) for code in range(0xC0, 0x250)]
 _UPPER = "A-Z" + "".join(c for c in _LATIN if c.isupper())
