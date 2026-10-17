@@ -151,7 +151,7 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
   - lab-Claude merges a PR only when every reviewer routed to it in section 3.9 has accepted the same head SHA, and the tests pass on 3.13 and 3.11 at that SHA;
   - until Yu rules on the governance row (section 3.9), a PR that touches a rule document waits for both Nuance and Astra to accept the same head SHA (Nuance's recommendation), and a diff that no row covers goes to Yu and waits for Yu's acceptance;
   - PR #5 also waits for Yu's written approval of proposal 002 (on phase0/viewing), after Nuance's and Astra's reviews of it;
-  - the merge order is #1, #2, #4, #5.
+  - the merge order is #1, #2, #4, #5, in one sitting with nothing merged in between. Some fixes exist only on a later branch and correct text that an earlier PR still carries (f931637, ab766a0 and 0c1335b, on #5; Nuance's PR #1 review, P3: "merge the four together, or move each fix down"). Stale text that can stand on its own is also moved down to the earliest branch that carries it, as 3.2's fork-and-spawn sentence and the `risk` oracle rows (sections 4.2 and 7.7) were moved to #1.
 - **The UI-only half: asked of Yu in the packet, not answered.** Lab-Claude's reason for treating it as open, although Nuance points to section 3.9 as its source: the packet, the page Yu answered, put it to Yu as an open question with no recommendation, and Yu's 2026-10-16 answer does not take it up separately. Section 3.9's UI-only rule stays a proposal until Yu answers.
 
 **Bet Angel on Yu's Betfair account:** never used (Yu, 2026-10-15), so the design needs no handling for orders or limits shared with Bet Angel. If Bet Angel is ever installed against the account, that needs a fresh review first.
