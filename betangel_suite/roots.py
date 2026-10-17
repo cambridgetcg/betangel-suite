@@ -10,7 +10,8 @@ STATE_ROOT_AGREED is True: Yu agreed the suite root (R-4), and Nuance agreed it 
 PR #4 review (Q-N3; DESIGN.md 3.7). Nuance's PR #2 review makes the root half conditional again, on Nuance's
 item 1, which check_placement answers; its re-check was asked of Nuance on 2026-10-17, not answered, and the
 flag stays True meanwhile (lab-Claude's call). So the suite root is writable (by the engine only: guard.py gives
-it to no other mode), and its tmp/ is the TMPDIR of every command except test, uisnap and vendor. The flag and
+it to no other mode), and its tmp/ is the TMPDIR of every command except test, uisnap, vendor and stop, whose guard
+modes have only the state root (cli.OWN_MODE_COMMANDS). The flag and
 bin/suite's default TMP branch, which a shell script cannot read from here, change together. The launcher refuses
 any mismatch between them (tmpdir_mismatch), so a half-done change fails closed.
 
@@ -46,7 +47,7 @@ SHARE_DIR_PARTS = (".local", "share", "betangel-suite")
 # The directory of the run marker, ~/.local/state/lab-runs/ACTIVE (config's run_marker accepts only that path), which
 # holds Nuance's wrapper's lab-runs/LOCK too. No write root and no TMPDIR may lie in, on or around it (check_placement).
 LAB_RUNS_PARTS = (".local", "state", "lab-runs")
-STATE_TMP_COMMANDS = ("test", "uisnap", "vendor")   # commands whose TMPDIR is always the state root's tmp/
+STATE_TMP_COMMANDS = ("test", "uisnap", "vendor", "stop")   # commands whose TMPDIR is always the state root's tmp/
 REALDATA_LOCK_NAME = "realdata.lock"                 # in run/; never unlinked (runmarker.hold_shared)
 _MAX_ANCESTORS = 256                                 # deeper than any real tree: past it, fail closed
 

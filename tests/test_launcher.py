@@ -82,11 +82,15 @@ class InterpreterPolicyTests(unittest.TestCase):
             returncode, _out, err = run_relayed([PYTHON, *flags, LAUNCH_PY, "selfcheck"], child_env(home), home)
             self.assertEqual((returncode, err), (2, "refused:launch_flags\n"), flags)
 
-    def test_guard_mode_is_engine_for_every_command_but_test_and_vendor(self):
+    def test_guard_mode_is_engine_for_every_command_but_test_vendor_uisnap_and_stop(self):
+        # uisnap and stop have modes of their own, so that neither is given the suite root (Nuance's re-review of #2,
+        # Q2 conditions 2 and 3; Astra's re-review of #2 found uisnap mapped to engine mode).
+        self.assertEqual(cli.OWN_MODE_COMMANDS, ("test", "vendor", "uisnap", "stop"))
+        self.assertLessEqual(set(cli.OWN_MODE_COMMANDS), set(guard.MODES))
         for command in cli.COMMANDS:
-            expected = command if command in ("test", "vendor") else "engine"
+            expected = command if command in ("test", "vendor", "uisnap", "stop") else "engine"
             self.assertEqual(cli.guard_mode(command), expected, command)
-        for other in ("", "frobnicate", "Test", "vendor "):
+        for other in ("", "frobnicate", "Test", "vendor ", "STOP", "uisnap "):
             self.assertEqual(cli.guard_mode(other), "engine", other)
 
     def test_launcher_arms_the_mode_of_the_command_first(self):
@@ -244,9 +248,10 @@ class StateRootFlagTests(unittest.TestCase):
     def test_bin_suite_matches_the_flag(self):
         # The shell cannot read roots.py, so its default TMP branch is pinned here; _launch.py refuses a mismatch.
         with open(os.path.join(ROOT, "bin", "suite"), encoding="utf-8") as handle:
-            lines = [line.strip() for line in handle if line.strip().startswith(("test|uisnap|vendor)", "*)"))]
-        self.assertEqual(lines, ['test|uisnap|vendor) TMP="$HOME/.local/state/betangel-suite/tmp" ;;',
-                                 '*)                  TMP="$HOME/betangel-data/suite.noindex/tmp" ;;'])
+            lines = [line.strip() for line in handle if line.strip().startswith(("test|uisnap|vendor|stop)", "*)"))]
+        self.assertEqual(lines, ['test|uisnap|vendor|stop) TMP="$HOME/.local/state/betangel-suite/tmp" ;;',
+                                 '*)                       TMP="$HOME/betangel-data/suite.noindex/tmp" ;;'])
+        self.assertEqual(roots.STATE_TMP_COMMANDS, ("test", "uisnap", "vendor", "stop"))
         self.assertIs(roots.STATE_ROOT_AGREED, True)
 
 

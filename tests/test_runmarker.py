@@ -319,8 +319,9 @@ os.remove(marker)
 sys.exit(status)
 """
 
-# An engine-mode child, as bin/_launch.py would leave it, that runs cli.main with a stand-in handler. signal() and
-# wait_for() use files in its TMPDIR (the temporary HOME's state tmp/), which the test watches and writes too.
+# An engine-mode child (a stop-mode one for stop), as bin/_launch.py would leave it, that runs cli.main with a
+# stand-in handler. signal() and wait_for() use files in its TMPDIR (the temporary HOME's state tmp/), which the
+# test watches and writes too.
 HOLDER = ARM_ENGINE + r"""
 import os, sys, time
 from betangel_suite import cli, errors, roots, runmarker
@@ -367,8 +368,8 @@ class RealDataLockTests(unittest.TestCase):
             child.kill()
         child.communicate()
 
-    def holder(self, body):
-        return self.start(HOLDER + body)
+    def holder(self, body, mode="engine"):
+        return self.start(HOLDER.replace("guard.arm('engine')", "guard.arm(%r)" % mode, 1) + body)
 
     def wrapper(self, wait_s):
         return self.start(WRAPPER % (self.marker, self.lock, wait_s))
@@ -527,7 +528,7 @@ sys.exit(run(["stop"]))
 """
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.assertEqual(self.finish(self.holder(body)), (0, "stop-ran False\n", ""))
+            self.assertEqual(self.finish(self.holder(body, mode="stop")), (0, "stop-ran False\n", ""))
         finally:
             os.close(fd)
         self.assertEqual(os.listdir(roots.data_home(self.home)), [])        # no suite root, no tmp/

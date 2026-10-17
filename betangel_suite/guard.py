@@ -58,7 +58,8 @@ What the hook refuses, in every mode and phase:
        link (both paths: a hard link would alias an outside inode inside the roots), symlink, truncate,
        chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. The write roots are the state
        root in every mode; the suite root only in engine mode, and only while roots.STATE_ROOT_AGREED is
-       True; and in vendor mode also the share directory and this checkout's pin/. So the test runner
+       True (never in test, vendor, uisnap or stop mode); and in vendor mode also the share directory and
+       this checkout's pin/. So the test runner
        itself never writes under ~/betangel-data, whatever the flag says. Its children are another matter
        (Nuance's re-review of #2, F2): a launcher child arms its own guard from the HOME it is given, so the
        runner checks that HOME when it starts one (runner_argv_ok), and an interpreter child that does not
@@ -113,6 +114,8 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
   vendor  before seal(), exactly the five git argvs tools/vendor_research.py runs, each with exactly the
           environment VENDOR_GIT_ENV plus HOME, and a partial clone path that is not in the deploy clone by
           name or identity (roots.lies_in); after, none.
+  uisnap, stop
+          none, in either phase. They are modes of their own only so that neither is given the suite root.
   test    the test runner never seals. It may start /opt/homebrew/bin/python3.13 or 3.11 (or this
           interpreter) with -I -S -B, /bin/sh on this checkout's bin/suite, and /usr/bin/git only as
           git -C <dir under TMPDIR> [-c <test identity key>=...] <local subcommand> with relative operands,
@@ -154,7 +157,10 @@ FORBID_NETWORK_ENV = "BETANGEL_BETFAIR_FORBID_NETWORK"
 STRAY_PREFIXES = ("BETFAIR", "BETANGEL_BETFAIR_")
 PINNED_ENV = (FORBID_NETWORK_ENV, "TMPDIR", "SQLITE_TMPDIR")
 ALLOWED_VERSIONS = ((3, 11), (3, 13))                # I-14; bin/_launch.py holds the same tuple
-MODES = ("engine", "test", "vendor")
+# uisnap and stop have modes of their own, whose only write root is the state root, as test's is: neither ever gets
+# the suite root (Nuance's re-review of #2, Q2 conditions 2 and 3; Astra's re-review of #2: cli.py mapped uisnap to
+# engine mode, "which can write its synthetic suite root").
+MODES = ("engine", "test", "vendor", "uisnap", "stop")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LAUNCHER = os.path.join(REPO_ROOT, "bin", "suite")
 LAUNCH_SCRIPT_NAME = "_launch.py"                   # bin/_launch.py, which bin/suite runs

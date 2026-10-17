@@ -39,9 +39,16 @@ NO_TMPDIR = ("stop", "vendor")
 REPO_ROOT = guard.REPO_ROOT
 
 
+# The commands that run in a guard mode of their own name (guard.MODES); every other command runs in engine mode. uisnap
+# and stop are among them so that neither is given the suite root, which only engine mode may write: uisnap renders
+# synthetic markets only, and stop only reduces activity (Nuance's re-review of #2, Q2 conditions 2 and 3; Astra's
+# re-review of #2 found uisnap mapped to engine mode here).
+OWN_MODE_COMMANDS = ("test", "vendor", "uisnap", "stop")
+
+
 def guard_mode(command):
     """The guard mode a command runs in; chosen by command name only."""
-    return command if command in ("test", "vendor") else "engine"
+    return command if command in OWN_MODE_COMMANDS else "engine"
 
 
 def main(argv):
