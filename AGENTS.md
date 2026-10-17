@@ -291,8 +291,8 @@ reviewed PR changes them.
     agreement of the marker half is still owed. On phase0/http `serve` and `open` take it in
     `cli.main` and hold it until they exit: for `serve`, and for an `open` that starts an engine,
     that is the engine's life; an `open` that attaches exits once it has handed on the URL. Their
-    I-17 tests came in round 4b. The wiring of `ssh-session` on phase0/viewing is owed (DESIGN.md
-    6.8).
+    I-17 tests came in round 4b. `ssh-session` is wired on phase0/viewing, since round 4b
+    (DESIGN.md 6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
     `TMPDIR` (lab-Claude's decision, asked of Nuance on 2026-10-17, not answered; DESIGN.md 6.8
     gives the reasons).
