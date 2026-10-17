@@ -328,13 +328,16 @@ reviewed PR changes them.
     `cli.main` and hold it until they exit: for `serve`, and for an `open` that starts an engine,
     that is the engine's life; an `open` that attaches exits once it has handed on the URL. Their
     I-17 tests came in round 4b. On phase0/viewing `ssh-session` takes it the same way, since its
-    merge of phase0/http in round 4b, and holds it until it exits, attached or hosting. Its check
-    of the marker on every poll, which keeps an attached `ssh-session` within the 35 s bound, and
-    its I-17 tests are owed (DESIGN.md 6.8).
+    merge of phase0/http in round 4b, and holds it until it exits, attached or hosting. Since
+    e9729a6 (round 4b) an attached `ssh-session` checks the marker before every poll and leaves at
+    once (`ended reason=run_marker`, exit 2), so it lets the lock go within the 35 s bound, and
+    `open`'s attach path checks the marker again after the takeover's reply and hands on no URL.
+    Their I-17 tests came with e9729a6 (DESIGN.md 6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
     `TMPDIR` (lab-Claude's decision, asked of Nuance on 2026-10-17, not answered; DESIGN.md 6.8
-    gives the reasons). `release` takes no lock and makes no `TMPDIR` either (`cli.NO_TMPDIR`):
-    it reads no data root and writes only its release copies.
+    gives the reasons; a test shows `test` and `uisnap` start while the wrapper holds `LOCK_EX`).
+    `release` takes no lock and makes no `TMPDIR` either (`cli.NO_TMPDIR`): it reads no data root
+    and writes only its release copies.
   - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
     be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
     exists too; stop stays exempt".
@@ -367,7 +370,8 @@ reviewed PR changes them.
 
   Both tiers refuse while the run marker exists (`run_marker_present` or `run_marker_unreadable`),
   before any test loads (adaptation E). A run already going stops before its next test once the
-  marker appears: no further module goes to a worker, and each worker stops before its next test.
+  marker appears: no further module goes to a worker, and each worker stops before its next test
+  (tested since round 4b, 0e2d289; DESIGN.md 6.8).
 
   A test run fails with `refused:state_root_changed` if an entry appears or vanishes in the real
   state root (`~/.local/state/betangel-suite`) outside `tmp/` while it runs. Contents are not
