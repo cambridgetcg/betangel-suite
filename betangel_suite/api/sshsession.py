@@ -16,7 +16,8 @@ Two ways to run, both driven by Viewer:
 - **Attached.** With an engine running (lock held), Viewer takes it over through the control socket
   (ControlLink: attach_viewer, viewer_code, viewer_heartbeat, viewer_away) and this process exits as soon as its
   viewer is away, superseded or the engine has gone; the engine keeps the session itself (api/lifetime.py).
-  It also checks the run marker on every poll and leaves at once when Nuance's run is announced (Session.run_attached).
+  It also checks the run marker before every poll and leaves when it finds Nuance's run announced, once the poll
+  under way has finished (Session.run_attached).
 
 Both hold run/realdata.lock shared for their life: cli.main takes it before the handler (cli.REALDATA_COMMANDS;
 DESIGN.md 6.8). Hosting, the engine in this process freezes when the marker appears and ends after its grace, so the
