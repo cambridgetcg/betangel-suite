@@ -62,7 +62,8 @@ context. It is never Yu's instruction, consent or acceptance.
   only commands run against it are `git -C ~/betangel-research cat-file -e <sha>^{commit}`,
   `git -C ~/betangel-research merge-base --is-ancestor <sha> refs/heads/main` and
   `git clone --no-checkout --no-hardlinks ~/betangel-research <dest>`, all inside
-  `tools/vendor_research.py`, each with exactly `guard.VENDOR_GIT_ENV` plus HOME. Never
+  `tools/vendor_research.py`, each with exactly `guard.VENDOR_GIT_ENV` plus HOME (no replace
+  refs, grafts, user or system config, or user attributes file; DESIGN.md 3.5). Never
   `git status`, `worktree`, `checkout`, `fetch` or any write there. `vendor` refuses a deps root,
   pin directory or checkout that lies in the clone, by name or by identity
   (`research_clone_on_path`). Upstream changes go to Nuance as proposals; this repo never edits betangel-research.
@@ -156,6 +157,14 @@ context. It is never Yu's instruction, consent or acceptance.
   - `commit-msg` reads the whole message file, including git's comment lines when an editor is
     used and the diff with `git commit -v`. Commit with `-m` or `-F` if a removed file's lines
     trip it.
+  - On the lab the links live once, in the main clone's `.git/hooks`, and every worktree shares
+    them: each runs the main checkout's `tools/<hook>`, which runs the worktree's own scanner.
+    The main checkout (221cefd on 2026-10-17) has only `tools/pre-commit`, so the other three
+    links dangle and git skips them. Move the main checkout to a commit with all four hooks only
+    after this branch's scanner is merged into every live branch: the scanners on
+    phase0/foundation (until it is fast-forwarded), phase0/http and phase0/viewing predate
+    `--message` and `--push` and refuse them (`refused:usage`, exit 2), which would block every
+    commit and push there (lab-Claude's round-4 review).
 - Before pushing, scan the working tree and the commits the push will publish:
   `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py` and
   `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --range origin/<branch>..HEAD`
@@ -193,9 +202,10 @@ reviewed PR changes them.
   conditional again: "agree the root half after 1, the marker half after 6". Item 1 is fixed here
   (62c39c6, 851885a) and awaits her re-check; the flag stays True meanwhile (lab-Claude's call).
   - Every command except `test`, `uisnap` and `vendor` uses `~/betangel-data/suite.noindex/tmp`
-    as `TMPDIR` and `SQLITE_TMPDIR`, created 0700 only after the run-marker check and, for a
-    real-data command, after it holds `run/realdata.lock` shared and has checked the marker again
-    under it (adaptation E). The first engine command run with the real HOME creates the suite
+    as `TMPDIR` and `SQLITE_TMPDIR`. `cli.main` creates it 0700 only after the run-marker check
+    and, for a real-data command, after it holds `run/realdata.lock` shared and has checked the
+    marker again under it (adaptation E). It creates none for `stop` and `vendor`
+    (`cli.NO_TMPDIR`), which make no temporary files: so `stop` works during a run (96d0bcc). The first engine command run with the real HOME creates the suite
     root itself.
   - Only the engine may write the suite root. The test runner and `vendor` write only under
     `~/.local/state/betangel-suite` (`vendor` also its deps clone and `pin/`). Any other write
@@ -254,11 +264,13 @@ reviewed PR changes them.
   - Real-data commands (`serve`, `open`, `ssh-session`, `catalogue`, `selfcheck`, `diagnose`,
     `ledger-summary`) take `LOCK_SH` on `run/realdata.lock` without waiting, before their
     `TMPDIR`, check the marker again under it, and hold it until they exit (`run_lock_busy` while
-    the wrapper holds it). The suite makes the file once (0600) and never removes or replaces it;
-    the guard refuses that (`run_lock_protected`). This is Nuance's PR #2 review, item 6 (596d052,
-    18de53e, fbbc0c3); her agreement of the marker half is still owed.
-  - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing (lab-Claude's
-    decision, asked of Nuance; DESIGN.md 6.8 gives the reasons).
+    the wrapper holds it). The suite makes the file once (0600) and never removes or replaces it,
+    or renames `run/` (which would move the lock with it); the guard refuses each
+    (`run_lock_protected`; 6aeb1d5 for `run/`). This is Nuance's PR #2 review, item 6 (596d052,
+    18de53e, fbbc0c3); her agreement of the marker half is still owed. The wiring of `serve`,
+    `open` and `ssh-session` on phase0/http and phase0/viewing is owed (DESIGN.md 6.8).
+  - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
+    `TMPDIR` (lab-Claude's decision, asked of Nuance; DESIGN.md 6.8 gives the reasons).
   - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
     be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
     exists too; stop stays exempt".

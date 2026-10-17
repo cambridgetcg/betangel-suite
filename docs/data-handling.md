@@ -65,10 +65,13 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   market-id, event-id and member-path shapes outside the reserved namespace, runner-name tables
   and records, private-key and PEM headers, bearer tokens, secret-looking values, provider tokens
   and bootstrap-code URLs. It also fails on binary data anywhere (a NUL anywhere, or bytes that are
-  not UTF-8), on `encoded_blob` (base64, hex or `\xNN` data that decodes to an archive, a zlib
-  stream, 96 or more bytes of binary, or text another rule flags), and on `filter_attribute` (a
+  not UTF-8), on `encoded_blob` (data hidden in text that decodes to an archive, a zlib stream,
+  96 or more bytes of binary, or text another rule flags: base64, hex in its common dump forms,
+  `\xNN` escapes, decimal byte lists and GIT binary patches; DESIGN.md 5.6 lists the encodings
+  it does not decode, which are known gaps), and on `filter_attribute` (a
   path git gives a clean filter or LFS, or a `.gitattributes` line that sets one: git stores the
-  filter's output, which the scan never sees). `--list-rules` lists the codes. For each finding it prints one line,
+  filter's output, which the scan never sees). It reads the objects git stores: replace refs and
+  grafts, which show one object in another's place, are ignored. `--list-rules` lists the codes. For each finding it prints one line,
   `FAIL <rule code> <path withheld>:<line> (entry <n>)`. The text `<path withheld>` is the same
   for every finding: the scanner never prints a path or any part of one, not even a suffix, and
   never the matched text. Line 0 means the finding is about the entry itself (its name, type, size
