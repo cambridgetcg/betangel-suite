@@ -14,8 +14,10 @@ Nothing in this file imports betangel_suite.
 
 from __future__ import annotations
 
+import base64
 import bz2
 import gzip
+import hashlib
 import io
 import os
 import re
@@ -27,11 +29,14 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SCANNER = REPO / "tools" / "hygiene_scan.py"
 HOOK = REPO / "tools" / "pre-commit"
+HISTORY_HOOKS = {"commit-msg": "--message", "pre-merge-commit": "--staged", "pre-push": "--push"}
+ZERO = "0" * 40
 GITIGNORE = REPO / ".gitignore"
 GIT = "/usr/bin/git"
 PY313 = "/opt/homebrew/bin/python3.13"
@@ -40,7 +45,8 @@ FORBID = {"BETANGEL_BETFAIR_FORBID_NETWORK": "1"}
 FAIL_LINE = re.compile(r"^FAIL (\S+) ")
 # Every finding prints the same placeholder for its path, whatever the rule: no directory, name or suffix.
 WITHHELD = "<path withheld>"
-FINDING_SHAPE = re.compile(r"FAIL [a-z_]+ <path withheld>:(?:[0-9]+| \+[0-9]+ more line\(s\)) \(entry [0-9]+\)")
+FINDING_SHAPE = re.compile(r"FAIL [a-z_]+ <path withheld>:(?:[0-9]+| \+[0-9]+ more line\(s\)) \((?:entry [0-9]+|message"
+                           r"|(?:commit|tag) [0-9a-f]{40} message|commit [0-9a-f]{40} entry [0-9]+)\)")
 
 
 def _j(*parts: str) -> str:
@@ -72,6 +78,94 @@ BOOT_URL = _j("http://127.0.0.1:8765/", "#c", "=", TOKEN_BODY[:22])
 PEM_KEY = _j("-" * 5, "BEGIN ", "RSA PRIVATE", " KEY", "-" * 5)
 PEM_CERT = _j("-" * 5, "BEGIN ", "CERTI", "FICATE", "-" * 5)
 TOKEN_DIR = _j("Vq7", "Lm2", "Rz9", "Kt4", "Wx6", "Pb")  # a token-like directory name: no rule matches it
+
+
+def _stream_text(salt: int = 0, lines: int = 30) -> str:
+    """Invented exchange-stream lines with real-shaped ids: as plain text the scanner flags them (the control)."""
+    runner_id = _j("123", "4567")
+    return "".join(
+        _j('{"op":"mcm","pt":', str(1431000000000 + 250 * i + salt), ',"mc":[{"id":"', MARKET_2015,
+           '","rc":[{"at', 'b":[[', f"{2 + i % 7}.{i % 10}", ',10.0]],"id":', runner_id, "}]}]}\n")
+        for i in range(lines))
+
+
+def _wrap(text: str, width: int, fmt: str = "{}\n") -> str:
+    return "".join(fmt.format(text[i:i + width]) for i in range(0, len(text), width))
+
+
+def _escaped(data: bytes) -> str:
+    return "".join(f"\\x{b:02x}" for b in data)
+
+
+def _xxd(data: bytes) -> str:
+    """xxd's default layout: offset, eight groups of four hex digits, the printable characters."""
+    lines = []
+    for off in range(0, len(data), 16):
+        chunk = data[off:off + 16]
+        groups = " ".join(chunk.hex()[i:i + 4] for i in range(0, 2 * len(chunk), 4))
+        shown = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        lines.append(f"{off:08x}: {groups:<39}  {shown}\n")
+    return "".join(lines)
+
+
+def _hexdump_c(data: bytes) -> str:
+    """`hexdump -C`'s layout: offset, two halves of eight pairs, the printable characters in bars."""
+    lines = []
+    for off in range(0, len(data), 16):
+        chunk = data[off:off + 16]
+        left, right = (" ".join(f"{b:02x}" for b in half) for half in (chunk[:8], chunk[8:]))
+        shown = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        lines.append(f"{off:08x}  {left:<23}  {right:<23}  |{shown}|\n")
+    return "".join(lines)
+
+
+def _od(data: bytes) -> str:
+    """`od`'s default layout: an octal offset, then eight 16-bit words in octal, low byte first; the end offset last."""
+    padded = data + b"\0" * (len(data) % 2)
+    lines = []
+    for off in range(0, len(padded), 16):
+        words = [padded[i] | padded[i + 1] << 8 for i in range(off, min(off + 16, len(padded)), 2)]
+        lines.append(f"{off:07o}" + "".join(f"  {w:06o}" for w in words) + "\n")
+    return "".join(lines) + f"{len(data):07o}\n"
+
+
+def _git_binary_patch(data: bytes) -> str:
+    """What `git diff --binary` prints for a new file holding data: the zlib stream in lines of a length letter
+    ('A'-'Z' for 1-26 bytes, 'a'-'z' for 27-52) and base85, then the empty reverse hunk."""
+    packed = zlib.compress(data)
+    lines = []
+    for i in range(0, len(packed), 52):
+        chunk = packed[i:i + 52]
+        letter = chr(ord("A") + len(chunk) - 1) if len(chunk) <= 26 else chr(ord("a") + len(chunk) - 27)
+        lines.append(letter + base64.b85encode(chunk, pad=True).decode())
+    return ("diff --git a/pkg/m.bin b/pkg/m.bin\nnew file mode 100644\nGIT binary patch\n"
+            f"literal {len(data)}\n" + "\n".join(lines) + "\n\nliteral 0\nHcmV?d00001\n\n")
+
+
+def _png(width: int = 24, height: int = 24) -> bytes:
+    """A small synthetic RGB image in PNG form, as a screenshot tool writes one."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return len(data).to_bytes(4, "big") + kind + data + zlib.crc32(kind + data).to_bytes(4, "big")
+    rows = b"".join(b"\0" + bytes((x * 7 + y * 3) % 256 for x in range(width * 3)) for y in range(height))
+    header = width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 2, 0, 0, 0])
+    return bytes([0x89]) + b"PNG\r\n" + bytes([0x1a]) + b"\n" + chunk(b"IHDR", header) + chunk(
+        b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def _pdf() -> bytes:
+    """A minimal synthetic PDF with a compressed page stream."""
+    body = zlib.compress(b"BT /F1 12 Tf 72 712 Td (synthetic page) Tj ET\n" * 8)
+    return (b"%PDF-1.4\n%" + bytes([0xe2, 0xe3, 0xcf, 0xd3]) + b"\n1 0 obj << /Length " + str(len(body)).encode()
+            + b" /Filter /FlateDecode >>\nstream\n" + body + b"\nendstream\nendobj\ntrailer << /Root 1 0 R >>\n%%EOF\n")
+
+
+def _without_nul(make) -> bytes:
+    """The first of make(0), make(1), ... that holds no NUL byte."""
+    for salt in range(1000):
+        data = make(salt)
+        if b"\0" not in data:
+            return data
+    raise AssertionError("no NUL-free variant")
 
 
 def _git_env(home: str, tmp: str) -> dict:
@@ -124,10 +218,11 @@ class _RepoCase(unittest.TestCase):
     def add(self, *rels: str, force: bool = False) -> None:
         self.git("add", *(["-f"] if force else []), "--", *rels)
 
-    def scan(self, *args: str, root: str | None = None):
+    def scan(self, *args: str, root: str | None = None, env: dict | None = None, stdin: bytes = b"",
+             timeout: float = 120):
         proc = subprocess.run(
             [sys.executable, "-I", "-S", "-B", str(SCANNER), "--root", root or self.repo, *args],
-            env=self.env, capture_output=True, timeout=120)
+            env=env or self.env, input=stdin, capture_output=True, timeout=timeout)
         out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
         return proc.returncode, out
 
@@ -512,6 +607,30 @@ class ContentRuleTests(_RepoCase):
     def test_secret_assignment(self):
         self.plant("pkg/m.py", SECRET_LINE + "\n", TOKEN_BODY[:20], code="secret_value")
 
+    def test_secret_values_after_a_colon_or_a_space(self):
+        # Round-4 review: "password: <value>", "api_key: <value>", "app key: <value>", "ssoid <value>" and "session
+        # token is <value>" passed, in a YAML file and in a commit message (commit-msg and pre-push scan those now).
+        value = TOKEN_BODY[:20]
+        lines = (_j("pass", "word: ", value), _j("api", "_key: ", value), _j("app", " key: ", value),
+                 _j("sso", "id ", TOKEN_BODY), _j("session", " token is ", TOKEN_BODY, "="))
+        for index, line in enumerate(lines):
+            with self.subTest(case=index):
+                self.setUp()
+                self.plant("conf/settings.yaml", "betfair:\n  " + line + "\n", value, code="secret_value")
+                self.write(".git/MSG", "synthetic subject\n\n" + line + "\n")
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.codes(out), {"secret_value"})
+                self.assertNotIn(value, out)
+
+    def test_words_after_a_secret_name_stay_clean(self):
+        # The same forms with type names, placeholders and plain words: _looks_secret keeps them out.
+        self.write("pkg/types.py", "def check(token: str, password: SomeTypeName) -> None:\n    pass\n")
+        self.write("conf/example.yaml", _j("pass", "word: changeme\n", "api", "_key: ${APP_KEY}\n",
+                                           "session", " token is valid\n", "sso", "id synthetic-", TOKEN_BODY, "\n"))
+        self.add("pkg/types.py", "conf/example.yaml")
+        self.assert_clean()
+
     def test_known_token_prefix(self):
         self.plant("pkg/n.txt", f"token: {GH_TOKEN}\n", GH_TOKEN, code="known_token")
 
@@ -541,6 +660,652 @@ class ContentRuleTests(_RepoCase):
                 self.assertIn("FAIL market_id <path withheld>: +2 more line(s) (entry 3)", out)
                 self.assert_withheld(out)
                 self.assertNotIn(MARKET_2015, out)
+
+
+class LineShapeTests(_RepoCase):
+    """Tables and ids are found whatever ends a line, however long a row is, and with invisible format
+    characters inside (Nuance's #2 review, item 21)."""
+
+    ROWS = tuple(f"| {n} | {3 + i}.4 | {3 + i}.45 |" for i, n in enumerate(RUNNER_NAMES))
+
+    def test_rows_ended_by_cr_nel_ls_or_ps(self):
+        for label, sep in (("CR", "\r"), ("NEL", "\x85"), ("LS", " "), ("PS", " ")):
+            with self.subTest(sep=label):
+                self.setUp()
+                self.plant("docs/t.md", sep.join(self.ROWS) + sep, *RUNNER_NAMES, code="runner_table")
+
+    def test_rows_longer_than_400_characters(self):
+        rows = [_j(n, ",", ",".join(f"{3 + i}.{k % 10}" for k in range(120))) for i, n in enumerate(RUNNER_NAMES)]
+        self.assertTrue(all(len(row) > 400 for row in rows))
+        self.plant("docs/t.csv.txt", "\n".join(rows) + "\n", *RUNNER_NAMES, code="runner_table")
+
+    def test_a_bom_before_the_first_row(self):
+        self.plant("docs/t.md", "﻿" + "\n".join(self.ROWS) + "\n", *RUNNER_NAMES, code="runner_table")
+
+    def test_format_characters_inside_names(self):
+        marks = ("​", "­", "⁠")  # zero-width space, soft hyphen, word joiner
+        rows = [row.replace(n, n[:2] + mark + n[2:]) for row, n, mark in zip(self.ROWS, RUNNER_NAMES, marks)]
+        self.plant("docs/t.md", "\n".join(rows) + "\n", *RUNNER_NAMES, code="runner_table")
+
+    def test_table_renderings_accents_and_capitals(self):
+        # Round-4 review: SQLite's .mode box and DuckDB (box-drawing bars), HTML cells, LaTeX's &, a fullwidth bar,
+        # accented names and names in capitals were all missed. Each shape holds the same three invented rows.
+        rows = [(n, f"{3 + i}.4", f"{3 + i}.45") for i, n in enumerate(RUNNER_NAMES)]
+        light, heavy, double, full = "\u2502", "\u2503", "\u2551", "\uff5c"
+        accented = ["\u00c9" + RUNNER_NAMES[0][1:], RUNNER_NAMES[1].replace("o", "\u00f3", 1),
+                    RUNNER_NAMES[2].replace("e", "\u00e9", 1)]
+        shapes = {
+            "box": ("".join(f"{light} {n:<20}{light} {a:<6}{light} {b:<6}{light}\n" for n, a, b in rows), RUNNER_NAMES),
+            "duckdb": ("".join(f"{light} {n:<20}{light} {a:>8} {light} {b:>8} {light}\n" for n, a, b in rows),
+                       RUNNER_NAMES),
+            "heavy and double bars": ("".join(f"{heavy} {n} {double} {a} {double} {b} {heavy}\n" for n, a, b in rows),
+                                      RUNNER_NAMES),
+            "html": ("<table>\n" + "".join(f"<tr><td>{n}</td><td>{a}</td><td>{b}</td></tr>\n" for n, a, b in rows)
+                     + "</table>\n", RUNNER_NAMES),
+            "html with attributes and markup": ("".join(f'<tr class="r"><TD align="left"><b>{n}</b></TD><td>{a}</td>'
+                                                        f"<td>{b}</td></tr>\n" for n, a, b in rows), RUNNER_NAMES),
+            "latex": ("".join(f"{n} & {a} & {b} \\\\\n" for n, a, b in rows), RUNNER_NAMES),
+            "fullwidth bar": ("".join(f"{full}{n}{full}{a}{full}{b}{full}\n" for n, a, b in rows), RUNNER_NAMES),
+            "accented": ("".join(f"| {n} | {a} | {b} |\n" for n, (_, a, b) in zip(accented, rows)), accented),
+            "capitals": ("".join(f"| {n.upper()} | {a} | {b} |\n" for n, a, b in rows),
+                         [n.upper() for n in RUNNER_NAMES]),
+        }
+        for name, (text, names) in shapes.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.plant("docs/t.md", text, *names, code="runner_table")
+
+    def test_capitals_with_another_word_are_not_a_runner_table(self):
+        # A name in capitals counts only when its row holds prices and nothing else: a heading or code with a word
+        # beside its numbers is not a runner row.
+        rows = "".join(f"| {n.upper()} | fast | {3 + i}.4 | {3 + i}.45 |\n" for i, n in enumerate(RUNNER_NAMES))
+        self.write("docs/t.md", rows)
+        self.add("docs/t.md")
+        self.assert_clean()
+
+    def test_format_character_inside_a_market_id(self):
+        hidden = MARKET_2015[:5] + "​" + MARKET_2015[5:]
+        self.plant("pkg/u.py", f"m = '{hidden}'\n", MARKET_2015, hidden, code="market_id")
+
+    def test_line_numbers_count_newlines_only(self):
+        self.write("docs/v.md", f"one\rtwo\nthree\x0bfour\nm = '{MARKET_2015}'\n")
+        self.add("docs/v.md")
+        for mode in ("--staged", None):
+            with self.subTest(mode=mode or "tree"):
+                rc, out = self.scan(*([mode] if mode else []))
+                # Index entries: README.md, docs/v.md, pkg/module.py.
+                self.assertIn("FAIL market_id <path withheld>:3 (entry 2)", out)
+                self.assertNotIn(MARKET_2015, out)
+
+
+class BinaryAnywhereTests(_RepoCase):
+    """Binary data is caught wherever it sits in a file, with or without a NUL (Nuance's #2 review, item 5)."""
+
+    def test_control_text_is_flagged(self):
+        self.plant("data/control.txt", _stream_text(), MARKET_2015, code="market_id")
+        self.assert_flags("stream_record", (MARKET_2015,))
+
+    def test_nul_free_zlib_stream(self):
+        data = _without_nul(lambda salt: zlib.compress(_stream_text(salt).encode()))
+        self.plant("data/blob.dat", data, MARKET_2015, code="binary_file")
+
+    def test_text_in_another_encoding(self):
+        data = _stream_text().encode("cp500")
+        self.assertNotIn(b"\0", data)
+        self.plant("data/notes.txt", data, MARKET_2015, code="binary_file")
+
+    def test_archive_after_8_kib_of_text(self):
+        prose = ("synthetic notes line\n" * 440).encode()
+        self.assertGreater(len(prose), 8192)
+        self.plant("docs/notes.md", prose + bz2.compress(_stream_text().encode()), MARKET_2015, code="binary_file")
+
+    def test_allowed_media_without_a_nul_stays_clean(self):
+        png = b"\x89PNG\r\n\x1a\n" + bytes(range(1, 256))
+        self.write("docs/synthetic/screenshots/ladder.png", png)
+        self.add("docs/synthetic/screenshots/ladder.png", force=True)
+        self.assert_clean()
+
+
+class EncodedDataTests(_RepoCase):
+    """Data hidden in text as base64, hex or \\xNN escapes (Nuance's #2 review, item 5). Every payload is
+    built here from invented stream lines; none is written into this file."""
+
+    def plant_shapes(self, shapes: dict) -> None:
+        for name, text in shapes.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.plant("pkg/blob.py", text, MARKET_2015, code="encoded_blob")
+
+    def test_base64_of_an_archive_member(self):
+        member = bz2.compress(_stream_text().encode())
+        text = base64.b64encode(member).decode()
+        self.plant_shapes({
+            "wrapped at 76": base64.encodebytes(member).decode(),
+            "one line": f'DATA = "{text}"\n',
+            "implicit concatenation": "DATA = (\n" + _wrap(text, 60, '    "{}"\n') + ")\n",
+            "URL-safe": base64.urlsafe_b64encode(member).decode() + "\n",
+            "a JSON value": '{"payload": "' + text + '", "n": 1}\n',
+        })
+
+    def test_hex_of_an_archive_member(self):
+        member = bz2.compress(_stream_text().encode())
+        text = member.hex()
+        pairs = [text[i:i + 2] for i in range(0, len(text), 2)]
+        self.plant_shapes({
+            "one line": text + "\n",
+            "wrapped at 60": _wrap(text, 60),
+            "spaced pairs": "".join(" ".join(pairs[i:i + 16]) + "\n" for i in range(0, len(pairs), 16)),
+            "C array": "const unsigned char d[] = {\n"
+                       + "".join("    " + ", ".join("0x" + p for p in pairs[i:i + 12]) + ",\n"
+                                 for i in range(0, len(pairs), 12)) + "};\n",
+            "xxd": _xxd(member),
+            "hexdump -C": _hexdump_c(member),
+        })
+
+    def test_escaped_bytes_of_an_archive_member(self):
+        member = bz2.compress(_stream_text().encode())
+        pieces = [member[i:i + 16] for i in range(0, len(member), 16)]
+        self.plant_shapes({
+            "bytes repr": f"DATA = {member!r}\n",
+            "wrapped repr": "DATA = (\n" + "".join(f"    {piece!r}\n" for piece in pieces) + ")\n",
+            "C string": f'const char d[] = "{_escaped(member)}";\n',
+            # A quote that never closes comes first: the other kind is still read (round-4 finishing review).
+            "C string after an unclosed quote": f'/* it\'s */ const char d[] = "{_escaped(member)}";\n',
+        })
+
+    def test_runs_joined_across_lines(self):
+        # No single line here decodes to anything flagged: each run needs all its lines, and a zlib stream
+        # needs its short last line too (the Adler-32 check), so these test the joining.
+        text = _stream_text(lines=3).encode()
+        stream = zlib.compress(text)
+        noise = bytes((i * 131 + 7) % 251 for i in range(150))  # no magic, not UTF-8, 150 bytes
+        shapes = {}
+        for label, data in (("zlib", stream), ("binary", noise), ("text", text)):
+            shapes[f"base64 {label}"] = _wrap(base64.b64encode(data).decode(), 20)
+            shapes[f"hex {label}"] = _wrap(data.hex(), 20)
+            shapes[f"escapes {label}"] = "D = (\n" + "".join(
+                f"    b'{_escaped(data[i:i + 10])}'\n" for i in range(0, len(data), 10)) + ")\n"
+        self.plant_shapes(shapes)
+
+    def test_a_short_last_line_closes_a_run(self):
+        # A zlib stream under 96 bytes is flagged only whole, and its Adler-32 check sits on the last line,
+        # which here is shorter than a token on its own (16 base64 characters, or 8 hex pairs).
+        stream = zlib.compress(_j('{"op":"mcm","id":"', MARKET_2015, '"}').encode())
+        self.assertLess(len(stream), 96)
+        shapes = {}
+        for label, text in (("base64", base64.b64encode(stream).decode()), ("hex", stream.hex())):
+            width = next(w for w in range(16, 40, 2) if 2 <= len(text) % w < 16)
+            shapes[label] = _wrap(text, width)
+        self.plant_shapes(shapes)
+
+    def test_small_zlib_stream_and_gzip(self):
+        record = _j('{"op":"mcm","id":"', MARKET_2015, '"}').encode()
+        self.plant_shapes({
+            "zlib": f'x = "{base64.b64encode(zlib.compress(record)).decode()}"\n',
+            "gzip": f'x = "{base64.b64encode(gzip.compress(record)).decode()}"\n',
+        })
+
+    def test_short_records_with_a_nul_or_an_odd_byte_are_read_as_text(self):
+        # The finishing review's recheck: a decoded run under 96 bytes that held a NUL or a byte that is not UTF-8 was
+        # too short to count as binary data and skipped the text test, so one record ending in a NUL (a C string, a
+        # NUL-separated record) or after a 0xFF byte passed. Such a run is now read as text, as a list of hashes is.
+        record = _j('{"op":"mcm","id":"', MARKET_2015, '","ltp":3.5}').encode()
+        nul, odd = record + bytes(1), bytes([255]) + record
+        for blob in (nul, odd, record.decode().encode("utf-16-le")):
+            self.assertLess(len(blob), 96)
+            self.assertNotIn(len(blob), (20, 32))  # not one hash line, which 287264a already reads as text
+        shapes = {
+            "hex with a NUL": f"blob: {nul.hex()}\n",
+            "hex after a 0xFF byte": f"blob: {odd.hex()}\n",
+            "base64 with a NUL": f'x = "{base64.b64encode(nul).decode()}"\n',
+            "escapes with a NUL": f'x = b"{_escaped(nul)}"\n',
+            "decimal list after a 0xFF byte": f"x = {list(odd)}\n",
+            "UTF-16LE in hex": f"blob: {record.decode().encode('utf-16-le').hex()}\n",
+        }
+        self.plant_shapes(shapes)
+        with self.subTest(shape="hex with a NUL", mode="--message"):
+            self.write(".git/MSG", "synthetic subject\n\n" + shapes["hex with a NUL"])
+            rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+            self.assertEqual(rc, 1, out)
+            self.assertEqual(self.codes(out), {"encoded_blob"})
+            self.assertNotIn(MARKET_2015, out)
+
+    def test_encodings_that_tools_emit(self):
+        # Round-4 review: a GIT binary patch (git diff --binary, format-patch), a decimal byte list (list(data),
+        # Array.from(buf), od -An -tu1), od's own output and a PostgreSQL bytea literal all passed.
+        member = bz2.compress(_stream_text().encode())
+        rows = [member[i:i + 16] for i in range(0, len(member), 16)]
+        self.plant_shapes({
+            "GIT binary patch": _git_binary_patch(member),
+            "decimal list": "DATA = [\n" + "".join("    " + ", ".join(map(str, row)) + ",\n" for row in rows) + "]\n",
+            "decimal list on one line": f"DATA = {list(member)}\n",
+            "decimal list of text": f"DATA = {list(_stream_text(lines=2).encode())}\n",
+            "od -An -tu1": "".join("".join(f"{b:4d}" for b in row) + "\n" for row in rows),
+            "od -An -tx1": "".join("        " + "".join(f"  {b:02x}" for b in row) + "\n" for row in rows),
+            "od": _od(member),
+            "bytea literal": "INSERT INTO t VALUES ('\\x" + member.hex() + "');\n",
+        })
+
+    def test_encodings_nested_or_behind_a_line_marker(self):
+        # Round-4 review: base64 of base64 passed, and so did a dump whose every line starts with a comment or list
+        # marker when its first line holds no magic (each marked line was too short to count on its own).
+        member = bz2.compress(_stream_text().encode())
+        text = base64.b64encode(member).decode()
+        tail = base64.b64encode(member[60:]).decode()
+        self.plant_shapes({
+            "base64 of base64": base64.encodebytes(text.encode()).decode(),
+            "hex of base64": _wrap(text.encode().hex(), 64),
+            "hash comments": _wrap(tail, 76, "# {}\n"),
+            "slash comments, hex": _wrap(member[60:].hex(), 64, "// {}\n"),
+            "YAML list": "blob:\n" + _wrap(tail, 76, "  - {}\n"),
+            "quoted mail": _wrap(tail, 76, "> {}\n"),
+        })
+
+    def test_near_misses_stay_clean(self):
+        hashes = [hashlib.sha256(f"synthetic {i}".encode()).hexdigest() for i in range(12)]
+        magic = (b"\x1f\x8b", b"PK\x03\x04", b"PK\x05\x06", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd")
+        reserved = _j('{"op":"mcm","id":"', SYN_MARKET, '","rc":[{"id":', SYN_SELECTION, "}]}").encode()
+        files = {
+            "pkg/hashes.py": "HASHES = [\n" + "".join(f'    "{h}",\n' for h in hashes) + "]\n",
+            "pkg/pins.json": "{\n" + "".join(f'  "pkg/m{i}.py": "{h}",\n' for i, h in enumerate(hashes)) + "}\n",
+            "pkg/magic.py": "".join(f'    or head[:4] in (b"{_escaped(m)}", b"{_escaped(m)}")\n' for m in magic),
+            "pkg/short.py": "MAGIC = (\n" + "".join(f'    b"{_escaped(m)}"\n' for m in magic[:2]) + ")\n",
+            "pkg/names.py": "".join(f"    def test_a_rather_long_name_number_{i}(self):\n        pass\n"
+                                    for i in range(30)),
+            "docs/names.md": "".join(f"some_long_identifier_name_{i}\n" for i in range(40)),
+            "docs/paths.md": "".join(f"docs/proposals/section{i}/appendix\n" for i in range(40)),
+            "docs/numbers.md": "".join(", ".join(str(10 + (i * 7 + k) % 89) for k in range(16)) + ",\n"
+                                       for i in range(20)),
+            "docs/words.md": "we add a bad bed to the cafe; dead beef faced a decade\n" * 10,
+            "pkg/ids.py": f"sha = '{hashes[0][:40]}'\nrun = '12345678-5ec0-40c0-93f4-4adfd5acd836'\n" * 5,
+            "pkg/png.py": f'PNG = b"{_escaped(bytes([0x89]))}PNG\\r\\n{_escaped(bytes([0x1a]))}\\n"\n',
+            "docs/reserved.md": base64.b64encode(reserved).decode() + "\n",
+            # A price ladder in hundredths, as ui/ticks.json holds it: sorted, so not data.
+            "ui/ladder.json": '{"ticks": [\n' + "".join("    " + ", ".join(str(t) for t in range(k, k + 16)) + ",\n"
+                                                      for k in range(101, 1000, 16)) + "]}\n",
+            "docs/list.md": "".join(f"- SyntheticRunnerNameNumber{chr(65 + i)}\n" for i in range(20))
+                            + "".join(f"# some_long_identifier_name_{i}\n" for i in range(20)),
+            "pkg/counts.py": "COUNTS = [\n" + "".join("    " + ", ".join(str((i * 5 + k) % 31) for k in range(16))
+                                                     + ",\n" for i in range(12)) + "]\n",
+        }
+        for rel, text in files.items():
+            self.write(rel, text)
+        self.add(*files)
+        self.assert_clean()
+
+    def test_lists_of_full_hashes_stay_clean(self):
+        # Round-4 recheck: read without its markers, a bulleted or commented list of full commit or file hashes was
+        # one hex run of 96+ bytes, flagged as binary, in a file and in a commit message. A run whose every line is
+        # one whole 40- or 64-digit token is a list of hashes: only a magic, a zlib stream or flagged text counts.
+        sha1 = [hashlib.sha1(f"synthetic {i}".encode()).hexdigest() for i in range(64)]
+        sha256 = [hashlib.sha256(f"synthetic {i}".encode()).hexdigest() for i in range(64)]
+        log = [hashlib.sha1(f"synthetic commit {i}".encode()).hexdigest() for i in range(70)]
+        lists = {
+            "- sha1 x8": "".join(f"- {h}\n" for h in sha1[:8]),
+            "# sha1 x8": "".join(f"# {h}\n" for h in sha1[:8]),
+            "- sha256 x4": "".join(f"- {h}\n" for h in sha256[:4]),
+            "* sha1 and words x6": "".join(f"* {h} synthetic subject words\n" for h in sha1[:6]),
+            "- `sha1` x8": "".join(f"- `{h}`\n" for h in sha1[:8]),
+            "bare sha256 x4": "".join(f"{h}\n" for h in sha256[:4]),
+            "indented, both lengths": "".join(f"  - {h}\n" for h in sha1[:3] + sha256[:3]),
+            # The longest run that still counts as a list of hashes (round-4 finishing review).
+            "- sha1 x64": "".join(f"- {h}\n" for h in sha1),
+            "bare sha256 x64": "".join(f"{h}\n" for h in sha256),
+            # The lines of all lists in one file or message count together, up to 64 (the finishing review's recheck).
+            "- sha1 x32": "".join(f"- {h}\n" for h in sha1[:32]),
+            "- sha1 x8, then bare sha256 x32": "".join(f"- {h}\n" for h in sha1[:8]) + "\nAnd the pins:\n"
+                                               + "".join(f"{h}\n" for h in sha256[:32]),
+            # 60 lines, 6 of them in a list both with and without the "- " (as its fifth line and as the first of the
+            # bare ones): each line counts once, so 60, not 66.
+            "(- sha1 x5, then sha1 x5) x6": "".join("".join(f"- {h}\n" for h in sha1[k:k + 5])
+                                                    + "".join(f"{h}\n" for h in sha1[k + 5:k + 10])
+                                                    for k in range(0, 60, 10)),
+            # Short lists split by blank lines, 64 lines in all: not past the count, so still not binary data.
+            "bare sha256 x64, in lists of 2": "\n".join(f"{a}\n{b}\n" for a, b in zip(sha256[::2], sha256[1::2])),
+            "- sha1 x64, in lists of 4": "\n".join("".join(f"- {h}\n" for h in sha1[k:k + 4]) for k in range(0, 64, 4)),
+            # A hash with words after it on its line is tested alone and not counted.
+            "70 lines of a hash and a subject, then - sha1 x8": "".join(f"{h} synthetic subject\n" for h in log)
+                                                               + "\n" + "".join(f"- {h}\n" for h in sha1[:8]),
+        }
+        for name, text in lists.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.write("docs/commits.md", "The fixes:\n" + text)
+                self.add("docs/commits.md")
+                self.assert_clean()
+                self.write(".git/MSG", "synthetic subject\n\nThe fixes:\n" + text
+                           + "\nCo-Authored-By: Synthetic Tester <tester@example.invalid>\n")
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual((rc, out.strip()), (0, "hygiene_scan: OK 1 message(s) scanned [message]"))
+
+    def test_data_in_whole_hash_lines_is_still_caught(self):
+        # The same shape holding an archive, a zlib stream or flagged text, padded with spaces so every line is one
+        # whole 40- or 64-digit token, as in a list of hashes.
+        member = bz2.compress(_stream_text().encode())
+        record = _j('{"op":"mcm","id":"', MARKET_2015, '"}').encode()
+
+        def lines(data: bytes, width: int, fmt: str) -> str:
+            return _wrap((data + b" " * (-len(data) % (width // 2))).hex(), width, fmt)
+
+        shapes = {
+            "bz2, - 40": lines(member, 40, "- {}\n"),
+            "bz2, # 64": lines(member, 64, "# {}\n"),
+            "bz2, bare 64": lines(member, 64, "{}\n"),
+            "zlib, - 40": lines(zlib.compress(record), 40, "- {}\n"),
+            "gzip, * 64": lines(gzip.compress(record), 64, "* {}\n"),
+            "text, - 40": lines(_stream_text(lines=2).encode(), 40, "- {}\n"),
+        }
+        self.plant_shapes(shapes)
+        for name in ("bz2, - 40", "text, - 40"):
+            with self.subTest(shape=name, mode="--message"):
+                self.write(".git/MSG", "synthetic subject\n\nThe fixes:\n" + shapes[name])
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.codes(out), {"encoded_blob"})
+                self.assertNotIn(MARKET_2015, out)
+
+    def test_data_after_a_real_hash_or_with_one_odd_byte_is_still_caught(self):
+        # Round-4 finishing review: the magic and zlib tests looked only at a run's first byte, and one NUL or 0xFF
+        # byte made a run binary, which skipped the text test. So data after one real hash line, as a commit message
+        # cites a commit, and text holding one such byte, passed in the layouts of a list of hashes. Its recheck:
+        # UTF-16 text, read with each NUL as a line end, put each character on a line of its own, and passed.
+        member = bz2.compress(_stream_text().encode())
+        record = _j('{"op":"mcm","id":"', MARKET_2015, '"}').encode()
+        text = _stream_text(lines=2).encode()
+        table = "".join(f"| {name} | 3.5 | 4.25 |\n" for name in RUNNER_NAMES).encode()
+        lead = {40: hashlib.sha1(b"synthetic lead").hexdigest(), 64: hashlib.sha256(b"synthetic lead").hexdigest()}
+
+        def lines(data: bytes, width: int, fmt: str, first: bool = True) -> str:
+            body = _wrap((data + b" " * (-len(data) % (width // 2))).hex(), width, fmt)
+            return (fmt.format(lead[width]) if first else "") + body
+
+        shapes = {
+            "bz2 after a hash, bare 40": lines(member, 40, "{}\n"),
+            "bz2 after a hash, - 40": lines(member, 40, "- {}\n"),
+            "gzip after a hash, quoted 64": lines(gzip.compress(record), 64, '"{}"\n'),
+            "zlib after a hash, # 64": lines(zlib.compress(record), 64, "# {}\n"),
+            "SQLite after a hash, - `40`": lines(b"SQLite format 3\x00" + bytes(range(16, 112)), 40, "- `{}`\n"),
+            "text after a hash, bare 40": lines(text, 40, "{}\n"),
+            "text with a NUL, bare 64": lines(b"\0" + text, 64, "{}\n", first=False),
+            "text with a 0xFF byte, quoted 40": lines(b"\xff" + text, 40, '"{}"\n', first=False),
+            "a table with a NUL, - 40": lines(b"\0" + table, 40, "- {}\n", first=False),
+            "UTF-16LE text, bare 64": lines(text.decode().encode("utf-16-le"), 64, "{}\n", first=False),
+            "UTF-16 text with a BOM after a hash, - 40": lines(text.decode().encode("utf-16"), 40, "- {}\n"),
+        }
+        self.plant_shapes(shapes)
+        for name in ("bz2 after a hash, - 40", "text with a NUL, bare 64", "UTF-16LE text, bare 64"):
+            with self.subTest(shape=name, mode="--message"):
+                self.write(".git/MSG", "synthetic subject\n\nThe fixes:\n" + shapes[name])
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.codes(out), {"encoded_blob"})
+                self.assertNotIn(MARKET_2015, out)
+
+    def test_images_documents_and_long_runs_in_hash_lines_are_caught(self):
+        # Round-4 finishing review: a list of hashes is never binary data, so images and PDFs, which have no archive
+        # magic, passed in its layouts, as did any binary data with no magic, however long. Images and documents now
+        # count by their signatures, and a run of more than 64 such lines is binary data again.
+        lead = hashlib.sha1(b"synthetic lead").hexdigest()
+        packer = zlib.compressobj(9, zlib.DEFLATED, -15)  # raw deflate: no header, no magic
+        raw = packer.compress(_stream_text(lines=400).encode() + bytes(range(256)) * 8) + packer.flush()
+        self.assertGreater(len(raw), 64 * 32)
+
+        def lines(data: bytes, width: int, fmt: str) -> str:
+            return _wrap((data + b" " * (-len(data) % (width // 2))).hex(), width, fmt)
+
+        shapes = {
+            "PNG, - 40": lines(_png(), 40, "- {}\n"),
+            "PNG after a hash, bare 64": lead + "\n" + lines(_png(), 64, "{}\n"),
+            "PDF, # 64": lines(_pdf(), 64, "# {}\n"),
+            "PDF after a hash, - 40": f"- {lead}\n" + lines(_pdf(), 40, "- {}\n"),
+            "raw deflate, 65+ lines of 64": lines(raw, 64, "{}\n"),
+            "raw deflate, 65+ lines of - 40": lines(raw, 40, "- {}\n"),
+        }
+        for name, text in shapes.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.plant("docs/dump.md", text, code="encoded_blob")
+        with self.subTest(shape="PNG, - 40", mode="--message"):
+            self.write(".git/MSG", "synthetic subject\n\nThe fixes:\n" + shapes["PNG, - 40"])
+            rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+            self.assertEqual(rc, 1, out)
+            self.assertEqual(self.codes(out), {"encoded_blob"})
+
+    def test_lines_in_lists_of_hashes_count_per_file_or_message(self):
+        # The finishing review's recheck: b656145 counted 64 lines a run, so binary data with no signature passed
+        # however long it was, split into runs of 64 lines by a blank line or a line of words. The lines of all the
+        # lists in one file or message now count together (lab-Claude's decision); past 64, each list is binary data.
+        noise = b"".join(hashlib.sha256(b"synthetic noise %d" % i).digest() for i in range(160))
+        packer = zlib.compressobj(9, zlib.DEFLATED, -15)  # raw deflate: no header, no magic
+        raw = packer.compress(_stream_text(lines=60).encode() + noise) + packer.flush()
+
+        def two_runs(width: int, fmt: str, between: str) -> str:
+            digits = raw[:64 * width].hex()  # 128 lines of width hex digits
+            self.assertEqual(len(digits), 128 * width)
+            return _wrap(digits[:64 * width], width, fmt) + between + _wrap(digits[64 * width:], width, fmt)
+
+        def short_lists(width: int, fmt: str, per: int) -> str:
+            # 128 lines of width hex digits, in lists of per lines (each under 96 bytes) split by blank lines.
+            digits = raw[:64 * width].hex()
+            self.assertEqual(len(digits), 128 * width)
+            lists = [digits[i:i + per * width] for i in range(0, len(digits), per * width)]
+            self.assertLess(per * width // 2, 96)
+            return "\n".join(_wrap(part, width, fmt) for part in lists)
+
+        def base64_runs(width: int, fmt: str, lines: int, runs: int) -> str:
+            # runs base64 runs, split by blank lines, each decoding to a list of lines lines of width hex digits.
+            digits = raw[:runs * lines * width // 2].hex()
+            self.assertEqual(len(digits), runs * lines * width)
+            size = lines * width
+            texts = [base64.b64encode(_wrap(digits[i:i + size], width, fmt).encode()).decode()
+                     for i in range(0, len(digits), size)]
+            return "\n".join(_wrap(text, 76) for text in texts)
+
+        def plain_then_base64(width: int) -> str:
+            digits = raw[:64 * width].hex()  # 64 plain lines, then a base64 run of a list of 64 more
+            self.assertEqual(len(digits), 128 * width)
+            inner = base64.b64encode(_wrap(digits[64 * width:], width).encode()).decode()
+            return _wrap(digits[:64 * width], width) + "\n" + _wrap(inner, 76)
+
+        shapes = {
+            "64 + 64 lines of 64, split by a blank line": two_runs(64, "{}\n", "\n"),
+            "64 + 64 lines of - 40, split by a blank line": two_runs(40, "- {}\n", "\n"),
+            "64 + 64 lines of 40, split by a line of words": two_runs(40, "{}\n", "part two\n"),
+            # The recheck of 7126190: a decoded run kept a count of its own, so base64 runs that each decoded to a
+            # list of up to 64 lines carried any amount; a list in a decoded run is now never exempt.
+            "2 base64 runs, each 64 lines of 64": base64_runs(64, "{}\n", 64, 2),
+            "4 base64 runs, each 64 lines of - 40": base64_runs(40, "- {}\n", 64, 4),
+            "7 base64 runs, each 40 lines of 40": base64_runs(40, "{}\n", 40, 7),
+            "64 lines of 64, then a base64 run of 64 more": plain_then_base64(64),
+            # The same recheck: past the count, lists under 96 bytes (two sha256 lines, two to four sha1 lines) split
+            # by blank lines still passed; past it, a list that is not text is now binary data at any length.
+            "lists of 2 lines of 64, split by blank lines": short_lists(64, "{}\n", 2),
+            "lists of 2 lines of - 64, split by blank lines": short_lists(64, "- {}\n", 2),
+            "lists of 2 lines of 40, split by blank lines": short_lists(40, "{}\n", 2),
+            "lists of 2 lines of - 40, split by blank lines": short_lists(40, "- {}\n", 2),
+            "lists of 4 lines of 40, split by blank lines": short_lists(40, "{}\n", 4),
+            "lists of 4 lines of - 40, split by blank lines": short_lists(40, "- {}\n", 4),
+        }
+        for name, text in shapes.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.plant("docs/dump.md", text, code="encoded_blob")
+            with self.subTest(shape=name, mode="--message"):
+                self.write(".git/MSG", "synthetic subject\n\n" + text)
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.codes(out), {"encoded_blob"})
+
+    def test_a_signature_on_any_line_of_a_list_read_as_binary_still_counts(self):
+        # The final recheck of bfd2f6a: a list in a decoded run, or past the count, was tested with no line starts, so
+        # a magic or zlib stream counted only at its first byte and an image or document signature not at all. A list
+        # that is valid UTF-8 with no NUL, such as an ASCII PDF, then passed as text.
+        document = (b"%PDF-1.4\n% synthetic ascii only document, invented words here\n"
+                    b"1 0 obj << /Type /Catalog >> endobj\n")
+
+        def hex_list(blob: bytes, width: int = 64, fmt: str = "{}\n") -> str:
+            blob += b" " * (-len(blob) % (width // 2))
+            return _wrap(blob.hex(), width, fmt)
+
+        def in_base64(text: str) -> str:
+            return _wrap(base64.b64encode(text.encode()).decode(), 76)
+
+        lead = b"L" * 32  # one line of 64 digits before the signature
+        words = hex_list(b"plain synthetic words " * 93)  # 64 lines of text with no signature, so not flagged alone
+        shapes = {
+            "a base64 run of a list, the signature on its first line": in_base64(hex_list(document)),
+            "a base64 run of a list, the signature on its second line": in_base64(hex_list(lead + document)),
+            "a base64 run of a list of - 40, the signature on its third line":
+                in_base64(hex_list(b"L" * 40 + document, 40, "- {}\n")),
+            "past the count: a list of 64 lines, then one with the signature on its second line":
+                words + "\n" + hex_list(lead + document),
+        }
+        for name, text in shapes.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.plant("docs/dump.md", text, code="encoded_blob")
+            with self.subTest(shape=name, mode="--message"):
+                self.write(".git/MSG", "synthetic subject\n\n" + text)
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.codes(out), {"encoded_blob"})
+
+
+class ScanTimeTests(_RepoCase):
+    """One long line scans in linear time (round-4 recheck, issue 1). _SECRET_LOOSE took 212 s on one 120 KB
+    snake_case line, and an audit of every pattern found more that backtrack the same way: a secret name repeated
+    in one word, a JWT-like run, and whitespace after a token (the end-of-line checks were quadratic or cubic). The
+    round-4 finishing review found one more: an unclosed string literal full of escaped quotes, on a line holding
+    "\\x", was read again from every quote (16 minutes for 512 KB)."""
+
+    SIZE = 200 * 1024
+    BOUND = 10  # seconds for one 200 KB line; the quadratic versions took minutes, the cubic ones far longer
+
+    # (head, unit repeated to SIZE characters, tail). Each line is its own file: two of them would be oversize.
+    SHAPES = {
+        "snake_case": ("", "x_", ""),
+        "kebab-case": ("", "a-", ""),
+        "underscores": ("", "_", "!"),
+        "base64url alphabet": ("", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", ""),
+        "a secret name repeated in one word": ("", "token_", ""),
+        "JWT-like run": ("", "eyJ-", ""),
+        "spaces after a base64 token": ("A" * 24, " ", "!"),
+        "spaces after a 0x list": (", ".join(["0x5a"] * 8), " ", "!"),
+        "tabs after a byte list": (" ".join(["7"] * 16), "\t", "!"),
+        "spaces after an escaped literal": ('"' + "\\x5a" * 4 + '"', " ", "!"),
+        "an unclosed literal of escaped single quotes": ("\\x41 '", "\\'", ""),
+        "an unclosed literal of escaped double quotes": ('\\x41 "', '\\"', ""),
+        "letters": ("", "a", ""),
+        "digits": ("", "7", ""),
+        "'=' and ':'": ("token", "=:", ""),
+        "quotes": ("", "\"'`", ""),
+        "hex digits": ("", "0123456789abcdef", "!"),
+        "key words": ("", "key key app ", ""),
+        "table cells": ("", "| Aaaa | 1.5 ", "|"),
+        "box drawing": ("", "│ 1.5 ", ""),
+    }
+
+    def test_long_lines_scan_in_linear_time(self):
+        for index, (name, (head, unit, tail)) in enumerate(self.SHAPES.items()):
+            line = head + (unit * (self.SIZE // len(unit) + 1))[:self.SIZE] + tail + "\n"
+            rel = f"docs/long{index}.txt"
+            self.write(rel, line)
+            with self.subTest(shape=name):
+                try:
+                    rc, out = self.scan(rel, timeout=self.BOUND)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"no result within {self.BOUND} s")
+                self.assertIn(rc, (0, 1), out)
+                self.assertRegex(out.splitlines()[-1], r"^hygiene_scan: (OK|FAIL) ")
+                self.assert_withheld(out)
+
+
+class FilterAttributeTests(_RepoCase):
+    """A clean filter changes what git stores, so the staged scan never sees the file itself (Nuance's #2
+    review, item 19). Here the "digits" filter turns 0-9 into a-j, which no content rule can see through."""
+
+    def setUp(self):
+        super().setUp()
+        # Written into the file: the test runner's guard lets tests run only a few local git subcommands.
+        with open(os.path.join(self.repo, ".git", "config"), "a") as handle:
+            handle.write('[filter "digits"]\n\tclean = tr 0-9 a-j\n\tsmudge = cat\n')
+
+    def plant_hidden(self) -> None:
+        self.write("notes/a.txt", f"m = '{MARKET_2015}'\n")
+        self.add("notes/a.txt")
+
+    def global_config(self, text: str) -> dict:
+        """The environment for a scan with this global git config (git children of tests keep /dev/null)."""
+        config = os.path.join(self.home, "gitconfig")
+        with open(config, "w") as handle:
+            handle.write(text)
+        return {**self.env, "GIT_CONFIG_GLOBAL": config}
+
+    def staged_out(self, env: dict | None = None) -> str:
+        rc, out = self.scan("--staged", env=env)
+        self.assertEqual(rc, 1, out)
+        self.assert_withheld(out)
+        self.assertNotIn(MARKET_2015, out)
+        self.assertNotIn("market_id", self.codes(out), "the staged blob holds no id: only the attribute shows")
+        return out
+
+    def test_worktree_gitattributes(self):
+        self.write(".gitattributes", "*.txt filter=digits\n")  # never staged: `git add` still reads it
+        self.plant_hidden()
+        # Index entries: README.md, notes/a.txt, pkg/module.py.
+        self.assertIn("FAIL filter_attribute <path withheld>:0 (entry 2)", self.staged_out())
+        self.assert_flags("filter_attribute", (MARKET_2015,), modes=(None,))
+
+    def test_gitattributes_changed_after_staging(self):
+        self.write(".gitattributes", "*.txt filter=digits\n")
+        self.add(".gitattributes")
+        self.plant_hidden()
+        # The worktree copy now sets no filter, but the staged one (what the commit records) does: only
+        # check-attr --cached reads it. (A missing worktree copy would not do: git then reads the index.)
+        self.write(".gitattributes", "*.txt text\n")
+        out = self.staged_out()
+        # Index entries: .gitattributes, README.md, notes/a.txt, pkg/module.py.
+        self.assertIn("FAIL filter_attribute <path withheld>:0 (entry 3)", out)
+        self.assertIn("FAIL filter_attribute <path withheld>:1 (entry 1)", out)
+
+    def test_info_attributes_and_a_global_attributes_file(self):
+        info = os.path.join(self.repo, ".git", "info")
+        os.makedirs(info, exist_ok=True)
+        with open(os.path.join(info, "attributes"), "w") as handle:
+            handle.write("*.txt filter=digits\n")
+        self.plant_hidden()
+        self.assertIn("FAIL filter_attribute <path withheld>:0 (entry 2)", self.staged_out())
+        os.unlink(os.path.join(info, "attributes"))
+        attributes = os.path.join(self.home, "attributes")
+        with open(attributes, "w") as handle:
+            handle.write("*.txt filter=digits\n")
+        env = self.global_config(f"[core]\n\tattributesFile = {attributes}\n")
+        self.assertIn("FAIL filter_attribute <path withheld>:0 (entry 2)", self.staged_out(env))
+
+    def test_gitattributes_lines_that_set_a_filter(self):
+        for line in ("*.dat filter=digits", "[attr]packed filter=digits -diff", "docs/** text filter=x eol=lf"):
+            with self.subTest(line=line):
+                self.setUp()
+                self.plant(".gitattributes", f"# synthetic\n{line}\n", code="filter_attribute")
+                rc, out = self.scan("--staged")
+                self.assertIn("FAIL filter_attribute <path withheld>:2 (entry 1)", out)
+
+    def test_attributes_without_a_filter_stay_clean(self):
+        self.write(".gitattributes", "# filter=digits is not used\n* -filter\n*.txt !filter\n*.sh text eol=lf\n")
+        self.write("notes/a.txt", "synthetic notes\n")
+        self.add(".gitattributes", "notes/a.txt")
+        self.assert_clean()
+
+    def test_a_global_lfs_filter_does_not_block(self):
+        # `git lfs install` writes these driver lines into the global config; no attribute uses them here.
+        env = self.global_config('[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n'
+                                 "\tprocess = git-lfs filter-process\n\trequired = true\n")
+        self.write("notes/a.txt", "synthetic notes\n")
+        self.add("notes/a.txt")
+        for mode in ("--staged", None):
+            with self.subTest(mode=mode or "tree"):
+                rc, out = self.scan(*([mode] if mode else []), env=env)
+                self.assertEqual(rc, 0, out)
 
 
 class WithheldPathTests(_RepoCase):
@@ -718,6 +1483,234 @@ class GitignoreTests(_RepoCase):
                 self.assertFalse(self.ignored(rel))
 
 
+class HistoryTests(_RepoCase):
+    """Commit messages, tag messages and every commit a push publishes (Nuance's #2 review, item 20).
+
+    The test runner's guard lets tests run only a few local git subcommands (no merge, push, tag or
+    update-ref), so refs, HEAD, MERGE_HEAD and a tag object are written into the temporary .git here.
+    """
+
+    def commit(self, message: str) -> str:
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD").stdout.decode().strip()
+
+    def write_ref(self, ref: str, value: str) -> None:
+        self.write(os.path.join(".git", ref), value + "\n")
+
+    def push_scan(self, *lines: str, remote: str = "origin"):
+        return self.scan("--push", remote, stdin="".join(line + "\n" for line in lines).encode())
+
+    def assert_push_flags(self, out: str, *expected: str) -> None:
+        for line in expected:
+            self.assertIn(line, out)
+        self.assert_withheld(out)
+        self.assertNotIn(MARKET_2015, out)
+        self.assertNotIn("notes", out)
+
+    def history_only_file(self):
+        """base, then A adds a file holding an id, then B deletes it: the tip holds nothing."""
+        base = self.commit("base")
+        self.write("notes/a.txt", f"m = '{MARKET_2015}'\n")
+        self.add("notes/a.txt")
+        added = self.commit("add notes")
+        os.unlink(os.path.join(self.repo, "notes", "a.txt"))
+        self.git("add", "-A")
+        return base, added, self.commit("drop notes")
+
+    def test_a_file_only_in_history_is_found(self):
+        base, added, tip = self.history_only_file()
+        self.assert_clean()
+        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}")
+        self.assertEqual(rc, 1, out)
+        self.assert_push_flags(out, f"FAIL market_id {WITHHELD}:1 (commit {added} entry 1)")
+        rc, out = self.scan("--range", f"{base}..{tip}")
+        self.assertEqual(rc, 1, out)
+        self.assert_push_flags(out, f"FAIL market_id {WITHHELD}:1 (commit {added} entry 1)")
+
+    def test_what_the_remote_holds_is_not_scanned_again(self):
+        _base, added, tip = self.history_only_file()
+        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {added}")  # the remote's old value
+        self.assertEqual((rc, out.strip()), (0, "hygiene_scan: OK 1 item(s) scanned [push]"))
+        self.write_ref("refs/remotes/origin/main", added)  # or a tracking ref for this remote
+        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}", remote="elsewhere")
+        self.assertEqual(rc, 1, out)
+
+    def test_commit_and_tag_messages(self):
+        self.commit("base")
+        self.write("pkg/t.py", "x = 1\n")
+        self.add("pkg/t.py")
+        flagged = self.commit(f"note {MARKET_2015}")
+        body = (f"object {flagged}\ntype commit\ntag v-syn\n"
+                f"tagger Synthetic Tester <tester@example.invalid> 1700000000 +0000\n\ntag {MARKET_2015}\n").encode()
+        raw = b"tag " + str(len(body)).encode() + b"\0" + body
+        tag = hashlib.sha1(raw).hexdigest()
+        self.write(os.path.join(".git", "objects", tag[:2], tag[2:]), zlib.compress(raw))
+        rc, out = self.push_scan(f"refs/tags/v-syn {tag} refs/tags/v-syn {ZERO}")
+        self.assertEqual(rc, 1, out)
+        self.assert_push_flags(out, f"FAIL market_id {WITHHELD}:1 (tag {tag} message)",
+                               f"FAIL market_id {WITHHELD}:1 (commit {flagged} message)")
+
+    def test_a_merge_is_scanned_for_what_differs_from_every_parent(self):
+        base = self.commit("base")
+        self.write_ref("refs/heads/side", base)
+        self.write(".git/HEAD", "ref: refs/heads/side\n")
+        self.write("side.txt", f"s = '{MARKET_2015}'\n")
+        self.add("side.txt")
+        side = self.commit("side")
+        self.write(".git/HEAD", "ref: refs/heads/main\n")  # main is still base; the index keeps side.txt
+        self.write(".git/MERGE_HEAD", side + "\n")
+        self.write(".git/MERGE_MODE", "no-ff")  # as `git merge --no-ff` leaves it: keep both parents
+        self.write("pkg/zz.py", f"e = '{MARKET_2015}'\n")
+        self.add("pkg/zz.py")
+        merge = self.commit("merge side")
+        parents = self.git("rev-parse", f"{merge}^1", f"{merge}^2").stdout.decode().split()
+        self.assertEqual(parents, [base, side])
+        rc, out = self.push_scan(f"refs/heads/main {merge} refs/heads/main {ZERO}")
+        self.assertEqual(rc, 1, out)
+        # side.txt is the merge's but equals side's copy, so only the side commit lists it.
+        self.assert_push_flags(out, f"FAIL market_id {WITHHELD}:1 (commit {side} entry 1)",
+                               f"FAIL market_id {WITHHELD}:1 (commit {merge} entry 1)", "market_id=2")
+
+    def test_a_deletion_publishes_nothing_and_bad_input_is_refused(self):
+        tip = self.commit("base")
+        rc, out = self.push_scan(f"(delete) {ZERO} refs/heads/gone {tip}")
+        self.assertEqual((rc, out.strip()), (0, "hygiene_scan: OK 0 item(s) scanned [push]"))
+        blob = self.git("rev-parse", "HEAD:README.md").stdout.decode().strip()
+        for lines, code in (((f"refs/heads/main {tip}",), "push_input"),
+                            ((f"refs/heads/main {blob} refs/heads/main {ZERO}",), "push_object_not_commit")):
+            with self.subTest(code=code):
+                rc, out = self.push_scan(*lines)
+                self.assertEqual((rc, out.strip()), (2, f"hygiene_scan: refused:{code}"))
+        for args in (("--range", "--all"), ("--push", ""), ("--message", "m", "--range", tip),
+                     ("--staged", "--range", tip)):
+            with self.subTest(args=args):
+                rc, out = self.scan(*args)
+                self.assertEqual(rc, 2, out)
+
+    # git replace and grafts show one object, or one list of parents, in another's place, while a commit records and
+    # a push sends the original (round-4 review). The scan must read what git stores. The replace refs, the stand-in
+    # objects and the graft files are written into the temporary .git by hand.
+
+    def loose(self, kind: str, body: bytes) -> str:
+        """Write a loose object; return its id."""
+        raw = kind.encode() + b" " + str(len(body)).encode() + b"\0" + body
+        sha = hashlib.sha1(raw).hexdigest()
+        self.write(os.path.join(".git", "objects", sha[:2], sha[2:]), zlib.compress(raw))
+        return sha
+
+    def rev(self, name: str) -> str:
+        return self.git("rev-parse", name).stdout.decode().strip()
+
+    def assert_found(self, *scans) -> None:
+        for args, stdin in scans:
+            with self.subTest(args=args):
+                rc, out = self.scan(*args, stdin=stdin)
+                self.assertEqual(rc, 1, out)
+                self.assertIn("market_id", self.codes(out))
+                self.assert_withheld(out)
+                self.assertNotIn(MARKET_2015, out)
+
+    def test_a_blob_replaced_by_a_clean_one_is_scanned_as_stored(self):
+        base = self.commit("base")
+        self.write("notes.txt", f"m = '{MARKET_2015}'\n")
+        self.add("notes.txt")
+        dirty = self.rev(":notes.txt")
+        clean = self.loose("blob", b"clean synthetic notes\n")
+        self.write_ref(f"refs/replace/{dirty}", clean)
+        self.assert_found((("--staged",), b""))
+        tip = self.commit("notes")
+        self.assertEqual(self.rev(f"{tip}:notes.txt"), dirty)          # the commit records the dirty blob
+        self.assert_found((("--range", f"{base}..{tip}"), b""),
+                          (("--push", "origin"), f"refs/heads/main {tip} refs/heads/main {base}\n".encode()))
+
+    def test_a_commit_replaced_by_a_clean_twin_is_scanned_as_stored(self):
+        base = self.commit("base")
+        self.write("notes.txt", f"m = '{MARKET_2015}'\n")
+        self.add("notes.txt")
+        dirty = self.commit("notes")
+        stamp = "Synthetic Tester <tester@example.invalid> 1700000000 +0000"
+        tree = self.rev(base + "^{tree}")                                # the twin adds nothing to base
+        twin = self.loose("commit", f"tree {tree}\nparent {base}\nauthor {stamp}\ncommitter {stamp}\n\nnotes\n".encode())
+        self.write_ref(f"refs/replace/{dirty}", twin)
+        self.assert_found((("--range", f"{base}..{dirty}"), b""),
+                          (("--push", "origin"), f"refs/heads/main {dirty} refs/heads/main {ZERO}\n".encode()),
+                          (("--push", "origin"), f"refs/heads/main {dirty} refs/heads/main {base}\n".encode()))
+
+    def test_a_graft_hides_no_commit(self):
+        base, added, tip = self.history_only_file()                  # added holds the id; tip deletes it again
+        self.write(".git/info/grafts", f"{tip} {base}\n")             # git would now skip added
+        outside = os.path.join(self.tmp, "grafts")
+        with open(outside, "w") as handle:
+            handle.write(f"{tip} {base}\n")
+        scans = ((("--range", f"{base}..{tip}"), b""),
+                 (("--push", "origin"), f"refs/heads/main {tip} refs/heads/main {base}\n".encode()))
+        self.assert_found(*scans)
+        os.unlink(os.path.join(self.repo, ".git", "info", "grafts"))
+        for args, stdin in scans:                                       # and a graft file named by the environment
+            with self.subTest(args=args, graft_file="environment"):
+                rc, out = self.scan(*args, stdin=stdin, env={**self.env, "GIT_GRAFT_FILE": outside})
+                self.assertEqual(rc, 1, out)
+                self.assertIn("market_id", self.codes(out))
+
+    def test_push_input_past_the_limit_is_refused_not_cut_short(self):
+        # Round-4 review: only the first 1 MiB of git's pre-push lines was read. A cut at a line end dropped every
+        # later ref, so a push of about 8,900 refs or more could publish commits that no scan saw.
+        _base, _added, tip = self.history_only_file()
+        filler = f"(delete) {ZERO} refs/heads/{'f' * 25} {ZERO}\n"
+        self.assertEqual(len(filler), 128)                               # 8192 lines fill exactly 1 MiB
+        real = f"refs/heads/main {tip} refs/heads/main {ZERO}\n"
+        rc, out = self.scan("--push", "origin", stdin=(filler * 8192 + real).encode())
+        self.assertEqual((rc, out.strip()), (2, "hygiene_scan: refused:push_input"))
+        rc, out = self.scan("--push", "origin", stdin=(filler * 8191 + real).encode())     # under the limit
+        self.assertEqual(rc, 1, out)
+        self.assertIn("market_id", self.codes(out))
+
+    def test_message_files(self):
+        member = bz2.compress(_stream_text().encode())
+        cases = {"market_id": f"synthetic subject\n\nsee {MARKET_2015}\n".encode(),
+                 "binary_file": _stream_text().encode("cp500"),
+                 "encoded_blob": b"synthetic subject\n\n" + base64.encodebytes(member)}
+        for code, data in cases.items():
+            with self.subTest(code=code):
+                self.write(".git/MSG", data)
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertIn(code, self.codes(out))
+                self.assert_withheld(out)
+                self.assertNotIn(MARKET_2015, out)
+        self.write(".git/MSG", "synthetic subject\n\nA clean body.\n")
+        rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+        self.assertEqual((rc, out.strip()), (0, "hygiene_scan: OK 1 message(s) scanned [message]"))
+
+    def test_message_files_that_are_not_plain_files_are_refused(self):
+        fifo = os.path.join(self.tmp, "fifo")
+        os.mkfifo(fifo)
+        link = os.path.join(self.tmp, "link")
+        os.symlink(os.path.join(self.repo, "README.md"), link)
+        inside = os.path.join(self.tmp, _j("betangel", "-data"), "MSG")
+        for path, code in ((fifo, "message_not_regular"), (link, "message_unreadable"), (inside, "data_root")):
+            with self.subTest(code=code):
+                rc, out = self.scan("--message", path)
+                self.assertEqual((rc, out.strip()), (2, f"hygiene_scan: refused:{code}"))
+
+
+class HookScriptTests(unittest.TestCase):
+    """The history hooks: POSIX sh, executable, the scanner mode each needs, and their install line."""
+
+    def test_each_hook_runs_its_scan(self):
+        for name, flag in HISTORY_HOOKS.items():
+            with self.subTest(hook=name):
+                path = REPO / "tools" / name
+                self.assertTrue(os.access(path, os.X_OK), "not executable")
+                text = path.read_text()
+                self.assertTrue(text.startswith("#!/bin/sh\n"))
+                self.assertIn(f'"$PY" -I -S -B "$SCAN" --root "$ROOT" {flag}', text)
+                self.assertIn(f"ln -s ../../tools/{name} .git/hooks/{name}", text)
+                self.assertIn("PY=/opt/homebrew/bin/python3.13", text)
+
+
 @unittest.skipUnless(os.access(PY313, os.X_OK), "the hook needs /opt/homebrew/bin/python3.13")
 class PreCommitHookTests(_RepoCase):
 
@@ -726,10 +1719,11 @@ class PreCommitHookTests(_RepoCase):
         tools = os.path.join(self.repo, "tools")
         os.makedirs(tools, exist_ok=True)
         shutil.copy(SCANNER, os.path.join(tools, "hygiene_scan.py"))
-        shutil.copy(HOOK, os.path.join(tools, "pre-commit"))
         hooks = os.path.join(self.repo, ".git", "hooks")
         os.makedirs(hooks, exist_ok=True)
-        os.symlink("../../tools/pre-commit", os.path.join(hooks, "pre-commit"))
+        for name in ("pre-commit", *HISTORY_HOOKS):
+            shutil.copy(REPO / "tools" / name, os.path.join(tools, name))
+            os.symlink(f"../../tools/{name}", os.path.join(hooks, name))
 
     def commit(self):
         proc = self.git("commit", "-q", "-m", "synthetic", check=False)
@@ -750,6 +1744,33 @@ class PreCommitHookTests(_RepoCase):
         head = self.git("rev-parse", "--verify", "-q", "HEAD", check=False)
         self.assertNotEqual(head.returncode, 0, "nothing should have been committed")
 
+    def test_commit_msg_blocks_an_id_in_the_message(self):
+        self.write("pkg/t.py", "x = 1\n")
+        self.add("pkg/t.py")
+        proc = self.git("commit", "-q", "-m", f"synthetic {MARKET_2015}", check=False)
+        out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        self.assertNotEqual(proc.returncode, 0, out)
+        self.assertIn(f"FAIL market_id {WITHHELD}:1 (message)", out)
+        self.assertIn("commit-msg: commit blocked", out)
+        self.assertNotIn(MARKET_2015, out)
+        head = self.git("rev-parse", "--verify", "-q", "HEAD", check=False)
+        self.assertNotEqual(head.returncode, 0, "nothing should have been committed")
+
+    def test_pre_merge_commit_runs_the_staged_scan(self):
+        # git runs pre-merge-commit only for `git merge`, which tests may not run; core.hooksPath gives
+        # `git commit` the script as its pre-commit hook instead, to show it blocks on the staged tree.
+        hooks = os.path.join(self.tmp, "merge-hooks")
+        os.mkdir(hooks)
+        os.symlink(os.path.join(self.repo, "tools", "pre-merge-commit"), os.path.join(hooks, "pre-commit"))
+        with open(os.path.join(self.repo, ".git", "config"), "a") as handle:
+            handle.write(f"[core]\n\thooksPath = {hooks}\n")
+        self.write("pkg/s.py", f"x = '{MARKET_2015}'\n")
+        self.add("pkg/s.py")
+        rc, out = self.commit()
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("pre-merge-commit: merge blocked", out)
+        self.assertNotIn(MARKET_2015, out)
+
     def test_hook_blocks_a_forced_archive(self):
         self.write("data/x.bz2", bz2.compress(b"abc"))
         self.add("data/x.bz2", force=True)
@@ -762,7 +1783,8 @@ class OwnFilesTests(unittest.TestCase):
     """The scanner passes over its own sources, this file and the governance files."""
 
     def test_own_files_pass(self):
-        names = ["tools/hygiene_scan.py", "tools/pre-commit", "tests/test_hygiene.py",
+        names = ["tools/hygiene_scan.py", "tools/pre-commit", *(f"tools/{name}" for name in HISTORY_HOOKS),
+                 "tests/test_hygiene.py",
                  ".gitignore", "AGENTS.md", "docs/data-handling.md", "docs/DESIGN.md"]
         present = [n for n in names if (REPO / n).is_file()]
         env = {"PATH": "/usr/bin:/bin", "LANG": "en_GB.UTF-8", **FORBID}

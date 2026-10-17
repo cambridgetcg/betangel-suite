@@ -2,15 +2,17 @@
 
 Roots, under the home directory taken from $HOME (bin/suite passes the caller's HOME through env -i):
 
-    ~/.local/state/betangel-suite/            0700  config, prefs, run/, tmp/, install-salt (Phase 0)
+    ~/.local/state/betangel-suite/            0700  config, prefs, run/ (realdata.lock), tmp/, install-salt (Phase 0)
     ~/.local/share/betangel-suite/deps/       read-only pinned upstream code (written only by the vendor tool)
     ~/betangel-data/suite.noindex/            0700  the suite root, ONLY while STATE_ROOT_AGREED is True
 
-STATE_ROOT_AGREED is True: Yu agreed the suite root (R-4), and Nuance agreed it on three conditions
-(Q-N3; DESIGN.md 3.7). So the suite root is writable (by the engine only: guard.py gives it to no other
-mode), and its tmp/ is the TMPDIR of every command except test, uisnap and vendor. The flag and
-bin/suite's default TMP branch, which a shell script cannot read from here, change together. The launcher
-refuses any mismatch between them (tmpdir_mismatch), so a half-done change fails closed.
+STATE_ROOT_AGREED is True: Yu agreed the suite root (R-4), and Nuance agreed it on three conditions in Nuance's
+PR #4 review (Q-N3; DESIGN.md 3.7). Nuance's PR #2 review makes the root half conditional again, on Nuance's
+item 1, which check_placement answers; its re-check was asked of Nuance on 2026-10-17, not answered, and the
+flag stays True meanwhile (lab-Claude's call). So the suite root is writable (by the engine only: guard.py gives
+it to no other mode), and its tmp/ is the TMPDIR of every command except test, uisnap and vendor. The flag and
+bin/suite's default TMP branch, which a shell script cannot read from here, change together. The launcher refuses
+any mismatch between them (tmpdir_mismatch), so a half-done change fails closed.
 
 With the flag False (tests still cover it, under temporary HOMEs) nothing may be created or written
 anywhere under ~/betangel-data: the writer helper refuses with state_root_not_agreed on the path text
@@ -22,6 +24,11 @@ symlink below a root, refuses any path outside the roots, and passes each new pa
 path_guard.guard_path (through rx, imported only when a write happens). Before it creates or enters the
 suite root it runs the root through upstream archive.check_data_root (DESIGN.md 3.7: outside the repository
 and every Git worktree).
+
+Path text is not enough for the roots themselves: a link on an ancestor (~/.local/state pointing into
+~/betangel-data/lab-state, say) or a suite.noindex that is a link to a data root would put every write there.
+So check_placement() judges each root on the file system, with stat calls only (Nuance's PR #2 review, item 1).
+guard.arm() runs it on every write root and TMPDIR, and the writer helper on the root of every path it writes.
 """
 
 import os
@@ -36,6 +43,8 @@ SUITE_ROOT_PARTS = ("betangel-data", "suite.noindex")
 STATE_DIR_PARTS = (".local", "state", "betangel-suite")
 SHARE_DIR_PARTS = (".local", "share", "betangel-suite")
 STATE_TMP_COMMANDS = ("test", "uisnap", "vendor")   # commands whose TMPDIR is always the state root's tmp/
+REALDATA_LOCK_NAME = "realdata.lock"                 # in run/; never unlinked (runmarker.hold_shared)
+_MAX_ANCESTORS = 256                                 # deeper than any real tree: past it, fail closed
 
 
 def home():
@@ -72,6 +81,13 @@ def deps_root(home_dir=None):
 
 def run_dir(home_dir=None):
     return os.path.join(state_dir(home_dir), "run")
+
+
+def realdata_lock_path(home_dir=None):
+    """run/realdata.lock in the state root: every real-data command holds LOCK_SH on it for its whole life, and Nuance's
+    run wrapper takes LOCK_EX on it before a run touches sources or data (runmarker.py; DESIGN.md 6.8). It lies in the
+    state root, beside engine.lock, so taking it creates nothing under ~/betangel-data."""
+    return os.path.join(run_dir(home_dir), REALDATA_LOCK_NAME)
 
 
 def config_path(home_dir=None):
@@ -124,15 +140,165 @@ def place(path, home_dir=None):
     raise SuiteError("write_outside_roots")
 
 
+# --- where the roots really are ------------------------------------------------------------------
+
+def check_placement(path, home_dir=None):
+    """Refuse a write root, or a path in one (TMPDIR), that the file system puts in the wrong place relative to
+    ~/betangel-data (Nuance's PR #2 review, item 1; DESIGN.md 3.7, I-6). Stat calls only: realpath's lstat and
+    readlink, and os.stat. Nothing is opened, read or listed.
+
+    While STATE_ROOT_AGREED, the suite root and every path in it (by text): the suite root must be a real
+    directory, or missing, at exactly realpath(data home)/suite.noindex, and path must resolve inside it. A
+    suite.noindex that is a link, to historic-pro say, is refused, so no write can be steered into a data root.
+    SuiteError(suite_root_misplaced) otherwise.
+
+    Any other path must not equal, lie in or contain the data home: root_overlaps_data_home otherwise, and also
+    when that cannot be judged (a stat of path or the data home that fails for any reason but the name not existing,
+    or an ancestor walk that cannot go on). Two comparisons, each both ways:
+      - text: path and the data home, each as written and with its links resolved (realpath), casefolded
+        (the lab's APFS volume folds case);
+      - identity: the data home's (st_dev, st_ino) must not be that of path or of any directory above it, and
+        path's must not be that of the data home or of any directory above it. Directories above are found with
+        "..", as the kernel resolves it, so spellings that realpath leaves alone (the /System/Volumes/Data
+        firmlink prefix, /.vol/<dev>/<ino>) and links on any ancestor are seen. Nothing inside the data home is
+        looked up: its own walk starts at its parent, so a data home spelt through /.vol (whose parent only a
+        lookup inside it could find) is refused.
+    """
+    path = os.path.normpath(path)
+    suite = suite_root(home_dir)
+    if STATE_ROOT_AGREED and within(path, suite):
+        expected = os.path.join(os.path.realpath(data_home(home_dir)), SUITE_ROOT_PARTS[-1])
+        if not (_real_dir_or_missing(expected) and os.path.realpath(suite) == expected
+                and within(os.path.realpath(path), expected)):
+            raise SuiteError("suite_root_misplaced")
+        return
+    if _overlaps_data_home(path, home_dir):
+        raise SuiteError("root_overlaps_data_home")
+
+
+def _overlaps_data_home(path, home_dir):
+    data = data_home(home_dir)
+    real_data = os.path.realpath(data)
+    real = os.path.realpath(path)
+    for mine in (path.casefold(), real.casefold()):
+        for theirs in (data.casefold(), real_data.casefold()):
+            if within(mine, theirs) or within(theirs, mine):
+                return True
+    if real_data.casefold().startswith("/.vol/"):
+        return True
+    data_id = _known_identity(data)
+    if data_id is not None and data_id in _lineage(real):
+        return True
+    path_id = _known_identity(real)
+    return path_id is not None and (path_id == data_id or path_id in _lineage(os.path.dirname(real_data)))
+
+
+def _known_identity(path, code="root_overlaps_data_home"):
+    """(st_dev, st_ino) of path, or None when it does not exist (a missing name, or a component that is not a
+    directory). SuiteError(code) when stat fails otherwise (no search permission, a link loop, a name too long): that
+    cannot be judged. Read as missing, a data home behind a directory with no search permission at arm() let a root
+    linked into it through the firmlink spelling pass, to take writes there once the directory was searchable again
+    (the guard-paths review), and lies_in read a deploy clone behind such a directory as one nothing lies in."""
+    try:
+        info = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError:
+        raise SuiteError(code) from None
+    return info.st_dev, info.st_ino
+
+
+def _real_dir_or_missing(path):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return stat.S_ISDIR(info.st_mode)
+
+
+def _directory(path):
+    """os.stat(path) when it is a directory, else None."""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return info if stat.S_ISDIR(info.st_mode) else None
+
+
+def _lineage(path, code="root_overlaps_data_home"):
+    """The (st_dev, st_ino) of the nearest existing directory at or above path (by text) and of every directory
+    above that one, as the kernel resolves ".." (so through a firmlink or /.vol spelling too). If ".." cannot be
+    looked up (no search permission, a name too long), the step falls back to the text parent, which is the same
+    directory for a path realpath has resolved. SuiteError(code) when nothing can be judged.
+    """
+    current, info = path, _directory(path)
+    while info is None:
+        parent = os.path.dirname(current)
+        if parent == current:
+            raise SuiteError(code)
+        current, info = parent, _directory(parent)
+    found = set()
+    for _ in range(_MAX_ANCESTORS):
+        found.add((info.st_dev, info.st_ino))
+        above_path = os.path.join(current, os.pardir)
+        above = _directory(above_path)
+        if above is None:
+            above_path = os.path.dirname(os.path.normpath(current))
+            above = _directory(above_path)
+            if above is None:
+                raise SuiteError(code)
+        if (above.st_dev, above.st_ino) == (info.st_dev, info.st_ino):
+            return found
+        current, info = above_path, above
+    raise SuiteError(code)
+
+
+def lies_in(path, directory, code):
+    """True when path is directory or lies below it, however either is spelt; SuiteError(code) when that cannot be
+    judged. For the deploy clone: vendor's deps root, pin directory and checkout, and the guard's partial clone path
+    (Nuance's PR #2 review, item 2).
+
+    Stat calls only (realpath's lstat and readlink, os.stat): nothing is opened, so the clone is never read.
+    First the text: path as written and with its links resolved, against directory as written and resolved,
+    casefolded (the lab's APFS volume folds case and U+017F). Then identity, for spellings realpath leaves as they
+    are (the /System/Volumes/Data firmlink prefix): directory's (st_dev, st_ino) must not be that of the nearest
+    existing directory at or above path, or at or above path's resolved text, nor of any directory above those
+    (_lineage, which follows ".." as the kernel resolves it, through a link on any ancestor). So a path that does
+    not exist yet, such as a deps directory under a ~/.local/share that links into the clone, is judged at its
+    nearest existing ancestor, and a dangling link into the clone by its resolved text. A directory that does not
+    exist has no identity, and nothing lies in it but by text. A stat of directory that fails for any other reason
+    (no search permission, a link loop) cannot be judged: SuiteError(code), as check_placement does since 57fc0c9.
+    Read as missing, a clone behind a directory with no search permission let a path linked into it through the
+    firmlink spelling pass (the guard fix's question 3). The same holds for path and its resolved text: a stat that
+    fails otherwise than missing raises SuiteError(code), as check_placement does, so a path through a directory with
+    no search permission that holds a link into the clone is not judged at that directory's text parent and passed
+    (the final recheck of 26fb4c4). A missing path is still judged at its nearest existing ancestor.
+    """
+    real = os.path.realpath(path)
+    forms = (directory.casefold(), os.path.realpath(directory).casefold())
+    if any(within(mine.casefold(), form) for mine in (os.path.normpath(path), real) for form in forms):
+        return True
+    target = _known_identity(directory, code)
+    if target is None:
+        return False
+    for candidate in (path, real):
+        _known_identity(candidate, code)  # a path that cannot be stat()ed but is not missing cannot be judged either
+    return any(target in _lineage(candidate, code) for candidate in (path, real))
+
+
 # --- the writer helper ---------------------------------------------------------------------------
 
 def ensure_dir(path, *, home_dir=None):
     """Create path and every missing directory between its root and it, each 0700; return path.
 
-    The root's parent must already exist. The root and everything below it must be real directories
+    The root's parent must already exist, and the root must pass check_placement() (no link on an ancestor
+    may put it in, around or onto ~/betangel-data). The root and everything below it must be real directories
     owned by this user (no symlinks); an existing one with group or other bits is tightened to 0700.
     """
     path, root = place(path, home_dir)
+    check_placement(root, home_dir)
     parent = os.path.dirname(root)
     try:
         info = os.stat(parent)

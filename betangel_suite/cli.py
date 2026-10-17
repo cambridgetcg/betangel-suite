@@ -3,10 +3,13 @@ every other command refuses with not_implemented.
 
 bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop, checked the run
 marker before main() is called (test and vendor are checked too: Nuance's answers to Q-N14). main() checks the
-command's arguments first, then creates TMPDIR (0700, through the writer helper) before any handler runs
-(DESIGN.md 3.6, 6.8), so SQLite never falls back to a system temp directory. vendor and stop are the exceptions:
-vendor must work before the deps clone exists and never imports upstream (which the writer helper's path_guard
-needs); stop only talks to the control socket. Neither makes temporary files. Output is codes and counts only.
+command's arguments first; then, for a command that may touch real data (REALDATA_COMMANDS), it takes the realdata
+lock shared and checks the marker again under it (runmarker.hold_shared; DESIGN.md 6.8), and only then creates
+TMPDIR (0700, through the writer helper) before any handler runs (DESIGN.md 3.6), so SQLite never falls back to a
+system temp directory. stop and vendor (NO_TMPDIR) are the exceptions: neither makes temporary files. stop must
+work during a run and only talks to the control socket, so it needs neither TMPDIR nor the lock; vendor must work
+before the deps clone exists and never imports upstream (which the writer helper's path_guard needs). Output is
+codes and counts only.
 
     serve [--port N]   the engine in synthetic mode on 127.0.0.1 (config port; N = 0 picks a free port);
                        prints "serving port=<n>", never a bootstrap code or token
@@ -31,7 +34,18 @@ COMMANDS = ("serve", "open", "ssh-session", "stop", "catalogue", "selfcheck", "d
 # refuse during a run like the other commands (Nuance's answers to Q-N14: "stop stays exempt", and "test and
 # vendor refuse under the marker").
 NO_RUN_MARKER_CHECK = ("stop",)
-NO_TMPDIR = ("stop", "vendor")                    # they create no temporary files and must not need upstream
+# The commands that may read a real data root or write under ~/betangel-data. Each takes LOCK_SH on run/realdata.lock
+# before its TMPDIR is created, checks the marker again under the lock and holds it until it exits, so Nuance's
+# wrapper, which takes LOCK_EX, waits for it (Nuance's PR #2 review, item 6; PR #1 review, item 5). test, uisnap and
+# vendor touch neither and do not take it; stop must work during a run and takes nothing (runmarker.py says why;
+# lab-Claude's decision, asked of Nuance on 2026-10-17, not answered).
+# main() refuses (run_lock_not_held) any other command whose TMPDIR would be made under ~/betangel-data.
+REALDATA_COMMANDS = ("serve", "open", "ssh-session", "catalogue", "selfcheck", "diagnose", "ledger-summary")
+# They create no temporary files and must not need upstream, so main() makes no TMPDIR for them and never asks them
+# for the lock. stop must work during a run (DESIGN.md 6.8); without this, its TMPDIR under ~/betangel-data made
+# main() refuse it with run_lock_not_held (round-4 review). phase0/viewing adds release: merged there, the
+# run_lock_not_held check stays inside the `not in NO_TMPDIR` branch.
+NO_TMPDIR = ("stop", "vendor")
 REPO_ROOT = guard.REPO_ROOT
 
 
@@ -54,8 +68,15 @@ def main(argv):
     parser = _PARSERS.get(command)
     if parser is not None:
         args = parser(args)                     # argument errors refuse before anything is created
+    from . import runmarker
+    if command in REALDATA_COMMANDS:
+        from . import config
+        runmarker.hold_shared(runmarker.marker_path(config.load()), runmarker.lock_path())
     if command not in NO_TMPDIR:
-        roots.ensure_dir(roots.tmp_dir(command))
+        tmp = roots.tmp_dir(command)
+        if roots.within(tmp.casefold(), roots.data_home().casefold()) and not runmarker.holding():
+            raise SuiteError("run_lock_not_held")       # nothing is made under ~/betangel-data without the lock
+        roots.ensure_dir(tmp)
     return handler(args)
 
 

@@ -72,6 +72,18 @@ ALLOWED = {
     (os.path.join("betangel_suite", "cli.py"), "_vendor", "computed_import"):
         "bin/suite vendor runs tools/vendor_research.py, a script outside the package, by its fixed path in this "
         "checkout; vendor mode never verifies the pin or imports upstream",
+    (os.path.join("betangel_suite", "guard.py"), "_refuse_loaded_modules", "sys_modules"):
+        "I-5: arm() refuses module_loaded_early when multiprocessing, concurrent.futures.process, ctypes or _ctypes "
+        "is already loaded, since the import event fires only for a module that is not loaded yet; it reads only the "
+        "names of loaded modules",
+    (os.path.join("betangel_suite", "pin.py"), "find_spec", "computed_import"):
+        "I-13: pin._ClosureFinder gives each of the 25 closure modules a spec at its pinned file in the deps clone "
+        "(spec_from_file_location), loaded by _PinnedLoader from the pinned bytes only; any other betangel_research "
+        "name is refused (upstream_import_refused)",
+    (os.path.join("betangel_suite", "pin.py"), None, "computed_import"):
+        "I-13: the class statement of pin._PinnedLoader, at module level, names its base SourceFileLoader, so that a "
+        "closure module is loaded from its pinned bytes only and no bytecode is written; nothing else at module level "
+        "in pin.py imports",
 }
 
 

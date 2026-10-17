@@ -358,9 +358,12 @@ results["eof"] = stream.next(5)
         before = tree_listing(home)
         result = run_suite(["serve", "--port", "0"], home)
         self.assertEqual((result.returncode, result.stdout, result.stderr), (2, "", "refused:synthetic_only\n"))
-        # serve made only its TMPDIR, the suite root's tmp/ (0700, empty), before the engine refused the data root.
+        # serve took run/realdata.lock shared first (making run/ 0700 and the lock 0600; DESIGN.md 6.8), then made
+        # only its TMPDIR, the suite root's tmp/ (0700, empty), before the engine refused the data root.
         tmp = os.path.relpath(roots.tmp_dir("serve", home), home)
-        self.assertEqual(tree_listing(home), sorted(before + [(os.path.dirname(tmp), 0o700), (tmp, 0o700)]))
+        run, lock = os.path.relpath(roots.run_dir(home), home), os.path.relpath(runmarker.lock_path(home), home)
+        self.assertEqual(tree_listing(home), sorted(before + [(run, 0o700), (lock, 0o600),
+                                                              (os.path.dirname(tmp), 0o700), (tmp, 0o700)]))
 
     def test_bad_arguments(self):
         home = support.short_home(self, deps=False)

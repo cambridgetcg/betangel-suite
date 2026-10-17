@@ -8,7 +8,10 @@ rx.paper.PaperExchange, ...). Test-only oracles (section 4.2) are imported by te
 
 validate.make_customer_ref and make_customer_order_ref are exported as wrappers that require the rng
 (section 4.1: "Refs come from a deterministic rng per session and click"). Upstream defaults rng to None and
-then uses secrets.token_hex (validate.py:40, :46, :51), which would make refs, and so replays, random.
+then uses secrets.token_hex (validate.py:40, :46, :51), which would make refs, and so replays, random. Its test
+is `rng or secrets.token_hex`, so a callable that is falsy (a tape whose __len__ is 0, say) would fall back to
+secrets too: the wrapper passes upstream a lambda calling the rng, which is always truthy, and never draws from
+the rng itself (Nuance's PR #2 review, item 9).
 
 call(fn, ...) is the error boundary of section 9.2 item 9: IndexProblem, ArchiveProblem, PathDenied,
 JournalError and ValueError become a SuiteError holding a kind code, a listed reason and a salted hash.
@@ -81,7 +84,7 @@ def _rng_required(make_ref):
     def wrapper(now_ns, rng):
         if not callable(rng):
             raise suite_errors.SuiteError("rng_required")
-        return make_ref(now_ns, rng)
+        return make_ref(now_ns, lambda nbytes: rng(nbytes))      # truthy whatever rng's own truth value is
 
     wrapper.__name__ = wrapper.__qualname__ = make_ref.__name__
     wrapper.__doc__ = make_ref.__doc__

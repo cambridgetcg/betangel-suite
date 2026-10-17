@@ -7,10 +7,11 @@ the last colon survives, and only when it is a listed reason; everything else is
 hash, so equal failures still correlate without the identifier being shown.
 
 The salt is per install: 32 random bytes in a 0600 file at ~/.local/state/betangel-suite/install-salt
-(AGENTS.md adaptation B), not under the suite root, although that root is now agreed. The first process that
-hashes an identifier makes it, and every guard mode may write the state root, while only the engine may write
-the suite root. Whether the salt should move is open; if it ever does, the same bytes must move with it, or
-earlier hashes stop matching.
+(AGENTS.md adaptation B), not under the suite root, although Yu agreed that root (R-4; AGENTS.md adaptation A).
+The first process that hashes an identifier makes it, and every guard mode may write the state root, while only
+the engine may write the suite root. Moving the salt byte for byte into suite.noindex is lab-Claude's proposal,
+asked of Nuance on 2026-10-17, not answered (DESIGN.md 9.2 item 9); if it ever moves, the same bytes must move with
+it, or earlier hashes stop matching.
 
 tools/hygiene_scan.py and tools/pre-commit print their own refusal codes (refused:usage, git_failed,
 python3.13_missing, ...). They are a separate enum on purpose: the scanner must run without importing
@@ -38,6 +39,8 @@ CODES = frozenset({
     "guard_not_armed", "guard_mode_conflict", "guard_mode_invalid", "guard_sealed", "guard_internal_error",
     "network_refused", "name_lookup_refused", "bind_refused", "bind_permit_invalid", "subprocess_refused",
     "dlopen_refused", "write_outside_roots", "state_root_not_agreed", "environment_change_refused",
+    "root_replace_refused", "sqlite_connect_refused", "sqlite_limit_refused", "import_refused",
+    "module_loaded_early", "call_replaced_early", "listen_refused", "run_lock_protected",
     # commands
     "no_command", "unknown_command", "not_implemented", "bad_arguments", "state_root_changed",
     # the synthetic engine, serve, open and stop (Phase 0b; DESIGN.md 6.8, 9.1)
@@ -52,18 +55,19 @@ CODES = frozenset({
     "rate_limited", "not_controller", "uri_too_long", "headers_too_large", "expectation_failed",
     "http_version_not_supported", "unsupported_method", "internal_error", "too_many_connections",
     "unknown_query",
-    # the run marker (I-17)
-    "run_marker_present", "run_marker_unreadable",
+    # the run marker and the realdata lock (I-17)
+    "run_marker_present", "run_marker_unreadable", "run_lock_busy", "run_lock_invalid", "run_lock_not_held",
     # suite config
     "config_unreadable", "config_insecure", "config_too_large", "config_not_json", "config_not_object",
     "config_unknown_key", "config_invalid_value",
     # the pin (I-13) and the vendor tool
     "pin_invalid", "pin_mismatch", "deps_missing", "deps_bytecode_present", "deps_shadow_present",
-    "research_clone_on_path", "upstream_imported_early", "upstream_origin_mismatch", "commit_not_present",
-    "partial_exists", "git_failed",
+    "research_clone_on_path", "upstream_imported_early", "upstream_origin_mismatch", "upstream_import_refused",
+    "commit_not_present", "commit_not_on_main", "partial_exists", "git_failed", "deps_link_present",
     # roots and the writer helper
     "path_not_absolute", "already_exists", "not_a_directory", "symlink_refused", "wrong_owner",
-    "root_parent_missing", "write_failed", "salt_invalid", "suite_root_invalid",
+    "root_parent_missing", "write_failed", "salt_invalid", "suite_root_invalid", "suite_root_misplaced",
+    "root_overlaps_data_home",
     # upstream exception kinds mapped at the rx boundary, and rx's own argument checks
     "index_problem", "archive_problem", "path_denied", "journal_error", "value_error", "rng_required",
     # a code that is not listed here is reported as this
@@ -212,22 +216,28 @@ def _salt(home_dir):
 
 
 def _read_salt(path):
-    """The salt bytes, None when the file does not exist; SuiteError(salt_invalid) for anything odd."""
+    """The salt bytes, None when the file does not exist; SuiteError(salt_invalid) for anything odd.
+
+    The open is O_NONBLOCK and fstat judges the file before anything is read, so a FIFO (or a directory) in the
+    salt's place is refused at once: a blocking open of a FIFO would wait for a writer for ever (Nuance's PR #2
+    review, item 22).
+    """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
     except FileNotFoundError:
         return None
     except OSError:
         fd = None
     if fd is None:
         raise SuiteError("salt_invalid")
+    data = None
     try:
         info = os.fstat(fd)
-        data = os.read(fd, SALT_BYTES + 1)
+        if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077:
+            data = os.read(fd, SALT_BYTES + 1)
     finally:
         os.close(fd)
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077
-            or len(data) != SALT_BYTES):
+    if data is None or len(data) != SALT_BYTES:
         raise SuiteError("salt_invalid")
     return data
 

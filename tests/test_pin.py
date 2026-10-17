@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from betangel_suite import pin, roots
 from betangel_suite.errors import SuiteError
@@ -18,8 +19,8 @@ from tests import ARM_ENGINE, DEPS, PRELUDE, ROOT, make_home, run_python
 PINNED_COMMIT = "76f71dc94588a50f0df56dde2c3fabcf6e102f88"
 
 
-def outcome(case, home, code):
-    result = run_python(code, home)
+def outcome(case, home, code, timeout=60):
+    result = run_python(code, home, timeout=timeout)
     case.assertEqual(result.returncode, 0, result.stderr)
     return result.stdout.strip()
 
@@ -126,6 +127,56 @@ class VerifyCopyTests(unittest.TestCase):
         os.symlink(os.path.join(DEPS, "betangel_research", "betfair", "ticks.py"), path)
         self.assert_refused("pin_mismatch")
 
+    def test_links_on_the_way_to_a_pinned_file(self):
+        # Nuance's PR #2 review, item 8: a symlinked research/ (or research/experiments/) and a hard-linked ticks.py
+        # passed activate(), reading bytes the deploy clone could change. Refused with O_NOFOLLOW_ANY, and by the
+        # component walk that replaces it where the flag is missing. The control copy verifies both ways.
+        elsewhere = os.path.join(self.home, "elsewhere")
+        os.makedirs(elsewhere)
+        experiments = os.path.join(self.deps, "research", "experiments")
+        ticks = os.path.join(self.deps, "betangel_research", "betfair", "ticks.py")
+
+        def link_directory(path):
+            moved = os.path.join(elsewhere, os.path.basename(path))
+            os.rename(path, moved)
+            os.symlink(moved, path)
+            return lambda: (os.remove(path), os.rename(moved, path))
+
+        def hard_link_file(path):
+            outside = os.path.join(elsewhere, "ticks.py")
+            shutil.copyfile(path, outside)
+            os.remove(path)
+            os.link(outside, path)
+            return lambda: (os.remove(outside),)
+
+        for nofollow_any in (pin._NOFOLLOW_ANY, 0):
+            with mock.patch.object(pin, "_NOFOLLOW_ANY", nofollow_any):
+                pin.verify(self.pin, self.deps)
+                for name, make in (("research", lambda: link_directory(os.path.dirname(experiments))),
+                                   ("experiments", lambda: link_directory(experiments)),
+                                   ("hard_link", lambda: hard_link_file(ticks))):
+                    with self.subTest(nofollow_any=nofollow_any, case=name):
+                        undo = make()
+                        try:
+                            self.assert_refused("pin_mismatch")
+                        finally:
+                            undo()
+                        pin.verify(self.pin, self.deps)
+
+    def test_fifo_in_place_of_a_pinned_file_or_the_pin_does_not_hang(self):
+        # Nuance's PR #2 review, item 22 (Astra's half): open() of a FIFO waits for a writer. O_NONBLOCK, then
+        # fstat before any read. Run in a child with a timeout, so a hang fails the test instead of the run.
+        path = os.path.join(self.deps, "research", "experiments", "backtest-p0-bsp-v1.json")
+        os.remove(path)
+        os.mkfifo(path)
+        fifo_pin = os.path.join(self.home, "pin-fifo.json")
+        os.mkfifo(fifo_pin)
+        code = ("from betangel_suite import pin\nfrom betangel_suite.errors import SuiteError\n"
+                "for call in (lambda: pin.verify(pin.load(), %r), lambda: pin.load(%r)):\n"
+                "    try:\n        call()\n        print('ok')\n    except SuiteError as exc:\n        print(exc)\n"
+                ) % (self.deps, fifo_pin)
+        self.assertEqual(outcome(self, self.home, code, timeout=20).splitlines(), ["pin_mismatch", "pin_invalid"])
+
     def test_bytecode_cache_present(self):
         os.mkdir(os.path.join(self.deps, "betangel_research", "betfair", "__pycache__"))
         self.assert_refused("deps_bytecode_present")
@@ -161,6 +212,45 @@ class VerifyCopyTests(unittest.TestCase):
             handle.write("\n# synthetic tamper\n")
         self.assertEqual(outcome(self, self.home, ARM_ENGINE + TRY_RX).splitlines(),
                          ["pin_mismatch", "upstream_absent"])
+
+
+class OpenBelowTests(unittest.TestCase):
+    """pin._open_below: "tree itself must not be a link, though its ancestors may be", with O_NOFOLLOW_ANY and with
+    the component walk that replaces it."""
+
+    def test_the_tree_itself_spelt_with_a_final_slash_or_dot(self):
+        # The guard-paths review: a final "/", "/." or "//" makes the kernel follow a link at tree even with
+        # O_NOFOLLOW, so tree-link + "/" opened the file below the link's target. No caller passes such a spelling
+        # (deps_dir and vendor's partial and dest are joined paths), so this pins the function's own contract: tree
+        # must end in its own name, and a real tree spelt that way is refused too.
+        home = make_home(self)
+        base = os.path.join(home, "trees")
+        tree = os.path.join(base, "tree")
+        os.makedirs(os.path.join(tree, "a", "b", "c"))
+        with open(os.path.join(tree, "a", "b", "c", "f.txt"), "w", encoding="utf-8") as handle:
+            handle.write("synthetic")
+        tree_link = os.path.join(base, "tree-link")
+        os.symlink(tree, tree_link)
+        base_link = os.path.join(home, "trees-link")
+        os.symlink(base, base_link)
+
+        def opens(spelled):
+            try:
+                os.close(pin._open_below(spelled, "a/b/c/f.txt"))
+            except OSError:
+                return False
+            return True
+
+        for nofollow_any in (pin._NOFOLLOW_ANY, 0):
+            with mock.patch.object(pin, "_NOFOLLOW_ANY", nofollow_any):
+                self.assertTrue(opens(tree))
+                self.assertTrue(opens(os.path.join(base_link, "tree")))           # an ancestor a link: fine
+                self.assertEqual(pin.read_below(tree, "a/b/c/f.txt"), b"synthetic")
+                for spelled in (tree_link, tree_link + "/", tree_link + "/.", tree_link + "//", tree_link + "/./",
+                                tree + "/", tree + "/.", os.path.join(tree, "a", "..")):
+                    with self.subTest(nofollow_any=bool(nofollow_any), tree=spelled[len(base):]):
+                        self.assertFalse(opens(spelled))
+                        self.assertIsNone(pin.read_below(spelled, "a/b/c/f.txt"))
 
 
 class ActivationTests(unittest.TestCase):
@@ -242,6 +332,61 @@ class ActivationTests(unittest.TestCase):
                 self.assertEqual(outcome(self, home, ARM_ENGINE + TRY_RX).splitlines(),
                                  ["research_clone_on_path", "upstream_absent"])
 
+    def test_links_in_deps_are_refused_before_any_upstream_import(self):
+        # Nuance's PR #2 review, item 8, end to end: a research/ that links into the deploy clone, and a ticks.py hard
+        # linked to the clone's copy, each with the right bytes, are refused before betangel_research is imported.
+        for case in ("research", "hard_link"):
+            home = make_home(self, deps=True)
+            research = roots.research_clone(home)
+            deps = pin.deps_dir(pin.load(), home)
+            os.makedirs(research)
+            if case == "research":
+                os.rename(os.path.join(deps, "research"), os.path.join(research, "research"))
+                os.symlink(os.path.join(research, "research"), os.path.join(deps, "research"))
+            else:
+                ticks = os.path.join("betangel_research", "betfair", "ticks.py")
+                os.makedirs(os.path.dirname(os.path.join(research, ticks)))
+                os.rename(os.path.join(deps, ticks), os.path.join(research, ticks))
+                os.link(os.path.join(research, ticks), os.path.join(deps, ticks))
+            with self.subTest(case=case):
+                self.assertEqual(outcome(self, home, ARM_ENGINE + TRY_RX).splitlines(), ["pin_mismatch", "upstream_absent"])
+
+    def test_read_pinned_gives_only_the_pinned_bytes(self):
+        # Nuance's PR #2 review, item 8: the month-role JSON is read through pin.read_pinned(), which checks the bytes
+        # against the pin again, so a change after activate() (new bytes, or research/ swapped for a link with the
+        # same bytes) is refused. So is a path that is not pinned, and a call without the guard. The child is armed in
+        # vendor mode, whose write roots hold the deps tree, so it can make those changes itself.
+        home = make_home(self, deps=True)
+        month_roles = "research/experiments/backtest-p0-bsp-v1.json"
+        code = PRELUDE + "from betangel_suite import guard\nguard.arm('vendor')\n" + """
+import hashlib, os, shutil
+from betangel_suite import pin, roots
+from betangel_suite.errors import SuiteError
+def attempt(relpath):
+    try:
+        data = pin.read_pinned(relpath)
+        return hashlib.sha256(data).hexdigest() == pin.load()["files"].get(relpath)
+    except SuiteError as exc:
+        return str(exc)
+deps = pin.activate()
+results = [attempt(%(month)r), attempt("README.md"), attempt("betangel_research/betfair/risk.py")]
+moved = os.path.join(roots.deps_root(), "elsewhere")
+os.rename(os.path.join(deps, "research"), moved)
+os.symlink(moved, os.path.join(deps, "research"))
+results.append(attempt(%(month)r))
+os.remove(os.path.join(deps, "research"))
+os.rename(moved, os.path.join(deps, "research"))
+results.append(attempt(%(month)r))
+with open(os.path.join(deps, %(month)r), "ab") as handle:
+    handle.write(b" ")
+results.append(attempt(%(month)r))
+print(results)
+""" % {"month": month_roles}
+        self.assertEqual(outcome(self, home, code), str([True, "pin_mismatch", "pin_mismatch", "pin_mismatch", True,
+                                                         "pin_mismatch"]))
+        unarmed = "from betangel_suite import pin\ntry:\n    pin.read_pinned(%r)\nexcept Exception as exc:\n    print(exc)\n"
+        self.assertEqual(outcome(self, home, PRELUDE + unarmed % month_roles), "guard_not_armed")
+
     def test_upstream_imported_before_activation_is_refused(self):
         home = make_home(self, deps=True)
         fake = os.path.join(home, "fake")
@@ -251,15 +396,71 @@ class ActivationTests(unittest.TestCase):
         code = ARM_ENGINE + "sys.path.insert(0, %r)\nimport betangel_research\n" % fake + TRY_RX
         self.assertEqual(outcome(self, home, code).splitlines(), ["upstream_imported_early", "upstream_loaded"])
 
-    def test_module_loaded_from_elsewhere_fails_the_origin_check(self):
+    def test_a_copy_earlier_on_sys_path_is_never_loaded(self):
+        # Until the closure finder, a copy of the closure put before the deps directory on sys.path after activate()
+        # was loaded, and only the origin check refused it. Now every closure module comes from the deps directory.
         home = make_home(self, deps=True)
         fake = os.path.join(home, "fake")
         for relpath in pin.PINNED_FILES:
             if relpath.startswith("betangel_research/"):
                 os.makedirs(os.path.dirname(os.path.join(fake, relpath)), exist_ok=True)
                 shutil.copyfile(os.path.join(DEPS, relpath), os.path.join(fake, relpath))
-        code = ARM_ENGINE + ("from betangel_suite import pin\npin.activate()\nsys.path.insert(0, %r)\n" % fake) + TRY_RX
-        self.assertEqual(outcome(self, home, code).splitlines()[0], "upstream_origin_mismatch")
+        code = ARM_ENGINE + ("from betangel_suite import pin\ndeps = pin.activate()\nsys.path.insert(0, %r)\n" % fake) + TRY_RX + (
+            "import os\n"
+            "print(all(os.path.realpath(m.__file__).startswith(os.path.realpath(deps) + os.sep)\n"
+            "          for name, m in sys.modules.items() if name.startswith('betangel_research')))\n")
+        self.assertEqual(outcome(self, home, code).splitlines(), ["imported", "upstream_loaded", "True"])
+
+    def test_module_from_elsewhere_fails_the_origin_check(self):
+        # assert_origins stays as a cross-check: a module object put into sys.modules from elsewhere is refused.
+        home = make_home(self, deps=True)
+        code = ARM_ENGINE + TRY_RX + (
+            "import types\nfrom betangel_suite import pin\n"
+            "planted = types.ModuleType('betangel_research.betfair.planted')\n"
+            "planted.__file__ = %r\n"
+            "sys.modules[planted.__name__] = planted\n"
+            "try:\n    pin.assert_origins(pin.activate())\nexcept SuiteError as exc:\n    print(exc)\n"
+        ) % os.path.join(home, "fake", "planted.py")
+        self.assertEqual(outcome(self, home, code).splitlines(), ["imported", "upstream_loaded", "upstream_origin_mismatch"])
+
+    def test_only_the_closure_is_imported_after_activation(self):
+        # Nuance's PR #2 review, item 7: the deps directory is on sys.path, so after seal() an unpinned module there
+        # (risk.py, say) could be imported and its unhashed code run. The finder refuses it, however it is imported
+        # (an import hook would miss import_module), and its code never runs.
+        home = make_home(self, deps=True)
+        deps = pin.deps_dir(pin.load(), home)
+        with open(os.path.join(deps, "betangel_research", "betfair", "risk.py"), "w", encoding="utf-8") as handle:
+            handle.write("print('synthetic unpinned module ran')\n")
+        code = ARM_ENGINE + TRY_RX + """
+import importlib
+for name, call in (("statement", lambda: exec("import betangel_research.betfair.risk")),
+                   ("from", lambda: exec("from betangel_research.betfair import risk")),
+                   ("import_module", lambda: importlib.import_module("betangel_research.betfair.risk")),
+                   ("dunder", lambda: __import__("betangel_research.betfair.risk")),
+                   ("relative", lambda: importlib.import_module(".risk", "betangel_research.betfair")),
+                   ("find_spec", lambda: importlib.util.find_spec("betangel_research.betfair.gateway"))):
+    try:
+        call()
+        print(name, "imported")
+    except SuiteError as exc:
+        print(name, exc)
+print("betangel_research.betfair.risk" in sys.modules)
+"""
+        self.assertEqual(outcome(self, home, code).splitlines(),
+                         ["imported", "upstream_loaded"] + ["%s upstream_import_refused" % name for name in (
+                             "statement", "from", "import_module", "dunder", "relative", "find_spec")] + ["False"])
+
+    def test_closure_module_changed_after_activation_is_refused_when_loaded(self):
+        # The finder's loader reads each closure module through read_pinned when it is imported, so bytes changed
+        # between activate() and the import are refused (the origin check would pass them). The child is armed in
+        # vendor mode, whose write roots hold the deps tree, so it can change them itself.
+        home = make_home(self, deps=True)
+        code = PRELUDE + "from betangel_suite import guard\nguard.arm('vendor')\n" + (
+            "from betangel_suite import pin\ndeps = pin.activate()\n"
+            "with open(deps + '/betangel_research/betfair/ticks.py', 'a', encoding='utf-8') as handle:\n"
+            "    handle.write('\\nSYNTHETIC_CHANGE = 1\\n')\n") + TRY_RX + (
+            "print('betangel_research.betfair.ticks' in sys.modules)\n")
+        self.assertEqual(outcome(self, home, code).splitlines(), ["pin_mismatch", "upstream_loaded", "False"])
 
 
 class MovingCloneTests(unittest.TestCase):

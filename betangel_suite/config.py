@@ -3,13 +3,16 @@
 The file is ~/.local/state/betangel-suite/config.json. It is optional; every key it holds must be one of
 DEFAULTS and must pass its check, or loading refuses with a code (never echoing the key or the value).
 The file must be a regular file owned by this user, not a symlink, not writable by group or others, at
-most 64 KB of strict JSON (duplicate keys and NaN or Infinity refused).
+most 64 KB of strict JSON (duplicate keys and NaN or Infinity refused). It is opened with O_NONBLOCK and
+checked with fstat before anything is read, so a FIFO in its place is refused at once instead of waiting
+for a writer (Nuance's PR #2 review, item 22).
 
 Phase 0: no command reads a data root, and the repo's own config.validate_config is not called yet; the
 paper config and cap profiles arrive with Phase 1b. Nothing here can weaken the guard: no key names the
-network switch, the audit hook or the write roots, state_root accepts only the value of R-4, and
-run_marker accepts only the marker path agreed with Nuance (Q-N3; a configurable marker would let a
-config edit point the I-17 start check somewhere that never exists). Only a reviewed change moves either;
+network switch, the audit hook or the write roots, state_root accepts only the value of R-4,
+run_marker accepts only the marker path of Q-N3 (DESIGN.md 3.8 gives its status; a configurable marker
+would let a config edit point the I-17 start check somewhere that never exists), and research_months_ruling accepts
+only null or an id in ACCEPTED_RULINGS, which is empty. Only a reviewed change moves any of them;
 configuration alone never does.
 Standard library only.
 """
@@ -17,28 +20,33 @@ Standard library only.
 import copy
 import json
 import os
-import re
 import stat
 
 from . import roots
 from .errors import SuiteError
 
 DEFAULTS = {
-    "data_roots": [],                                   # until Nuance names the PRO root (Q-N4)
+    "data_roots": [],                                   # until the PRO index exists (Nuance named historic-pro, Q-N4)
     "state_root": "~/betangel-data/suite.noindex",      # R-4, Q-N3; written only while roots.STATE_ROOT_AGREED
     "port": 8765,                                       # loopback only
     "frame_hz": 10,                                     # 5-20
     "cap_profile": "v1-live-mirror",                    # R-7: practise live v1 by default
     "commission_source": "user_package_unverified",     # R-3
     "research_months_ruling": None,                     # research months hidden while null
-    "run_marker": "~/.local/state/lab-runs/ACTIVE",     # section 6.8; agreed with Nuance (Q-N3)
+    "run_marker": "~/.local/state/lab-runs/ACTIVE",     # section 6.8; Q-N3
     "watch_grace_s": 600,                               # section 8.6
 }
 CAP_PROFILES = ("v1-live-mirror", "practice")
 COMMISSION_SOURCES = ("user_package_verified", "user_package_unverified", "official_example_basic_2pct")
 MAX_CONFIG_BYTES = 64 << 10
 MAX_DATA_ROOTS = 8
-_RULING_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# The ruling ids research_months_ruling may name (DESIGN.md 5.3 and 14; Nuance's PR #2 review, item 12). Empty: the
+# key stays null until Yu rules on Q-Y7, so no config edit alone can put research-month rows in the catalogue. Each
+# id is added only by a reviewed PR, after Yu's ruling with Nuance and Astra.
+ACCEPTED_RULINGS = frozenset()
+# O_NONBLOCK: opening a FIFO never waits for a writer (a regular file's open and read are unchanged); fstat then
+# refuses it before any read. O_NOCTTY: a terminal device in the file's place never becomes this process's terminal.
+_READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
 
 
 def load(home_dir=None):
@@ -46,7 +54,7 @@ def load(home_dir=None):
     config = copy.deepcopy(DEFAULTS)
     path = roots.config_path(home_dir)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = os.open(path, _READ_FLAGS)
     except FileNotFoundError:
         return config
     except OSError:
@@ -114,7 +122,7 @@ _CHECKS = {
     "cap_profile": lambda value, home_dir: value in CAP_PROFILES,
     "commission_source": lambda value, home_dir: value in COMMISSION_SOURCES,
     "research_months_ruling": lambda value, home_dir: value is None or (
-        isinstance(value, str) and bool(_RULING_RE.fullmatch(value))),
+        isinstance(value, str) and value in ACCEPTED_RULINGS),
     "run_marker": lambda value, home_dir: value == DEFAULTS["run_marker"],
     "watch_grace_s": lambda value, home_dir: _is_int(value, 60, 3600),
 }

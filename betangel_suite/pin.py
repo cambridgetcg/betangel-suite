@@ -5,14 +5,18 @@ it: the 25 modules of the verified import closure (section 4.1) and the experime
 month roles. tools/vendor_research.py writes it on a pin bump; nothing else does.
 
 activate() runs once per process, after the guard is armed and before betangel_research is imported. It
-hashes the pinned files in ~/.local/share/betangel-suite/deps/betangel-research-<sha12>/ (no git runs),
-refuses pin_mismatch on any difference, refuses a deps tree holding bytecode caches (Python would load a
+hashes the pinned files in ~/.local/share/betangel-suite/deps/betangel-research-<sha12>/ (no git runs; each
+file opened below the deps directory with no symlink on the way, O_NONBLOCK, and refused unless it is a regular
+file with exactly one link), refuses pin_mismatch on any difference, refuses a deps tree holding bytecode caches (Python would load a
 stale .pyc beside a matching .py) or anything Python would import in preference to a pinned .py (an
 extension module such as paper.cpython-313-darwin.so, a .pyc, or a package directory named like a pinned
 module), refuses a deps directory or any sys.path entry that lies in ~/betangel-research (the moving
 deploy clone) by name in any case or by identity, and only then APPENDS the deps directory to sys.path,
-so the standard library can never be shadowed. assert_origins() then checks that every loaded
-betangel_research module came from that directory.
+so the standard library can never be shadowed. It also puts _ClosureFinder first on sys.meta_path: from then on
+the import system loads a betangel_research module only if it is one of the 25 of the closure, only from its
+pinned file in the deps directory, and only from bytes that still match the pin (read_pinned), never from a
+bytecode cache; any other betangel_research name is refused (upstream_import_refused), however it is imported.
+assert_origins() then checks that every loaded betangel_research module came from that directory.
 
 Standard library only.
 """
@@ -20,6 +24,7 @@ Standard library only.
 import fcntl
 import hashlib
 import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -66,14 +71,24 @@ PINNED_FILES = (
     "research/experiments/backtest-p0-bsp-v1.json",
 )
 PACKAGE_DIRS = ("betangel_research", "betangel_research/betfair", "betangel_research/betfair/backtest")
+# The 25 modules of the closure, by name, with their pinned files: the only betangel_research modules the import
+# system may load once activate() has run (_ClosureFinder).
+CLOSURE = {(relpath[:-len("/__init__.py")] if relpath.endswith("/__init__.py") else relpath[:-len(".py")]).replace(
+    "/", "."): relpath for relpath in PINNED_FILES if relpath.endswith(".py")}
 # Files the import system would load instead of (or as well as) a hashed .py: extension modules for any
 # interpreter and sourceless bytecode.
 SHADOW_SUFFIXES = tuple(sorted(set(importlib.machinery.EXTENSION_SUFFIXES) | set(importlib.machinery.BYTECODE_SUFFIXES)
                                | {".so", ".dylib", ".pyc"}))
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+# Every read here: O_NONBLOCK, so opening a FIFO never waits for a writer (the open of a regular file is unchanged).
+_READ_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
+# macOS 11 and later: refuse a symlink at any component of the path (ELOOP). Python 3.11 and 3.13 on the lab both
+# have it; without it, _open_below walks the path itself, one O_NOFOLLOW component at a time.
+_NOFOLLOW_ANY = getattr(os, "O_NOFOLLOW_ANY", 0)
 
 _ACTIVE = None
+_HASHES = {}            # relpath -> sha256 of the pin activate() verified (read_pinned)
 
 
 def load(path=PIN_FILE):
@@ -100,10 +115,11 @@ def deps_dir(pin, home_dir=None):
 
 
 def file_hashes(tree):
-    """{relpath: sha256} of PINNED_FILES under tree; each must be a regular file, not a symlink."""
+    """{relpath: sha256} of PINNED_FILES under tree; each must be a regular file with one link, reached from tree
+    with no symlink on the way (_read_regular); SuiteError(pin_mismatch) otherwise."""
     hashes = {}
     for relpath in PINNED_FILES:
-        data = _read_regular(os.path.join(tree, relpath), None)
+        data = _read_regular(relpath, None, tree)
         if data is None:
             raise SuiteError("pin_mismatch")
         hashes[relpath] = hashlib.sha256(data).hexdigest()
@@ -156,7 +172,7 @@ def _refuse_shadows(deps, package):
 
 def activate(*, home_dir=None, pin_path=PIN_FILE):
     """Verify the deps clone and append it to sys.path; return its path. Idempotent."""
-    global _ACTIVE
+    global _ACTIVE, _HASHES
     guard.require_armed()
     if _ACTIVE is not None:
         return _ACTIVE
@@ -169,8 +185,77 @@ def activate(*, home_dir=None, pin_path=PIN_FILE):
     verify(pin, deps)
     refuse_research_on_path(home_dir)
     sys.path.append(deps)
+    _HASHES = dict(pin["files"])
     _ACTIVE = deps
+    sys.meta_path.insert(0, _ClosureFinder(deps))
     return deps
+
+
+class _PinnedLoader(importlib.machinery.SourceFileLoader):
+    """Loads one closure module from its pinned bytes (read_pinned, which checks them against the pin at load time),
+    never from a bytecode cache, and writes none."""
+
+    def __init__(self, fullname, path, relpath):
+        super().__init__(fullname, path)
+        self.relpath = relpath
+
+    def get_data(self, path):
+        if path != self.path:
+            raise OSError("only the pinned source is read")     # a bytecode cache: the import system then compiles
+        return read_pinned(self.relpath)
+
+    def set_data(self, path, data, *, _mode=0o666):
+        return None                                            # no bytecode is ever written into the deps tree
+
+
+class _ClosureFinder:
+    """The first sys.meta_path entry once activate() has run (Nuance's PR #2 review, item 7).
+
+    The deps directory is on sys.path, so without this `import betangel_research.betfair.risk` after seal() would
+    load an unhashed module from the deps clone. An "import" audit hook would not do: importlib.import_module raises
+    no import event for a pure-Python module. Every import of a module not yet loaded asks the meta_path finders,
+    whatever spelling made it (import statement, __import__, import_module, find_spec), so here:
+    - a name outside betangel_research is left to the other finders (None);
+    - a betangel_research name outside the 25 of the closure raises SuiteError(upstream_import_refused), which is
+      not an ImportError, so no `except ImportError` can quietly carry on without it;
+    - one of the 25 gets a spec at its pinned file in the deps directory, whatever sys.path says, and a loader
+      that reads only those bytes, checked against the pin when the module is loaded.
+    Same-process code can still remove this finder or insert one before it (the same-uid limit of guard.py).
+    """
+
+    def __init__(self, deps):
+        self.deps = deps
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != "betangel_research" and not fullname.startswith("betangel_research."):
+            return None
+        relpath = CLOSURE.get(fullname)
+        if relpath is None:
+            raise SuiteError("upstream_import_refused")
+        origin = os.path.join(self.deps, relpath)
+        return importlib.util.spec_from_file_location(fullname, origin,
+                                                      loader=_PinnedLoader(fullname, origin, relpath))
+
+    def invalidate_caches(self):
+        return None
+
+
+def read_pinned(relpath):
+    """The bytes of one PINNED_FILES entry, from the active deps directory, checked against the pin again.
+
+    The month-role JSON (research/experiments/backtest-p0-bsp-v1.json, DESIGN.md 4.1) is read only this way, never
+    with open() by path, which follows links and reads whatever is there by then (Nuance's PR #2 review, item 8).
+    The file is opened as file_hashes opens it (no symlink below the deps directory, exactly one link, O_NONBLOCK)
+    and its sha256 compared with the pin activate() verified, so a change since activate() is refused too. Calls
+    activate() first (idempotent; it needs the armed guard). SuiteError(pin_mismatch) for bytes that differ, a file
+    that cannot be read that way, or a path that is not a PINNED_FILES entry (it has no pinned bytes).
+    """
+    deps = activate()
+    expected = _HASHES.get(relpath)
+    data = None if expected is None else _read_regular(relpath, None, deps)
+    if data is None or hashlib.sha256(data).hexdigest() != expected:
+        raise SuiteError("pin_mismatch")
+    return data
 
 
 def refuse_research_on_path(home_dir=None):
@@ -245,15 +330,64 @@ def assert_origins(deps):
                 raise SuiteError("upstream_origin_mismatch")
 
 
-def _read_regular(path, limit):
-    """Bytes of a regular file opened without following a final symlink, or None."""
+def read_below(tree, relpath, limit=None):
+    """Bytes of the regular file relpath below the directory tree, as file_hashes reads it (no symlink on the way,
+    exactly one link, O_NONBLOCK, at most limit bytes), or None. tools/vendor_research.py reads .git/HEAD and
+    .git/config this way."""
+    return _read_regular(relpath, limit, tree)
+
+
+def _open_below(tree, relpath):
+    """A read-only descriptor for relpath below the directory tree, with no symlink at any component of relpath.
+
+    tree is opened first (O_DIRECTORY, and O_NOFOLLOW: tree itself must not be a link, though its ancestors may be),
+    and relpath is opened relative to that descriptor (dir_fd) with O_NOFOLLOW_ANY (macOS 11 and later), which fails
+    with ELOOP at a symlink anywhere in it: a deps tree whose research/ links into the deploy clone is refused
+    (Nuance's PR #2 review, item 8). Without O_NOFOLLOW_ANY the walk is done here instead, one component at a
+    time, each opened O_NOFOLLOW (directories also O_DIRECTORY), which refuses the same links. relpath must be a
+    plain relative path (no "", "." or ".." component), and tree must end in its own name: a final "/", "/." or
+    "//" makes the kernel follow a link at tree despite O_NOFOLLOW (the guard-paths review). OSError otherwise.
+    """
+    parts = relpath.split("/")
+    if os.path.isabs(relpath) or any(part in ("", os.curdir, os.pardir) for part in parts):
+        raise OSError("not a plain relative path")
+    if os.path.basename(tree) in ("", os.curdir, os.pardir):
+        raise OSError("tree does not end in its own name")
+    top = os.open(tree, _READ_FLAGS | os.O_DIRECTORY | os.O_NOFOLLOW)
+    current = top
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        if _NOFOLLOW_ANY:
+            return os.open(relpath, _READ_FLAGS | _NOFOLLOW_ANY, dir_fd=top)
+        for part in parts[:-1]:
+            following = os.open(part, _READ_FLAGS | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            if current != top:
+                os.close(current)
+            current = following
+        return os.open(parts[-1], _READ_FLAGS | os.O_NOFOLLOW, dir_fd=current)
+    finally:
+        if current != top:
+            os.close(current)
+        os.close(top)
+
+
+def _read_regular(path, limit, tree=None):
+    """Bytes of a regular file with exactly one link, or None.
+
+    tree None: path is opened without following a final symlink (the pin file). Otherwise path is relative to the
+    directory tree and no component of it may be a symlink (_open_below). Either way the open is O_NONBLOCK, so a
+    FIFO put in a file's place returns at once instead of waiting for a writer (Nuance's PR #2 review, item 22),
+    and fstat comes before any read: anything but a regular file, a file over limit bytes, and a file with more
+    than one link are refused. A hard link would let the deps tree share an inode with the deploy clone, whose
+    bytes then change under the pin and which vendor's chmod would reach (item 8).
+    """
+    try:
+        fd = os.open(path, _READ_FLAGS | os.O_NOFOLLOW) if tree is None else _open_below(tree, path)
     except OSError:
         return None
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or (limit is not None and info.st_size > limit):
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or (limit is not None and info.st_size > limit)):
             return None
         chunks = []
         while True:

@@ -6,6 +6,8 @@
 #
 # Install once per clone, from the repository root:
 #   ln -s ../../tools/pre-commit .git/hooks/pre-commit
+# tools/commit-msg, tools/pre-merge-commit and tools/pre-push go in beside it
+# the same way; each says what it scans.
 # Never bypass it with `git commit --no-verify`.
 set -u
 
