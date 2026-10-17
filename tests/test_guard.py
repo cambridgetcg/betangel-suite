@@ -14,7 +14,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from betangel_suite import config, guard, roots
+from betangel_suite import cli, config, guard, roots
 from betangel_suite.errors import SuiteError
 from tests import FORBID, PRELUDE, PYTHON, ROOT, child_env, make_home, rmtree, run_python, run_relayed, run_suite
 
@@ -544,7 +544,8 @@ attempt("rename_run_dir", lambda: os.rename(run, run + "-moved"))
         # The bind check compares where run/ resolves with where it resolved at arm(): a permitted socket path in a
         # run/ replaced by a link would be created at the link's target. arm() refuses a run/ that is already a link
         # (run_lock_invalid, the guard-paths review), so here a test-mode child (the bind check is the same in every
-        # mode) starts an unguarded interpreter that moves the real run/ away and puts a link in its place.
+        # mode) starts an unguarded interpreter that moves the real run/ away and puts a link in its place. The runner
+        # starts no interpreter with its own HOME (lab-Claude's round-5 review of F2), so that one gets another HOME.
         home = make_home(self)
         results = checks(self, home, mode="test", setup="""
 os.makedirs(os.path.join(os.environ["HOME"], "elsewhere"), mode=0o700)
@@ -553,7 +554,8 @@ os.makedirs(roots.run_dir(), mode=0o700)
 import socket, subprocess, sys
 run, elsewhere = roots.run_dir(), os.path.join(os.environ["HOME"], "elsewhere")
 replace = "import os, sys\\nos.rename(sys.argv[1], sys.argv[1] + '.moved')\\nos.symlink(sys.argv[2], sys.argv[1])\\n"
-results["replaced"] = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", replace, run, elsewhere]).returncode
+results["replaced"] = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", replace, run, elsewhere],
+                                     env=dict(os.environ, HOME=elsewhere)).returncode
 results["run_is_link"] = os.path.islink(run)
 def audit_bind(address):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -1148,22 +1150,47 @@ results["partial_made"] = os.path.lexists(partial)
         def ok(argv, env=self.GIT_ENV):
             return guard.runner_argv_ok(argv, env, interpreters, guard.LAUNCHER, self.TMP, "/h")
 
-        self.assertTrue(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", "-c", "pass"]))
-        self.assertTrue(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", "-c", "pass"], None))
-        self.assertFalse(ok(["/opt/homebrew/bin/python3.13", "-c", "pass"]))
-        self.assertFalse(ok(["/opt/homebrew/bin/python3", "-I", "-S", "-B", "-c", "pass"]))
+        python = "/opt/homebrew/bin/python3.13"
+        launch = ROOT + "/bin/_launch.py"
+        engine = "import sys\nsys.path.append(%r)\nfrom betangel_suite import guard\nguard.arm('engine')\n" % ROOT
+        self.assertTrue(ok([python, "-I", "-S", "-B", "-c", "pass"], launch_env))
+        self.assertFalse(ok([python, "-c", "pass"], launch_env))
+        self.assertFalse(ok(["/opt/homebrew/bin/python3", "-I", "-S", "-B", "-c", "pass"], launch_env))
         self.assertTrue(ok(["/bin/sh", guard.LAUNCHER, "selfcheck"], launch_env))
-        self.assertTrue(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", ROOT + "/bin/_launch.py", "selfcheck"],
-                           launch_env))
-        # A launcher child needs an explicit environment whose HOME keeps it out of the runner's data home (Nuance's
-        # re-review of #2, F2; the hook-level cases are in test_launcher_children_keep_out_of_the_runners_data_home).
-        for env in (None, self.GIT_ENV, dict(launch_env, HOME="relative"), dict(launch_env, HOME="/h"),
-                    dict(launch_env, HOME="/h/betangel-data/x"), dict(launch_env, HOME="/"),
-                    dict(launch_env, TMPDIR="/h/betangel-data/tmp")):
-            self.assertFalse(ok(["/bin/sh", guard.LAUNCHER, "selfcheck"], env), env)
-            self.assertFalse(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", "bin/_launch.py", "selfcheck"], env),
-                             env)
+        # Every child, not only a launcher one, needs an explicit environment whose HOME keeps it out of the runner's
+        # data home (Nuance's re-review of #2, F2; the hook-level cases are in the two tests
+        # test_launcher_children_keep_out_of_the_runners_data_home and test_engine_children_...).
+        # Lab-Claude's round-5 review: -c code that arms the guard itself, and a launcher after one more interpreter
+        # option, passed with env None or the runner's own HOME.
+        shapes = [[python, "-I", "-S", "-B", "-c", "pass"], [python, "-I", "-S", "-B", "-c", engine],
+                  [python, "-I", "-S", "-B", launch, "selfcheck"], [python, "-I", "-S", "-B", "bin/_launch.py", "test"],
+                  ["/opt/homebrew/bin/python3.11", "-I", "-S", "-B", "-c", engine]]
+        for extra in (["-X", "utf8"], ["-u"], ["-W", "error"], ["-E"], ["-X", "utf8", "-u"]):
+            shapes += [[python, "-I", "-S", "-B", *extra, launch, "vendor"],
+                       [python, "-I", "-S", "-B", *extra, "-c", engine]]
+        shapes.append(["/bin/sh", guard.LAUNCHER, "selfcheck"])
+        for argv in shapes:
+            self.assertTrue(ok(argv, launch_env), argv)
+            for env in (None, self.GIT_ENV, dict(launch_env, HOME="relative"), dict(launch_env, HOME="/h"),
+                        dict(launch_env, HOME="/h/betangel-data/x"), dict(launch_env, HOME="/"),
+                        dict(launch_env, HOME="/h/betangel-data/x",
+                             TMPDIR="/h/betangel-data/x/.local/state/betangel-suite/tmp"),
+                        dict(launch_env, HOME="/h", TMPDIR="/h/betangel-data/tmp"),
+                        dict(launch_env, TMPDIR="/h/betangel-data/tmp"),
+                        dict(launch_env, SQLITE_TMPDIR="/h/betangel-data/tmp")):
+                self.assertFalse(ok(argv, env), (argv, env))
         self.assertFalse(ok(["/bin/sh", "-c", "true"]))
+        # The runner's own -j worker (cli._run_workers) is the one interpreter child started with the runner's
+        # environment: exactly guard.TEST_WORKER_CODE with this checkout's root, which arms test mode. Any other code,
+        # root or argument count, or an explicit environment with the runner's HOME, is judged like any child.
+        worker = [python, "-I", "-S", "-B", "-c", guard.TEST_WORKER_CODE, guard.REPO_ROOT, "fast", "1", "", "/m"]
+        self.assertEqual(guard.TEST_WORKER_CODE, cli._WORKER)
+        self.assertTrue(ok(worker, None))
+        self.assertTrue(ok(worker, launch_env))
+        for argv in (worker[:5] + [guard.TEST_WORKER_CODE + "x"] + worker[6:], worker[:6] + ["/elsewhere"] + worker[7:],
+                     worker + ["extra"], worker[:-1], [python, "-I", "-S", "-B", "-X", "utf8"] + worker[4:]):
+            self.assertFalse(ok(argv, None), argv)
+        self.assertFalse(ok(worker, dict(launch_env, HOME="/h")))
         self.assertTrue(ok(["/usr/bin/git", "-C", self.REPO, "rev-parse", "HEAD"]))
         self.assertFalse(ok(["/usr/bin/git", "status"]))
         self.assertFalse(ok(["/usr/bin/curl", "http://192.0.2.1/"]))
@@ -1293,18 +1320,56 @@ for name, env in sorted(envs.items()):
     attempt("py:" + name, lambda: launch([sys.executable, "-I", "-S", "-B", script], env))
 attempt("sh:inherited", lambda: launch(["/bin/sh", guard.LAUNCHER], None))
 attempt("py:inherited", lambda: launch([sys.executable, "-I", "-S", "-B", script], None))
+# Lab-Claude's round-5 review: one more interpreter option before the script hid it from the old argv[4] check.
+for name, extra in (("x_utf8", ["-X", "utf8"]), ("unbuffered", ["-u"]), ("warnings", ["-W", "error"])):
+    attempt("py_" + name + ":inherited", lambda: launch([sys.executable, "-I", "-S", "-B", *extra, script], None))
+    attempt("py_" + name + ":alias", lambda: launch([sys.executable, "-I", "-S", "-B", *extra, script], envs["alias"]))
+    attempt("py_" + name + ":control", lambda: launch([sys.executable, "-I", "-S", "-B", *extra, script],
+                                                      envs["control"]))
 attempt("interpreter_inherits", lambda: subprocess.run([sys.executable, "-I", "-S", "-B", "-c", "pass"], check=True,
                                                        timeout=60))
 results["stderr"] = sorted(results["stderr"])
 """ % dict(envs, control=child_env(control)))
-        expected = {"interpreter_inherits": "ok", "sh:control": "ok", "py:control": "ok",
+        expected = {"interpreter_inherits": "subprocess_refused", "sh:control": "ok", "py:control": "ok",
                     "stderr": ["refused:unknown_command\n"]}
         for name in list(envs) + ["inherited"]:
             expected.update({"sh:" + name: "subprocess_refused", "py:" + name: "subprocess_refused"})
+        for name in ("x_utf8", "unbuffered", "warnings"):
+            expected.update({"py_%s:inherited" % name: "subprocess_refused", "py_%s:alias" % name: "subprocess_refused",
+                             "py_%s:control" % name: "ok"})
         self.assertEqual(results, expected)
         self.assertEqual(sorted(os.listdir(data)), before)
         self.assertEqual(sorted(os.listdir(os.path.join(data, "historic-pro"))), [])
         self.assertFalse(os.path.lexists(roots.data_home(control)))
+
+    def test_engine_children_keep_out_of_the_runners_data_home(self):
+        # Lab-Claude's round-5 review of Nuance's re-review of #2, F2: the shape F2 reported is an interpreter child
+        # that arms the guard itself, as every engine-policy test child does (-c code calling guard.arm('engine')).
+        # Started with env=None, or with the runner's own HOME, it armed engine mode from that HOME and wrote the
+        # runner's suite.noindex, because the runner checked launcher children only. Here a test-mode child with a
+        # temporary HOME plays the runner, and its data home and suite.noindex are synthetic.
+        runner, control = make_home(self), make_home(self)
+        for home in (runner, control):
+            os.makedirs(os.path.join(roots.data_home(home), "suite.noindex"), mode=0o700)
+        code = PRELUDE + ("from betangel_suite import guard\nguard.arm('engine')\nimport os\n"
+                          "target = os.path.join(os.environ['HOME'], 'betangel-data', 'suite.noindex', 'written')\n"
+                          "with open(target, 'x'):\n    pass\n")
+        results = checks(self, runner, mode="test", setup="import subprocess, sys\n", body="""
+code, control = %r, %r
+def engine(env, *extra):
+    subprocess.run([sys.executable, "-I", "-S", "-B", *extra, "-c", code], env=env, check=True, capture_output=True,
+                   timeout=60)
+attempt("inherited", lambda: engine(None))
+attempt("inherited_x_utf8", lambda: engine(None, "-X", "utf8"))
+attempt("runner_environ", lambda: engine(dict(os.environ)))
+attempt("runner_home", lambda: engine(dict(control, HOME=os.environ["HOME"])))
+attempt("control", lambda: engine(control))
+""" % (code, child_env(control)))
+        self.assertEqual(results, {"inherited": "subprocess_refused", "inherited_x_utf8": "subprocess_refused",
+                                   "runner_environ": "subprocess_refused", "runner_home": "subprocess_refused",
+                                   "control": "ok"})
+        self.assertEqual(os.listdir(os.path.join(roots.data_home(runner), "suite.noindex")), [])
+        self.assertEqual(os.listdir(os.path.join(roots.data_home(control), "suite.noindex")), ["written"])
 
     def test_vendor_mode_refuses_other_git_commands(self):
         home = make_home(self)
@@ -2179,10 +2244,19 @@ class RootPlacementTests(unittest.TestCase):
     The other spellings (firmlink, /.vol, another case) defeat a text check, so the identity walk must see them.
     """
 
-    def placement(self, home, *, agreed, mode="engine", writes=(), env=None):
-        result = run_python(PLACEMENT % {"agreed": agreed, "mode": mode, "writes": list(writes)}, home, env=env)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout.strip().splitlines()[-1])
+    def placement(self, home, *, agreed, mode="engine", writes=(), env=None, relayed=False):
+        """The child's results. relayed: started by an unguarded relay with a HOME of its own, for a HOME the test
+        runner refuses to hand a child itself (one whose placement cannot be judged; guard.runner_argv_ok)."""
+        code = PLACEMENT % {"agreed": agreed, "mode": mode, "writes": list(writes)}
+        if relayed:
+            returncode, stdout, stderr = run_relayed([PYTHON, "-I", "-S", "-B", "-c", PRELUDE + code],
+                                                     child_env(home) if env is None else env, home,
+                                                     relay_home=make_home(self))
+        else:
+            result = run_python(code, home, env=env)
+            returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
+        self.assertEqual(returncode, 0, stderr)
+        return json.loads(stdout.strip().splitlines()[-1])
 
     def data_dir(self, home, name):
         path = os.path.join(roots.data_home(home), name)
@@ -2298,6 +2372,8 @@ class RootPlacementTests(unittest.TestCase):
         # runs, so neither the data home nor the state root can be stat()ed (EACCES), and the state root's link is
         # spelt through the firmlink, which the text check does not see. arm() passed, and once vault was
         # searchable again every write in the state root landed in vault/data/lab-state, in realpath(data home).
+        # The test runner refuses to start a child with this HOME itself (its placement cannot be judged against the
+        # runner's data home either), so an unguarded relay starts each one.
         home = make_home(self)
         vault = os.path.join(home, "vault")
         lab = os.path.join(vault, "data", "lab-state")
@@ -2316,7 +2392,7 @@ class RootPlacementTests(unittest.TestCase):
             try:
                 for agreed, mode in ((True, "test"), (True, "vendor"), (False, "engine"), (True, "engine")):
                     with self.subTest(spelling=name, agreed=agreed, mode=mode):
-                        results = self.placement(home, agreed=agreed, mode=mode)
+                        results = self.placement(home, agreed=agreed, mode=mode, relayed=True)
                         # TMPDIR, in the state root, cannot be looked at either, so arm() may refuse it first
                         # (tmpdir_mismatch); the engine with the suite root agreed may be refused first for its
                         # suite root, which cannot be lstat()ed at realpath(data home)/suite.noindex.
@@ -2327,7 +2403,7 @@ class RootPlacementTests(unittest.TestCase):
                         self.assertEqual(list(results), ["arm"])
                 with self.subTest(spelling=name, mode="vendor", tmpdir="share"):
                     # With TMPDIR in vendor's deps root, only the state root's placement is left to refuse.
-                    results = self.placement(home, agreed=True, mode="vendor",
+                    results = self.placement(home, agreed=True, mode="vendor", relayed=True,
                                              env=child_env(home, TMPDIR=share_tmp, SQLITE_TMPDIR=share_tmp))
                     self.assertEqual(results, {"arm": "root_overlaps_data_home"})
                 for agreed in (False, True):
@@ -2348,7 +2424,7 @@ class RootPlacementTests(unittest.TestCase):
         os.symlink(FIRMLINK + os.path.realpath(locked) + "/lab-state", os.path.join(home, ".local", "state"))
         os.chmod(locked, 0)
         self.addCleanup(os.chmod, locked, 0o700)
-        self.assertEqual(self.placement(home, agreed=True, mode="vendor",
+        self.assertEqual(self.placement(home, agreed=True, mode="vendor", relayed=True,
                                         env=child_env(home, TMPDIR=share_tmp, SQLITE_TMPDIR=share_tmp)),
                          {"arm": "root_overlaps_data_home"})
 

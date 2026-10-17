@@ -349,8 +349,9 @@ class SwiftSourceTests(unittest.TestCase):
     def test_scanner_finds_nothing_in_the_uisnap_files(self):
         targets = [os.path.join("tools", "uisnap"), os.path.join("betangel_suite", "uisnap.py"),
                    os.path.join("tests", "test_uisnap.py")]
+        # A temporary HOME: the test runner starts no interpreter with its own (guard.runner_argv_ok).
         scan = subprocess.run([PYTHON, "-I", "-S", "-B", os.path.join(ROOT, "tools", "hygiene_scan.py"), "--root", ROOT,
-                               *targets], env=dict(os.environ), cwd=ROOT, capture_output=True, timeout=120)
+                               *targets], env=child_env(make_home(self)), cwd=ROOT, capture_output=True, timeout=120)
         output = (scan.stdout + scan.stderr).decode("utf-8", "replace")
         self.assertEqual(scan.returncode, 0, output)
         self.assertIn("hygiene_scan: OK", output)

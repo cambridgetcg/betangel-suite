@@ -10,10 +10,11 @@ from the 25 modules of the closure: pin's closure finder refuses any other (upst
 The test-mode guard confines this process's writes to ~/.local/state/betangel-suite (TMPDIR is its tmp/),
 refuses its reads in ~/betangel-data (opens, listings and chdir; guard.py), refuses all network use, and lets
 the runner start only isolated interpreters, this checkout's bin/suite and local git in repositories under
-TMPDIR (guard.runner_git_ok), each child with the network switch on. A bin/suite or bin/_launch.py child also
-needs an explicit environment whose HOME keeps it out of the runner's own data home (guard.runner_argv_ok); an
-interpreter child that does not import betangel_suite is unguarded, so every test gives its children a
-temporary HOME (conduct).
+TMPDIR (guard.runner_git_ok), each child with the network switch on. Every interpreter and bin/suite child
+also needs an explicit environment whose HOME keeps it out of the runner's own data home (guard.runner_argv_ok):
+a child that imports betangel_suite arms its own guard from the HOME it is given. So every test gives its children
+a temporary HOME (child_env); one that needs a HOME the runner refuses goes through an unguarded relay
+(run_relayed), and keeping such a child in its temporary HOME is conduct.
 Every audit-hook test runs in a fresh subprocess, because a hook cannot be removed. Each test makes its own
 temporary HOME (make_home) under TMPDIR and removes it afterwards; bin/suite test fails the run if anything
 in the real state root outside tmp/ changed (cli.state_listing).
@@ -139,17 +140,18 @@ def run_python(code, home, *, env=None, flags=("-I", "-S", "-B"), timeout=60):
                           cwd=home, capture_output=True, text=True, timeout=timeout)
 
 
-def run_relayed(argv, env, home, *, timeout=60):
-    """(returncode, stdout, stderr) of argv run with env by an unguarded relay child.
+def run_relayed(argv, env, home, *, timeout=60, relay_home=None):
+    """(returncode, stdout, stderr) of argv run with env, in home, by an unguarded relay child.
 
-    The test runner's own guard refuses to start a child with a stray BETFAIR variable or without the
-    launcher flags; the refusal tests need exactly such children, so a plain interpreter (which never
-    imports betangel_suite) starts them instead.
+    The test runner's own guard refuses to start a child with a stray BETFAIR variable, without the
+    launcher flags, or with a HOME it cannot judge; the refusal tests need exactly such children, so a
+    plain interpreter (which never imports betangel_suite) starts them instead. The relay itself runs with
+    relay_home (default: home), which the runner must accept.
     """
     code = ("import json, subprocess\n"
             "r = subprocess.run(%r, env=%r, cwd=%r, capture_output=True, text=True, timeout=%d)\n"
             "print(json.dumps([r.returncode, r.stdout, r.stderr]))\n") % (list(argv), dict(env), home, timeout)
-    relay = run_python(code, home, timeout=timeout + 30)
+    relay = run_python(code, relay_home or home, timeout=timeout + 30)
     if relay.returncode != 0:
         raise AssertionError("relay failed: " + relay.stderr[-500:])
     return tuple(__import__("json").loads(relay.stdout))

@@ -312,9 +312,9 @@ def _test_modules(suite):
 
 
 # A worker of the parallel run: this checkout on sys.path, then cli.test_worker (argv: root, tier, verbosity, pattern,
-# run marker path).
-_WORKER = ("import sys\nsys.path.append(sys.argv[1])\nfrom betangel_suite import cli\n"
-           "sys.exit(cli.test_worker(sys.argv[2], int(sys.argv[3]), sys.argv[4] or None, sys.argv[5]))\n")
+# run marker path). The code is the guard's, which lets the runner start exactly this child with its own environment
+# (guard.runner_argv_ok; every other interpreter child needs a temporary HOME since lab-Claude's round-5 review).
+_WORKER = guard.TEST_WORKER_CODE
 
 
 def _run_workers(modules, count, verbosity, pattern, marker):

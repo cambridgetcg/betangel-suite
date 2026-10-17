@@ -166,7 +166,8 @@ class NamespaceTests(unittest.TestCase):
         self.assertNotIn(str(planted), output)
 
     def scan(self, folder, names):
-        env = {"PATH": "/usr/bin:/bin", "HOME": os.environ["HOME"], "LANG": "en_GB.UTF-8",
+        # A temporary HOME: the test runner starts no interpreter with its own (guard.runner_argv_ok).
+        env = {"PATH": "/usr/bin:/bin", "HOME": make_home(self), "LANG": "en_GB.UTF-8",
                "TMPDIR": os.environ["TMPDIR"], FORBID: "1"}
         result = subprocess.run([sys.executable, "-I", "-S", "-B", SCANNER, "--root", folder, *names], env=env,
                                 cwd=folder, capture_output=True, text=True, timeout=300)

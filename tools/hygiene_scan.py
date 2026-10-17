@@ -11,10 +11,11 @@ never the text that matched. Line 0 means the finding is about the entry
 itself (its name, type, size or link target), not one of its lines. Line
 numbers count "\\n" line ends, as git and sed do; the rules also split a
 line at CR, NEL, LS and the other str.splitlines() boundaries, ignore
-format characters (Unicode category Cf: a BOM, zero-width spaces) and the
-other default-ignorable code points (a combining grapheme joiner, variation
-selectors), and read each line in NFKC form (no-break and other spaces as
-a space, fullwidth digits and letters as ASCII). After ten lines for one
+format characters (Unicode category Cf: a BOM, zero-width spaces), and read
+each line twice: as written, and in NFKC form with the other
+default-ignorable code points (a combining grapheme joiner, variation
+selectors) dropped too (no-break and other spaces as a space, fullwidth
+digits and letters as ASCII). After ten lines for one
 entry and rule, one more line counts the rest:
 
     FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)
@@ -318,11 +319,14 @@ _PRICE = re.compile(r"(?<![0-9.])([0-9]{1,3}\.[0-9]{1,2})(?![0-9.])")
 # spaces: a saddle-cloth or row number ("1", "12a", "(3)"), a longer number (an id, a time as HHMMSS, epoch seconds or
 # milliseconds), a time ("13:30", "13:30:05.250"), or a date ("2015-05-03", "03/05/2015", "3.5.15") with an optional
 # time and zone ("2015-05-03T13:30:00Z") (Nuance's re-review of #2, F8: a time or date first column hid the table).
+# The separator is an atomic group: "\t" is both a separator and whitespace, so a run of k tabs could end a cell in
+# about k+1 ways, and three lead cells failed after about (k+1)**3 steps, seconds per 400-character row (lab-Claude's
+# round-5 review). Nothing a lead cell or a name starts with is whitespace, so only the longest separator can match.
 _TIME_CELL = r"[0-9]{1,2}:[0-9]{2}(?::[0-9]{2}(?:[.,][0-9]{1,6})?)?"
 _LEAD_CELL = (r"[\"']?(?:[0-9]{1,3}[A-Za-z]?|\([0-9]{1,2}\)|[0-9]{4,13}|%s"
               r"|(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[-/.][0-9]{1,2}[-/.][0-9]{2,4})"
               r"(?:[T ]%s(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?)"
-              r"[\"']?(?:\s*[|,;\t]\s*|[.)]\s+|\s+)" % (_TIME_CELL, _TIME_CELL))
+              r"[\"']?(?>\s*[|,;\t]\s*|[.)]\s+|\s+)" % (_TIME_CELL, _TIME_CELL))
 # Names may hold Latin letters with accents (Latin-1 and Latin Extended-A and B), as runner names do.
 _LATIN = [chr(code) for code in range(0xC0, 0x250)]
 _UPPER = "A-Z" + "".join(c for c in _LATIN if c.isupper())
@@ -481,8 +485,16 @@ def _normalised(line: str) -> str:
     return _visible(unicodedata.normalize("NFKC", _visible(line)))
 
 
-def _lines(text: str):
-    """Yield (line number, line), normalised (_normalised), for the line rules.
+def _without_format_chars(line: str) -> str:
+    """The line as written, with format characters (category Cf) dropped: what the rules read before NFKC."""
+    if line.isascii():
+        return line
+    return "".join(c for c in line if unicodedata.category(c) != "Cf")
+
+
+def _lines(text: str, nfkc: bool = True):
+    """Yield (line number, line) for the line rules: normalised (_normalised), or with nfkc False as written, with
+    format characters dropped (_without_format_chars).
 
     Line numbers count "\\n", as git, sed and editors do. A line that holds another line
     boundary (CR alone, NEL, LS, PS, VT, FF, FS, GS, RS: str.splitlines()) is split there
@@ -492,14 +504,26 @@ def _lines(text: str):
         if line.endswith("\r"):
             line = line[:-1]
         for part in line.splitlines() or [""]:
-            yield number, _normalised(part)
+            yield number, (_normalised(part) if nfkc else _without_format_chars(part))
+
+
+def _line_forms(text: str):
+    """The (line number, line) lists every rule reads for text: as written, with format characters dropped, and, unless
+    text is ASCII, normalised as well. A finding in either counts. NFKC alone hid what it joins onto a token: a
+    superscript, an ordinal, a ligature, U+2122 or U+2116, a Roman numeral, a fraction or a fullwidth letter next to a
+    base64 or hex run, a provider token or an id became a letter or digit of it (lab-Claude's round-5 review of
+    1e39931)."""
+    yield list(_lines(text, nfkc=False))
+    if not text.isascii():
+        yield list(_lines(text))
 
 
 def _text_findings(text: str) -> list:
-    """Return (line, code) pairs for one decoded text file."""
-    lines = list(_lines(text))
-    found = _plain_findings(lines)
-    found.extend((number, "encoded_blob") for number in _encoded_blob_lines(lines))
+    """Return (line, code) pairs for one decoded text file, from each of its line forms (_line_forms)."""
+    found = []
+    for lines in _line_forms(text):
+        found.extend(_plain_findings(lines))
+        found.extend((number, "encoded_blob") for number in _encoded_blob_lines(lines))
     return found
 
 
@@ -938,9 +962,9 @@ def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
     else:
         texts = [blob.decode("utf-8")]
     for text in texts:
-        lines = list(_lines(text))
-        if _plain_findings(lines) or (depth < ENCODED_MAX_DEPTH and _encoded_blob_lines(lines, depth + 1)):
-            return True
+        for lines in _line_forms(text):
+            if _plain_findings(lines) or (depth < ENCODED_MAX_DEPTH and _encoded_blob_lines(lines, depth + 1)):
+                return True
     return False
 
 
@@ -1030,14 +1054,15 @@ def _content_codes(rel: str, data: bytes, oversize: bool) -> list:
         return found
     found.extend(_text_findings(text))
     if rel.rsplit("/", 1)[-1].casefold() == ".gitattributes":
-        found.extend((number, "filter_attribute") for number, line in _lines(text)
+        found.extend((number, "filter_attribute") for lines in _line_forms(text) for number, line in lines
                      if not line.lstrip().startswith("#") and _SETS_FILTER.search(line))
     return found
 
 
 def _rel_id_codes(rel: str) -> list:
-    codes = [code for code in _line_codes(_normalised(rel)) if code in _PATH_ID_CODES]
-    return [(0, code) for code in codes]
+    """The id rules over a path, read as written and normalised (_line_forms says why)."""
+    codes = {code for form in (rel, _normalised(rel)) for code in _line_codes(form) if code in _PATH_ID_CODES}
+    return [(0, code) for code in sorted(codes)]
 
 
 def _size_limit(rel: str) -> int:

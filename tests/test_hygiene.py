@@ -768,6 +768,31 @@ class LineShapeTests(_RepoCase):
             self.setUp()
             self.plant(f"docs/{MARKET_2015.translate(full)}.md", "synthetic\n", MARKET_2015, code="market_id")
 
+    def test_characters_nfkc_joins_onto_a_token_hide_nothing(self):
+        # Lab-Claude's round-5 review of 1e39931: once every rule read only the NFKC form, a visible character that NFKC
+        # makes a letter or digit joined onto the token beside it, and findings that f1c3771 made were lost: base64 and
+        # hex runs, provider tokens, event and market ids, member paths and ids in path names. Each text is now read as
+        # written as well, so each of these is flagged again.
+        member = gzip.compress(b"synthetic text, nothing real\n" * 6, mtime=0)   # a short run: no other offset decodes
+        b64, hexed = base64.b64encode(member).decode(), member.hex()
+        aws = _j("AK", "IA", "Q7W9E2R4", "T6Y8U1I3")
+        cases = [("encoded_blob", f"d = {mark}{b64}\n") for mark in ("\u00b2", "\uff21", "\u00aa", "\u2122", "\ufb01")]
+        cases += [("encoded_blob", f"d = {mark}{hexed}\n") for mark in ("\uff41", "\u00b9", "\u00aa")]
+        cases += [("known_token", f"t \u2122{GH_TOKEN}\n"), ("known_token", f"k \u2122{aws}\n")]
+        cases += [("event_id", f"ref {mark}{EVENT} here\n") for mark in ("\u2116", "\u212a", "\u2163", "\u00bd")]
+        cases += [("event_id", f"id {EVENT}{mark} here\n") for mark in ("\u2122", "\u00b2", "\uff41", "\u00ba")]
+        cases += [("market_id", f"m {mark}{MARKET_2015} x\n") for mark in ("\u00b2", "\uff11")]
+        cases += [("member_path", f"\u2116{MEMBER}\n")]
+        decoded = base64.b64encode(f"ref \u2116{EVENT} here, synthetic notes\n".encode() * 4).decode()
+        cases += [("encoded_blob", f"d = {decoded}\n")]           # a decoded run is read in both forms too
+        for code, text in cases:
+            with self.subTest(code=code, text=ascii(text[:24])):
+                self.setUp()
+                self.plant("docs/n.txt", text, MARKET_2015, EVENT, code=code)
+        with self.subTest(code="event_id", shape="a file named with \u2116 before an id"):
+            self.setUp()
+            self.plant(f"notes/\u2116{EVENT}.txt", "synthetic\n", EVENT, code="event_id")
+
     def test_time_date_and_id_first_columns(self):
         # Nuance's re-review of #2, F8: a table whose first column held a time, a date or an id (not a row number) was
         # not read as a runner table. The ids here are reserved ones, so only runner_table can flag these rows.
@@ -1326,6 +1351,20 @@ class ScanTimeTests(_RepoCase):
                 self.assertRegex(out.splitlines()[-1], r"^hygiene_scan: (OK|FAIL) ")
                 self.assertNotIn("oversize", self.codes(out))                  # its content was read
                 self.assert_withheld(out)
+
+    def test_many_table_rows_scan_in_linear_time(self):
+        # Lab-Claude's round-5 review of 1e39931: with three lead cells allowed, a 400-character row of cells split by
+        # runs of tabs took about 5 s to fail to match ("\t" is both a separator and whitespace), so a file of such
+        # rows took minutes (173 s for 30 rows), and MAX_TABLE_LINE bounds only one line. 60 rows of five shapes.
+        shapes = [("1" + "\t" * 132) * 3, ("1" + "\t" * 100) * 3 + "\t" * 97, ("13:30" + "\t" * 128) * 3,
+                  ("2015-05-03" + "\t" * 123) * 3, ("1" + "\t" * 60 + " " * 72) * 3]
+        rows = [shapes[index % len(shapes)][:400] for index in range(60)]
+        self.write("docs/rows.txt", "\n".join(rows) + "\n")
+        try:
+            rc, out = self.scan("docs/rows.txt", timeout=self.BOUND)
+        except subprocess.TimeoutExpired:
+            self.fail(f"no result within {self.BOUND} s")
+        self.assertEqual(rc, 0, out)
 
 
 class FilterAttributeTests(_RepoCase):
@@ -1978,7 +2017,10 @@ class OwnFilesTests(unittest.TestCase):
                  "tests/test_hygiene.py",
                  ".gitignore", "AGENTS.md", "docs/data-handling.md", "docs/DESIGN.md"]
         present = [n for n in names if (REPO / n).is_file()]
-        env = {"PATH": "/usr/bin:/bin", "LANG": "en_GB.UTF-8", **FORBID}
+        # The test runner starts no interpreter without a HOME of its own (guard.runner_argv_ok): a temporary one.
+        home = tempfile.mkdtemp(prefix="home-")
+        self.addCleanup(shutil.rmtree, home)
+        env = {"PATH": "/usr/bin:/bin", "LANG": "en_GB.UTF-8", "HOME": home, **FORBID}
         proc = subprocess.run(
             [sys.executable, "-I", "-S", "-B", str(SCANNER), "--root", str(REPO), *present],
             env=env, capture_output=True, timeout=120)
@@ -1988,7 +2030,8 @@ class OwnFilesTests(unittest.TestCase):
     def test_whole_checkout_passes(self):
         # I-9 for every file of this checkout, tracked or not (not ignored): the core package, bin/, pin/
         # and every test, not only the governance files above. Tree mode lists files with git ls-files. The child
-        # gets a temporary HOME, never the runner's own (Nuance's re-review of #2, F2): it is unguarded.
+        # gets a temporary HOME, never the runner's own (Nuance's re-review of #2, F2): the runner's guard refuses
+        # that, and the scanner, which never imports betangel_suite, is unguarded.
         home = tempfile.mkdtemp(prefix="home-")
         self.addCleanup(shutil.rmtree, home)
         env = {"PATH": "/usr/bin:/bin", "LANG": "en_GB.UTF-8", "HOME": home,

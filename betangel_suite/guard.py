@@ -74,10 +74,15 @@ What the hook refuses, in every mode and phase:
        True (never in test, vendor, uisnap, release or stop mode); in vendor mode also the deps clone and
        this checkout's pin/; and in release mode also the release copies (app/). So the test runner itself,
        uisnap and release never write under ~/betangel-data, whatever the flag says, nor read there (below).
-       The test runner's children are another matter (Nuance's re-review of #2, F2): a
-       launcher child arms its own guard from the HOME it is given, so the runner checks that HOME when it
-       starts one (runner_argv_ok), and an interpreter child that does not import betangel_suite is
-       unguarded, so keeping it in its temporary HOME is conduct. While the flag is False a write under
+       The test runner's children are another matter (Nuance's re-review of #2, F2): any child that imports
+       betangel_suite arms its own guard from the HOME it is given, whatever its argv (a launcher, or -c code
+       that calls arm() itself), and an engine-mode guard armed with the runner's real HOME has the real suite
+       root. So the runner checks the HOME and TMPDIR of every interpreter and launcher child when it starts
+       one (runner_argv_ok; lab-Claude's round-5 review found the check on launcher children only, which left
+       -c code with env None open), except its own -j workers (TEST_WORKER_CODE), which inherit its
+       environment and arm test mode. What a child does with its own environment after it starts, and an
+       interpreter child that does not import betangel_suite, are unguarded: conduct. While the flag is False
+       a write under
        ~/betangel-data is refused as state_root_not_agreed, judged on the path text alone. A relative path
        in a write open is refused too: the open event does not say which dir_fd it is relative to (the
        other events do, and a dir_fd is resolved with F_GETPATH). The roots check
@@ -162,17 +167,19 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           interpreter) with -I -S -B, /bin/sh on this checkout's bin/suite, and /usr/bin/git only as
           git -C <dir under TMPDIR> [-c <test identity key>=...] <local subcommand> with relative operands,
           no user or system git config and an environment of allowed keys only (runner_git_ok: no other
-          GIT_* variable and no DEVELOPER_DIR or any other key; HOME and TMPDIR under TMPDIR). A launcher child
-          (bin/suite, or an interpreter running _launch.py) needs an explicit environment whose HOME, roots
-          under it and TMPDIR stay out of, and do not contain, the runner's data home, judged by realpath and
-          (st_dev, st_ino) (_launcher_env_ok). Tests of the engine policy run in fresh engine-mode
-          subprocesses, because a hook cannot be taken back.
+          GIT_* variable and no DEVELOPER_DIR or any other key; HOME and TMPDIR under TMPDIR). Every
+          interpreter child and every bin/suite child needs an explicit environment whose HOME, roots under it
+          and TMPDIR stay out of, and do not contain, the runner's data home, judged by realpath and
+          (st_dev, st_ino) (_runner_child_env_ok), whatever options or script follow -I -S -B, except the
+          runner's own -j worker (TEST_WORKER_CODE, env None), which arms test mode. Tests of the engine
+          policy run in fresh engine-mode subprocesses, because a hook cannot be taken back.
 
 Every child must keep BETANGEL_BETFAIR_FORBID_NETWORK=1 and carry no stray BETFAIR variable.
 
 This is defence in depth, not a sandbox: same-user code can still write through C extensions (SQLite's
 journal beside a database, and its temp files if a PRAGMA sets temp_store back), a child process (in test
-mode, an isolated interpreter the runner starts is unguarded unless it imports betangel_suite), a file
+mode, an isolated interpreter the runner starts is unguarded unless it imports betangel_suite; the runner
+checks only the environment it is started with), a file
 descriptor or hard link made before a check, a reference to os.mkfifo or _posixsubprocess.fork_exec taken
 before arm(), subprocess's private _fork_exec or _socket.socket.listen called directly, or
 sqlite3.Connection.setlimit called on a connection directly. Nor does it close check-then-use gaps on the
@@ -209,8 +216,11 @@ ALLOWED_VERSIONS = ((3, 11), (3, 13))                # I-14; bin/_launch.py hold
 MODES = ("engine", "test", "vendor", "uisnap", "release", "stop")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LAUNCHER = os.path.join(REPO_ROOT, "bin", "suite")
-LAUNCH_SCRIPT_NAME = "_launch.py"                   # bin/_launch.py, which bin/suite runs
 GIT = "/usr/bin/git"
+# The parallel test run's worker (cli._run_workers): this checkout on sys.path, then cli.test_worker, which imports tests
+# and so arms test mode. The runner starts it with its own environment; runner_argv_ok allows that for this code only.
+TEST_WORKER_CODE = ("import sys\nsys.path.append(sys.argv[1])\nfrom betangel_suite import cli\n"
+                    "sys.exit(cli.test_worker(sys.argv[2], int(sys.argv[3]), sys.argv[4] or None, sys.argv[5]))\n")
 OPEN = "/usr/bin/open"
 SEARCH_DIRS = ("/usr/bin", "/bin")                   # where a bare program name may be found
 TEST_INTERPRETERS = ("/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3.11")
@@ -1149,24 +1159,31 @@ def release_argv_ok(argv, env, repo, research, app_root):
 def runner_argv_ok(argv, env, interpreters, launcher, tmp_root, home):
     """What the test runner may start: isolated interpreters, this checkout's launcher, and local git.
 
-    A launcher child, /bin/sh on bin/suite or an interpreter running a script named _launch.py (bin/_launch.py, as
-    tests/test_launcher.py starts it), arms its own guard from the HOME it is given, so its environment must pass
-    _launcher_env_ok against home, the runner's own HOME (Nuance's re-review of #2, F2). Other interpreter children
-    may inherit this process's environment (env None): a nested test child does, and one that does not import
-    betangel_suite is unguarded anyway (the limits in this module's docstring).
+    Every interpreter child and every launcher child (/bin/sh on bin/suite) needs an environment that passes
+    _runner_child_env_ok against home, the runner's own HOME (Nuance's re-review of #2, F2). Any child that imports
+    betangel_suite arms its own guard from the HOME it is given, whatever its argv: bin/_launch.py does, after any
+    interpreter option, and so does -c code that calls guard.arm itself, as every engine-policy test child does. Until
+    lab-Claude's round-5 review only a launcher child was checked, and only when argv[4] named _launch.py, so a -c
+    child with env None armed engine mode with the real HOME, and "-X utf8" before the script skipped the check.
+
+    The one exception is the runner's own -j worker (cli._run_workers): exactly TEST_WORKER_CODE with this checkout's
+    root and its four arguments, started with env None. It inherits the runner's HOME and TMPDIR, and its fixed code
+    arms test mode, which never has the suite root as a write root, as the runner's own guard does.
     """
     if argv[0] in interpreters:
         if argv[1:4] != ["-I", "-S", "-B"]:
             return False
-        return not (len(argv) > 4 and os.path.basename(argv[4]) == LAUNCH_SCRIPT_NAME) or _launcher_env_ok(env, home)
+        if env is None and len(argv) == 11 and argv[4:7] == ["-c", TEST_WORKER_CODE, REPO_ROOT]:
+            return True
+        return _runner_child_env_ok(env, home)
     if argv[0] == "/bin/sh":
-        return len(argv) >= 2 and argv[1] == launcher and _launcher_env_ok(env, home)
+        return len(argv) >= 2 and argv[1] == launcher and _runner_child_env_ok(env, home)
     return argv[0] == GIT and runner_git_ok(argv, env, tmp_root)
 
 
-def _launcher_env_ok(env, home):
-    """A test-runner launcher child's environment (Nuance's re-review of #2, F2): explicit, with an absolute HOME none
-    of whose roots, nor its TMPDIR or SQLITE_TMPDIR, equals, lies in or contains the runner's data home.
+def _runner_child_env_ok(env, home):
+    """A test-runner child's environment (Nuance's re-review of #2, F2): explicit, with an absolute HOME none of whose
+    roots, nor its TMPDIR or SQLITE_TMPDIR, equals, lies in or contains the runner's data home.
 
     env None would hand the child this process's HOME, the real one under `bin/suite test`, and an engine-mode child
     armed with it writes the real suite root; a child whose HOME lies in the data home puts its own state root there.
