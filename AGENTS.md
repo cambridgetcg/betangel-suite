@@ -329,9 +329,11 @@ reviewed PR changes them.
     that is the engine's life; an `open` that attaches exits once it has handed on the URL. Their
     I-17 tests came in round 4b. On phase0/viewing `ssh-session` takes it the same way, since its
     merge of phase0/http in round 4b, and holds it until it exits, attached or hosting. Since
-    e9729a6 (round 4b) an attached `ssh-session` checks the marker before every poll and leaves at
-    once (`ended reason=run_marker`, exit 2), so it lets the lock go within the 35 s bound, and
-    `open`'s attach path checks the marker again after the takeover's reply and hands on no URL.
+    e9729a6 (round 4b) an attached `ssh-session` checks the marker before every poll and leaves
+    (`ended reason=run_marker`, exit 2) once the poll under way has finished: about 25 s at worst,
+    so it lets the lock go within the 35 s bound. A session whose engine went in that poll leaves
+    as before (`ended reason=engine_gone`, exit 0). `open`'s attach path checks the marker again
+    after the takeover's reply and hands on no URL.
     Their I-17 tests came with e9729a6 (DESIGN.md 6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
     `TMPDIR` (lab-Claude's decision, asked of Nuance on 2026-10-17, not answered; DESIGN.md 6.8

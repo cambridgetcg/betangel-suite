@@ -24,8 +24,9 @@ The viewer commands answer {"ok": false, "code": "superseded"} once a later take
 (api/lifetime.py). Only open and ssh-session ask for a code, and they hand it to /usr/bin/open, the caller's
 stdout (open --print-url) or the viewer's terminal; this module never prints or logs one. new_code and
 viewer_code mint a code for whichever same-uid process asks, silently: nothing is printed to Yu, opened or paused
-(Nuance's PR #1 review). Only conduct keeps agents from sending them to the real socket (DESIGN.md 3.9 rule 6,
-9.1, 9.4): a same-uid process could take the session over through attach anyway. The client side
+(lab-Claude's description; Nuance's PR #1 review says "`new_code`/`viewer_code` mint silent tokens"). Only
+conduct keeps agents from sending them to the real socket (DESIGN.md 3.9 rule 6, 9.1, 9.4): a same-uid process
+could take the session over through attach anyway. The client side
 (request) connects through guard.permit_unix_connect, the only connect the guard allows; a sealed client
 (ssh-session's attached viewer) keeps the permit it got before seal(). stop (stop_main) needs no engine:
 with no engine holding engine.lock it prints not_running, and while one holds the lock without answering yet

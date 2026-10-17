@@ -335,9 +335,12 @@ class Session:
         "ended reason=run_marker", and the process exits with run_marker_present or run_marker_unreadable, which
         lets run/realdata.lock go. It does not wait for the engine, which freezes and ends only after its own grace
         (30 s) and which the viewer would notice only at its next heartbeat (HEARTBEAT_S, after a write that can
-        take WRITE_TIMEOUT_S): about 50 s in all, past the 35 s bound Nuance accepted. A poll already in a control
-        request or a write when the marker appears finishes it first: at most control.CONNECTION_TIMEOUT_S or
-        WRITE_TIMEOUT_S, then POLL_S. Nothing is sent to the engine; it sees the marker itself.
+        take WRITE_TIMEOUT_S): about 50 s in all, past the 35 s bound Nuance accepted. A poll already under way when
+        the marker appears finishes first: at most two control requests (control.CONNECTION_TIMEOUT_S each) and three
+        writes (WRITE_TIMEOUT_S each; once one times out the rest fail at once), about 25 s, then POLL_S. If the
+        engine went in that poll, or the viewer was superseded or went away, the session leaves as it did before
+        round 4b, with exit 0 and without reaching the marker check. Nothing is sent to the engine; it sees the marker
+        itself.
         """
         self.viewer = Viewer(ControlLink(self._home, self.port), self.terminal, clock=self._clock,
                              heartbeat_s=self._heartbeat_s)
