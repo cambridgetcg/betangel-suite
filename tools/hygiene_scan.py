@@ -537,26 +537,30 @@ def _plain_findings(lines) -> list:
 # its first byte, and also looks for an image or document signature (PNG, JPEG, GIF, WebP, ISO
 # media, TIFF, PDF) (round-4 finishing review: with one real hash line first, as a commit message
 # cites a commit, or with one NUL or 0xFF byte, data passed, and so did images and PDFs; its
-# recheck: UTF-16 text passed, one character a line). A run of more than ENCODED_MAX_HASH_LINES
-# such lines is not a list of hashes but binary data, so what the gap below can carry stays under
-# 2 KiB.
+# recheck: UTF-16 text passed, one character a line). In one text (a file, a message, or a decoded
+# run read as text) the lines of its lists of two or more such lines are counted, each line once,
+# though both readings (with and without line markers) may see it. Past ENCODED_MAX_HASH_LINES,
+# every such list in that text is tested as binary data like any other run, so the gap below
+# carries at most 64 lines, about 2 KiB, in one file or message (the finishing review's recheck:
+# the count was per run, so runs of 64 lines split by a blank line carried any amount). A single
+# line is not counted: alone it is too short for the second test either way.
 # Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
 # patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
 # characters (groups of 8, or a list whose first piece is that short), and lists split by commas.
-# Not flagged (known gaps): in a list of hashes (up to 64 whole lines of exactly 40 or 64 digits),
-# binary data with no signature above and no zlib stream at the start of a line (raw deflate, a
-# compressed file without its header, encrypted bytes, or a signature that starts mid-line); and a
-# dump with other text after the token on each line, which ends its run at every line, so each
-# line is tested alone. Flagged although not data (known false positives, failing closed): lists
-# of md5, sha224, sha384, sha512 or blake2b sums, or of lines that hold two or more hashes split by
-# spaces (`git log --format='%H %P'`), and more than 64 hashes in one run. A word after each hash
-# on its line avoids them.
+# Not flagged (known gaps): in lists of hashes (up to 64 whole lines of exactly 40 or 64 digits in
+# one file or message), binary data with no signature above and no zlib stream at the start of a
+# line (raw deflate, a compressed file without its header, encrypted bytes, or a signature that
+# starts mid-line); and a dump with other text after the token on each line, which ends its run at
+# every line, so each line is tested alone. Flagged although not data (known false positives,
+# failing closed): lists of md5, sha224, sha384, sha512 or blake2b sums, or of lines that hold two
+# or more hashes split by spaces (`git log --format='%H %P'`), and more than 64 lines of lists of
+# hashes in one file or message. A word after each hash on its line avoids them.
 
 ENCODED_MIN_MAGIC = 24
 ENCODED_MIN_BINARY = 96
 ENCODED_MIN_TEXT = 16
 ENCODED_MAX_DEPTH = 1   # a decoded run is searched for encoded runs once more, no deeper
-ENCODED_MAX_HASH_LINES = 64  # a longer run of whole 40- or 64-digit lines is binary data, not a list of hashes
+ENCODED_MAX_HASH_LINES = 64  # lines in lists of hashes in one text; past it, each of those lists is binary data
 
 # The token patterns, by kind: for any token, and for the short last line of a run.
 _B64_TOKEN = {False: re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}"), True: re.compile(r"[A-Za-z0-9+/_-]{2,}={0,2}")}
@@ -693,13 +697,14 @@ def _segments(kind: str, line: str, short: bool = False) -> list:
 
 
 def _runs(kind: str, lines) -> list:
-    """[(first line number, [payload, ...], digests)]: the tokens of one kind, joined across lines as above.
+    """[(first line number, [payload, ...], digests, position)]: the tokens of one kind, joined across lines as above.
 
     digests: every line of the run gave one whole 40- or 64-digit hex token (a list of hashes, one per line).
+    position: the index in lines of the run's first line; each next payload comes from the next line.
     """
     runs = []
     current = None
-    for number, line in lines:
+    for position, (number, line) in enumerate(lines):
         segments = _segments(kind, line)
         if current is not None:
             if len(segments) == 1 and segments[0][4]:
@@ -714,16 +719,16 @@ def _runs(kind: str, lines) -> list:
             runs.append(current)
             current = None
         for segment in segments[:-1]:
-            runs.append((number, [segment[2]], [segment[5]]))
+            runs.append((number, [segment[2]], [segment[5]], position))
         if segments:
             last = segments[-1]
             if last[3]:
-                current = (number, [last[2]], [last[5]])
+                current = (number, [last[2]], [last[5]], position)
             else:
-                runs.append((number, [last[2]], [last[5]]))
+                runs.append((number, [last[2]], [last[5]], position))
     if current is not None:
         runs.append(current)
-    return [(number, payloads, all(digests)) for number, payloads, digests in runs]
+    return [(number, payloads, all(digests), position) for number, payloads, digests, position in runs]
 
 
 def _decode_run(kind: str, payloads: list):
@@ -813,24 +818,29 @@ def _git_binary_hunks(lines) -> list:
 
 
 def _without_prefixes(lines):
-    """The lines that start with a comment or list marker, with it removed, or None when no line has one.
+    """(view, origin): the lines that start with a comment or list marker, with it removed, and for each line of
+    the view the index in lines of the line it comes from; or None when no line has one.
 
     Only lines with the same marker (the same text, indent included) join: every other line, and a change of
     marker, is an empty line here, which ends a run. So a list of names under "- " and one under "# " never join.
     """
     out = []
+    origin = []
     previous = None
-    for number, line in lines:
+    for position, (number, line) in enumerate(lines):
         m = _LINE_PREFIX.match(line)
         if not (m and line[m.end():].strip()):
             out.append((number, ""))
+            origin.append(position)
             previous = None
             continue
         if previous is not None and m.group() != previous:
             out.append((number, ""))
+            origin.append(position)
         out.append((number, line[m.end():]))
+        origin.append(position)
         previous = m.group()
-    return out if any(line for _number, line in out) else None
+    return (out, origin) if any(line for _number, line in out) else None
 
 
 def _hash_list_starts(payloads: list) -> list:
@@ -844,11 +854,11 @@ def _hash_list_starts(payloads: list) -> list:
 def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
     """Whether one decoded run is flagged (the three tests above).
 
-    starts: for a list of hashes (a hex run of at most ENCODED_MAX_HASH_LINES lines, each one whole 40- or 64-digit
-    token), where each line's bytes start. Such a run is never binary data, so a magic, an image or document
-    signature, or a zlib stream counts at the start of any of its lines, and its text is read with NULs as line ends
-    and other bytes that are not UTF-8 replaced, and again with the NULs removed (UTF-16 text). Any other run too
-    short to count as binary data is read as text in the same way.
+    starts: for a list of hashes (a hex run whose every line is one whole 40- or 64-digit token, in a text whose
+    lists hold at most ENCODED_MAX_HASH_LINES lines in all), where each line's bytes start. Such a run is never
+    binary data, so a magic, an image or document signature, or a zlib stream counts at the start of any of its
+    lines, and its text is read with NULs as line ends and other bytes that are not UTF-8 replaced, and again with
+    the NULs removed (UTF-16 text). Any other run too short to count as binary data is read as text in the same way.
     """
     view = memoryview(blob)
     for start in starts or (0,):
@@ -873,20 +883,32 @@ def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
 
 
 def _encoded_blob_lines(lines, depth: int = 0) -> list:
-    """The first line number of every encoded run that decodes to something flagged."""
-    views = [lines]
+    """The first line number of every encoded run that decodes to something flagged.
+
+    Lists of hashes of two or more lines are tested last, once the lines of all of them are counted.
+    """
+    views = [(lines, range(len(lines)))]
     stripped = _without_prefixes(lines)
     if stripped is not None:
         views.append(stripped)
     flagged = set()
-    for view in views:
+    lists = []  # (first line number, bytes, mixed, payloads) of each list of hashes of two or more lines
+    listed = set()  # the lines of those lists, by index in lines, so a line that both views read counts once
+    for view, origin in views:
         for kind in ("b64", "hex", "esc", "dec"):
-            for number, payloads, digests in _runs(kind, view):
+            for number, payloads, digests, position in _runs(kind, view):
                 blob, mixed = _decode_run(kind, payloads)
-                starts = _hash_list_starts(payloads) if digests and len(payloads) <= ENCODED_MAX_HASH_LINES else None
-                if blob is not None and _blob_flagged(blob, mixed, depth, starts):
+                if blob is None:
+                    continue
+                if digests and len(payloads) > 1:
+                    listed.update(origin[position:position + len(payloads)])
+                    lists.append((number, blob, mixed, payloads))
+                elif _blob_flagged(blob, mixed, depth, _hash_list_starts(payloads) if digests else None):
                     flagged.add(number)
         flagged.update(number for number, blob in _git_binary_hunks(view) if _blob_flagged(blob, True, depth))
+    binary = len(listed) > ENCODED_MAX_HASH_LINES
+    flagged.update(number for number, blob, mixed, payloads in lists
+                   if _blob_flagged(blob, mixed, depth, None if binary else _hash_list_starts(payloads)))
     return sorted(flagged)
 
 # ------------------------------------------------------------- scan an entry

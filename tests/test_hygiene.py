@@ -939,6 +939,7 @@ class EncodedDataTests(_RepoCase):
         # one whole 40- or 64-digit token is a list of hashes: only a magic, a zlib stream or flagged text counts.
         sha1 = [hashlib.sha1(f"synthetic {i}".encode()).hexdigest() for i in range(64)]
         sha256 = [hashlib.sha256(f"synthetic {i}".encode()).hexdigest() for i in range(64)]
+        log = [hashlib.sha1(f"synthetic commit {i}".encode()).hexdigest() for i in range(70)]
         lists = {
             "- sha1 x8": "".join(f"- {h}\n" for h in sha1[:8]),
             "# sha1 x8": "".join(f"# {h}\n" for h in sha1[:8]),
@@ -950,6 +951,18 @@ class EncodedDataTests(_RepoCase):
             # The longest run that still counts as a list of hashes (round-4 finishing review).
             "- sha1 x64": "".join(f"- {h}\n" for h in sha1),
             "bare sha256 x64": "".join(f"{h}\n" for h in sha256),
+            # The lines of all lists in one file or message count together, up to 64 (the finishing review's recheck).
+            "- sha1 x32": "".join(f"- {h}\n" for h in sha1[:32]),
+            "- sha1 x8, then bare sha256 x32": "".join(f"- {h}\n" for h in sha1[:8]) + "\nAnd the pins:\n"
+                                               + "".join(f"{h}\n" for h in sha256[:32]),
+            # 60 lines, 6 of them in a list both with and without the "- " (as its fifth line and as the first of the
+            # bare ones): each line counts once, so 60, not 66.
+            "(- sha1 x5, then sha1 x5) x6": "".join("".join(f"- {h}\n" for h in sha1[k:k + 5])
+                                                    + "".join(f"{h}\n" for h in sha1[k + 5:k + 10])
+                                                    for k in range(0, 60, 10)),
+            # A hash with words after it on its line is tested alone and not counted.
+            "70 lines of a hash and a subject, then - sha1 x8": "".join(f"{h} synthetic subject\n" for h in log)
+                                                               + "\n" + "".join(f"- {h}\n" for h in sha1[:8]),
         }
         for name, text in lists.items():
             with self.subTest(shape=name):
@@ -1051,6 +1064,34 @@ class EncodedDataTests(_RepoCase):
                 self.plant("docs/dump.md", text, code="encoded_blob")
         with self.subTest(shape="PNG, - 40", mode="--message"):
             self.write(".git/MSG", "synthetic subject\n\nThe fixes:\n" + shapes["PNG, - 40"])
+            rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+            self.assertEqual(rc, 1, out)
+            self.assertEqual(self.codes(out), {"encoded_blob"})
+
+    def test_lines_in_lists_of_hashes_count_per_file_or_message(self):
+        # The finishing review's recheck: b656145 counted 64 lines a run, so binary data with no signature passed
+        # however long it was, split into runs of 64 lines by a blank line or a line of words. The lines of all the
+        # lists in one file or message now count together (lab-Claude's decision); past 64, each list is binary data.
+        noise = b"".join(hashlib.sha256(b"synthetic noise %d" % i).digest() for i in range(160))
+        packer = zlib.compressobj(9, zlib.DEFLATED, -15)  # raw deflate: no header, no magic
+        raw = packer.compress(_stream_text(lines=60).encode() + noise) + packer.flush()
+
+        def two_runs(width: int, fmt: str, between: str) -> str:
+            digits = raw[:64 * width].hex()  # 128 lines of width hex digits
+            self.assertEqual(len(digits), 128 * width)
+            return _wrap(digits[:64 * width], width, fmt) + between + _wrap(digits[64 * width:], width, fmt)
+
+        shapes = {
+            "64 + 64 lines of 64, split by a blank line": two_runs(64, "{}\n", "\n"),
+            "64 + 64 lines of - 40, split by a blank line": two_runs(40, "- {}\n", "\n"),
+            "64 + 64 lines of 40, split by a line of words": two_runs(40, "{}\n", "part two\n"),
+        }
+        for name, text in shapes.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.plant("docs/dump.md", text, code="encoded_blob")
+        with self.subTest(shape="64 + 64 lines of - 40, split by a blank line", mode="--message"):
+            self.write(".git/MSG", "synthetic subject\n\n" + shapes["64 + 64 lines of - 40, split by a blank line"])
             rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
             self.assertEqual(rc, 1, out)
             self.assertEqual(self.codes(out), {"encoded_blob"})
