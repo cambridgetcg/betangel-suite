@@ -859,6 +859,14 @@ def _hash_list_starts(payloads: list) -> list:
     return starts
 
 
+def _signature_at(blob: bytes, starts, media: bool) -> bool:
+    """Whether a magic, a zlib stream or (with media) an image or document signature starts at any of starts."""
+    view = memoryview(blob)
+    return any(len(blob) - start >= ENCODED_MIN_MAGIC and (_blob_magic(blob[start:start + SNIFF_BYTES], media)
+                                                           or _zlib_stream(view[start:]))
+               for start in starts)
+
+
 def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
     """Whether one decoded run is flagged (the three tests above).
 
@@ -869,11 +877,8 @@ def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
     that are not UTF-8 replaced, and again with the NULs removed (UTF-16 text). Any other run too short to count as
     binary data is read as text in the same way.
     """
-    view = memoryview(blob)
-    for start in starts or (0,):
-        if len(blob) - start >= ENCODED_MIN_MAGIC and (_blob_magic(blob[start:start + SNIFF_BYTES], starts is not None)
-                                                        or _zlib_stream(view[start:])):
-            return True
+    if _signature_at(blob, starts or (0,), media=starts is not None):
+        return True
     if not mixed or len(blob) < ENCODED_MIN_TEXT:
         return False
     if b"\0" in blob or not _is_utf8(blob):
@@ -920,9 +925,12 @@ def _encoded_blob_lines(lines, depth: int = 0) -> list:
     # A list in a decoded run read as text is never exempt: its lines would count in a total of their own, apart
     # from the file's or message's. Past the count, and in a decoded run, a list that holds a NUL or is not UTF-8 is
     # binary data at any length: runs of two to four lines, split by blank lines, are each under ENCODED_MIN_BINARY.
+    # Either way a signature still counts at the start of any of its lines, an image or document one included: a list
+    # that is valid UTF-8 with no NUL, such as an ASCII PDF after one lead line, is otherwise read only as text.
     binary = depth > 0 or len(listed) > ENCODED_MAX_HASH_LINES
     flagged.update(number for number, blob, mixed, payloads in lists
-                   if (binary and mixed and (b"\0" in blob or not _is_utf8(blob)))
+                   if (binary and (_signature_at(blob, _hash_list_starts(payloads), media=True)
+                                   or mixed and (b"\0" in blob or not _is_utf8(blob))))
                    or _blob_flagged(blob, mixed, depth, None if binary else _hash_list_starts(payloads)))
     return sorted(flagged)
 

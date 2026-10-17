@@ -1136,6 +1136,40 @@ class EncodedDataTests(_RepoCase):
                 self.assertEqual(rc, 1, out)
                 self.assertEqual(self.codes(out), {"encoded_blob"})
 
+    def test_a_signature_on_any_line_of_a_list_read_as_binary_still_counts(self):
+        # The final recheck of bfd2f6a: a list in a decoded run, or past the count, was tested with no line starts, so
+        # a magic or zlib stream counted only at its first byte and an image or document signature not at all. A list
+        # that is valid UTF-8 with no NUL, such as an ASCII PDF, then passed as text.
+        document = (b"%PDF-1.4\n% synthetic ascii only document, invented words here\n"
+                    b"1 0 obj << /Type /Catalog >> endobj\n")
+
+        def hex_list(blob: bytes, width: int = 64, fmt: str = "{}\n") -> str:
+            blob += b" " * (-len(blob) % (width // 2))
+            return _wrap(blob.hex(), width, fmt)
+
+        def in_base64(text: str) -> str:
+            return _wrap(base64.b64encode(text.encode()).decode(), 76)
+
+        lead = b"L" * 32  # one line of 64 digits before the signature
+        words = hex_list(b"plain synthetic words " * 93)  # 64 lines of text with no signature, so not flagged alone
+        shapes = {
+            "a base64 run of a list, the signature on its first line": in_base64(hex_list(document)),
+            "a base64 run of a list, the signature on its second line": in_base64(hex_list(lead + document)),
+            "a base64 run of a list of - 40, the signature on its third line":
+                in_base64(hex_list(b"L" * 40 + document, 40, "- {}\n")),
+            "past the count: a list of 64 lines, then one with the signature on its second line":
+                words + "\n" + hex_list(lead + document),
+        }
+        for name, text in shapes.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.plant("docs/dump.md", text, code="encoded_blob")
+            with self.subTest(shape=name, mode="--message"):
+                self.write(".git/MSG", "synthetic subject\n\n" + text)
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.codes(out), {"encoded_blob"})
+
 
 class ScanTimeTests(_RepoCase):
     """One long line scans in linear time (round-4 recheck, issue 1). _SECRET_LOOSE took 212 s on one 120 KB
