@@ -1698,6 +1698,135 @@ results["mode"] = guard.armed_mode()
         self.assertEqual(os.listdir(historic), [])
 
 
+class ReadTests(unittest.TestCase):
+    """Reads in ~/betangel-data: refused in every mode but engine (Nuance's re-review of #2, Q2 condition 1).
+
+    Nuance probed that in test and vendor mode reading and listing historic-pro worked; only the append was refused.
+    Every check runs in a fresh child with a temporary HOME whose data home holds synthetic files only.
+    """
+
+    maxDiff = None
+
+    SETUP = """
+home = os.environ["HOME"]
+data = roots.data_home()
+historic = os.path.join(data, "historic-pro")
+outside = os.path.join(home, "outside")
+for directory in (historic, os.path.join(data, "locked"), outside, os.path.join(outside, "locked"), roots.state_dir()):
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, "file"), "w") as handle:
+        handle.write("synthetic")
+os.symlink(historic, os.path.join(home, "alias"))
+for directory in (os.path.join(data, "locked"), os.path.join(outside, "locked")):
+    os.chmod(directory, 0)                      # unsearchable: its file can be judged only at the directory
+held = os.open(historic, os.O_RDONLY)            # a descriptor opened before arm()
+os.chdir(historic)                              # the cwd, before arm(), in the data home
+"""
+
+    BODY = """
+import glob, shutil
+spelt = %r
+def read(path):
+    with open(path) as handle:
+        handle.read()
+def os_read(path):
+    os.close(os.open(path, os.O_RDONLY))
+def walk(top):
+    for _ in os.walk(top):
+        pass
+def fwalk(top):
+    os.chdir(outside)               # fwalk opens each directory by its name relative to its parent's descriptor
+    for _ in os.fwalk(top):
+        pass
+attempt("listdir_cwd", lambda: os.listdir())
+attempt("scandir_cwd", lambda: list(os.scandir()))
+attempt("relative_in_cwd", lambda: read("file"))
+attempt("chdir_home", lambda: os.chdir(home))
+attempt("relative", lambda: read(os.path.join("betangel-data", "historic-pro", "file")))
+attempt("relative_listdir", lambda: os.listdir("betangel-data"))
+attempt("open", lambda: read(os.path.join(historic, "file")))
+attempt("open_bytes", lambda: read(os.fsencode(os.path.join(historic, "file"))))
+attempt("os_open", lambda: os_read(os.path.join(historic, "file")))
+attempt("open_directory", lambda: os_read(historic))
+attempt("open_data_home", lambda: os_read(data))
+attempt("alias", lambda: read(os.path.join(home, "alias", "file")))
+for name, path in spelt.items():
+    attempt("spelt_" + name, lambda: read(os.path.join(path, "file")))
+    attempt("spelt_listdir_" + name, lambda: os.listdir(path))
+attempt("behind_locked", lambda: read(os.path.join(data, "locked", "file")))
+attempt("listdir", lambda: os.listdir(historic))
+attempt("listdir_data_home", lambda: os.listdir(data))
+attempt("scandir", lambda: list(os.scandir(historic)))
+attempt("listdir_descriptor", lambda: os.listdir(held))      # judged by the descriptor's F_GETPATH path
+attempt("scandir_descriptor", lambda: list(os.scandir(held)))
+attempt("glob", lambda: glob.glob(os.path.join(historic, "*")))
+attempt("walk_home", lambda: walk(home))
+attempt("fwalk_home", lambda: fwalk(home))
+attempt("copyfile", lambda: shutil.copyfile(os.path.join(historic, "file"), os.path.join(roots.state_dir(), "copy")))
+attempt("chdir", lambda: os.chdir(historic))
+attempt("fchdir", lambda: os.fchdir(held))
+os.chdir(home)
+# Controls, the same in every mode: outside the data home, its name in a listing of HOME, and stat-level calls.
+attempt("outside_open", lambda: read(os.path.join(outside, "file")))
+attempt("outside_listdir", lambda: os.listdir(outside))
+attempt("state_open", lambda: read(os.path.join(roots.state_dir(), "file")))
+results["home_listing"] = sorted(os.listdir(home))
+attempt("stat", lambda: os.stat(os.path.join(historic, "file")))
+attempt("outside_locked", lambda: read(os.path.join(outside, "locked", "file")))
+attempt("nul", lambda: read(os.path.join(historic, "file") + "\\0x"))
+"""
+
+    REFUSED = ("listdir_cwd", "scandir_cwd", "relative_in_cwd", "relative", "relative_listdir", "open", "open_bytes",
+               "os_open", "open_directory", "open_data_home", "alias", "behind_locked", "listdir", "listdir_data_home",
+               "scandir", "listdir_descriptor", "scandir_descriptor", "glob", "walk_home", "fwalk_home", "copyfile",
+               "chdir", "fchdir")
+
+    def test_reads_in_the_data_home_are_refused_outside_engine_mode(self):
+        for mode in MODES:
+            home = make_home(self)
+            historic = os.path.join(roots.data_home(home), "historic-pro")
+            os.makedirs(historic)                                   # for spellings(); the child fills it
+            spelt = {name: path for name, path in spellings(historic).items() if name != "plain"}
+            for locked in (os.path.join(roots.data_home(home), "locked"), os.path.join(home, "outside", "locked")):
+                self.addCleanup(lambda path=locked: os.path.isdir(path) and os.chmod(path, 0o700))
+            results = checks(self, home, mode=mode, setup=self.SETUP, body=self.BODY % spelt)
+            with self.subTest(mode=mode):
+                self.assertEqual(results.pop("home_listing"), [".local", "alias", "betangel-data", "outside"])
+                expected = {"chdir_home": "ok", "outside_open": "ok", "outside_listdir": "ok", "state_open": "ok",
+                            "stat": "ok", "outside_locked": "other:PermissionError", "nul": "other:ValueError"}
+                names = list(self.REFUSED) + ["spelt_" + name for name in spelt] + ["spelt_listdir_" + name
+                                                                                     for name in spelt]
+                for name in names:
+                    expected[name] = "data_home_read_refused" if mode != "engine" else "ok"
+                if mode == "engine":                                # engine mode reads as before (Phase 1a)
+                    expected["behind_locked"] = "other:PermissionError"
+                self.assertEqual(results, expected)
+                self.assertGreaterEqual(len(spelt), 1)              # the firmlink spelling, at least, on the lab
+
+    def test_reads_judged_through_an_unsearchable_directory(self):
+        # roots.lies_in_for_read judges a path whose stat fails (no search permission on the way) at its nearest
+        # existing ancestor, so a firmlink spelling into the data home through such a directory is still refused,
+        # while one outside the data home is left to fail with its own error.
+        home = make_home(self)
+        data = roots.data_home(home)
+        locked = os.path.join(data, "locked")
+        outside = os.path.join(home, "outside", "locked")
+        for directory in (locked, outside):
+            os.makedirs(directory)
+            self.addCleanup(os.chmod, directory, 0o700)
+            os.chmod(directory, 0)
+        for path, expected in ((FIRMLINK + os.path.realpath(locked) + "/x", True), (locked + "/x", True),
+                               (FIRMLINK + os.path.realpath(outside) + "/x", False), (outside + "/x", False)):
+            self.assertIs(roots.lies_in_for_read(path, data, "data_home_read_refused"), expected, path)
+        missing = os.path.join(home, "no-such-home", "betangel-data")
+        self.assertFalse(roots.lies_in_for_read(outside + "/x", missing, "data_home_read_refused"))
+        os.chmod(os.path.dirname(data), 0o000)                  # the data home itself cannot be looked at
+        self.addCleanup(os.chmod, os.path.dirname(data), 0o700)
+        with self.assertRaises(SuiteError) as caught:
+            roots.lies_in_for_read("/private/var/x", data, "data_home_read_refused")
+        self.assertEqual(caught.exception.code, "data_home_read_refused")
+
+
 FIRMLINK = "/System/Volumes/Data"       # macOS: the data volume, under which /Users is a firmlink
 
 PLACEMENT = ATTEMPT + """

@@ -59,14 +59,14 @@ What the hook refuses, in every mode and phase:
        chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. The write roots are the state
        root in every mode; the suite root only in engine mode, and only while roots.STATE_ROOT_AGREED is
        True (never in test, vendor, uisnap or stop mode); and in vendor mode also the share directory and
-       this checkout's pin/. So the test runner
-       itself never writes under ~/betangel-data, whatever the flag says. Its children are another matter
-       (Nuance's re-review of #2, F2): a launcher child arms its own guard from the HOME it is given, so the
-       runner checks that HOME when it starts one (runner_argv_ok), and an interpreter child that does not
-       import betangel_suite is unguarded, so keeping it in its temporary HOME is conduct. While
-       the flag is False a write under ~/betangel-data is refused as state_root_not_agreed, judged on the
-       path text alone. A relative path in a write open is refused too: the open event does not say which dir_fd it
-       is relative to (the other events do, and a dir_fd is resolved with F_GETPATH). The roots check
+       this checkout's pin/. So the test runner itself never writes under ~/betangel-data, whatever the flag
+       says, nor reads there (below). Its children are another matter (Nuance's re-review of #2, F2): a
+       launcher child arms its own guard from the HOME it is given, so the runner checks that HOME when it
+       starts one (runner_argv_ok), and an interpreter child that does not import betangel_suite is
+       unguarded, so keeping it in its temporary HOME is conduct. While the flag is False a write under
+       ~/betangel-data is refused as state_root_not_agreed, judged on the path text alone. A relative path
+       in a write open is refused too: the open event does not say which dir_fd it is relative to (the
+       other events do, and a dir_fd is resolved with F_GETPATH). The roots check
        resolves the path as given, as the OS does: "link/.." and a final "/" follow the link.
        That check trusts each root's real path, so arm() first refuses any write root, and TMPDIR, that
        the file system puts in, around or onto ~/betangel-data (roots.check_placement, stat calls only):
@@ -104,6 +104,16 @@ What the hook refuses, in every mode and phase:
        wrapper also runs PRAGMA temp_store = MEMORY and refuses the connection (sqlite_connect_refused)
        unless the setting then reads 2, and the hook refuses connect("") (sqlite_connect_refused), whose
        private database is such a temporary file. Rollback journals and WAL files sit beside the database.
+
+And in every mode but engine (test, vendor, uisnap and stop), reads in ~/betangel-data (data_home_read_refused;
+Nuance's re-review of #2, Q2 condition 1, which lab-Claude took as fail closed): an open without a write flag, a
+listing (os.listdir and os.scandir, a descriptor judged by its F_GETPATH path and no argument as the cwd) and
+os.chdir, of the data home or anything in it, judged by text, realpath and (st_dev, st_ino), stat calls only
+(roots.lies_in_for_read). A relative path is judged against the cwd. Engine mode reads as before: Phase 1a reads
+the data roots there. Not covered: os.open with a dir_fd and a relative path (the open event carries no dir_fd, so
+the path is judged against the cwd; a listing of that descriptor is refused), a descriptor opened before arm() or
+inherited, a hard link made elsewhere to a file in the data home, and stat-level calls (os.stat, os.lstat,
+os.readlink), which raise no audit event and which the guard's own checks use.
 
 Subprocesses by mode (the launcher picks the mode from the command name; nothing else can):
 
@@ -249,7 +259,10 @@ _MUTATIONS = {
     "os.mkfifo": ((0, 2, False, False),),   # raised by the wrapper arm() installs
     "os.mknod": ((0, 3, False, False),),    # likewise
 }
-_WATCHED = frozenset(set(_NETWORK) | _SPAWN | set(_MUTATIONS) | _LIBRARY_LOADS
+# Reads judged in every mode but engine (_check_read), besides "open" without a write flag: listing a directory and
+# making it the cwd. Each carries its path (None for the cwd) or a descriptor.
+_READS = frozenset({"os.listdir", "os.scandir", "os.chdir"})
+_WATCHED = frozenset(set(_NETWORK) | _SPAWN | set(_MUTATIONS) | _LIBRARY_LOADS | _READS
                      | {"socket.bind", "socket.__new__", "socket.listen", "os.putenv", "os.unsetenv", "open",
                         "sqlite3.connect", "import"})
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
@@ -716,6 +729,11 @@ def _check(state, event, args):
         writes = isinstance(flags, int) and flags & _WRITE_FLAGS
         if writes or (isinstance(mode, str) and any(c in mode for c in "wax+")):
             _check_write(state, path, None, True)       # None: the open event does not carry dir_fd
+        elif state.mode != "engine" and not isinstance(path, int):
+            _check_read(state, path)                    # open() of a descriptor: judged at its own open
+    elif event in _READS:
+        if state.mode != "engine":
+            _check_read(state, args[0])
     elif event == "sqlite3.connect":
         _check_sqlite(state, args[0])
     elif event == "import":
@@ -968,6 +986,32 @@ def _check_env_change(event, args):
     if key in PINNED_ENV or _stray(key):
         if not (event == "os.putenv" and key == FORBID_NETWORK_ENV and os.fsdecode(args[1]) == "1"):
             raise GuardRefusal("environment_change_refused")
+
+
+def _check_read(state, path):
+    """Every mode but engine: no open, listing or chdir in the data home (data_home_read_refused; Nuance's re-review
+    of #2, Q2 condition 1). path is the event's: None for the cwd (os.listdir() and os.scandir() with no argument), a
+    descriptor (listdir, scandir or fchdir of one), judged by its F_GETPATH path, or a path, judged against the cwd
+    when relative (the open event does not carry a dir_fd: the limit in this module's docstring). Text, realpath and
+    identity, stat calls only (roots.lies_in_for_read). A path with a NUL in it opens nothing (the call raises
+    ValueError) and is let through to it; anything else that cannot be judged is refused."""
+    try:
+        if path is None:
+            raw = os.getcwd()
+        elif isinstance(path, int):
+            raw = _fd_path(path)
+        else:
+            raw = os.fsdecode(os.fspath(path))
+            if "\0" in raw:
+                return
+            if not os.path.isabs(raw):
+                raw = os.path.join(os.getcwd(), raw)
+        if not os.path.isabs(raw) or roots.lies_in_for_read(raw, roots.data_home(state.home), "data_home_read_refused"):
+            raise GuardRefusal("data_home_read_refused")
+    except GuardRefusal:
+        raise
+    except (OSError, OverflowError, ValueError, SuiteError):
+        raise GuardRefusal("data_home_read_refused") from None
 
 
 def _check_sqlite(state, database):

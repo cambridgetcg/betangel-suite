@@ -320,6 +320,26 @@ def lies_in(path, directory, code):
     return any(target in _lineage(candidate, code) for candidate in (path, real))
 
 
+def lies_in_for_read(path, directory, code):
+    """lies_in for the guard's read check (guard._check_read; Nuance's re-review of #2, Q2 condition 1): True when
+    path is directory or lies below it, by text (casefolded, as written and with links resolved) or by identity
+    (directory's (st_dev, st_ino) among the directories at and above path, or above its resolved text, through
+    ".." as the kernel resolves it). Stat calls only.
+
+    Unlike lies_in, a path whose own stat fails otherwise than missing (no search permission on the way, a link loop,
+    a name too long) is judged at its nearest existing ancestor instead of raising: the open, listing or chdir the
+    check comes before fails the same way, and a test that probes such a failure outside the data home still sees
+    its own error. SuiteError(code) when directory's own stat fails otherwise than missing, or an ancestor walk
+    cannot go on.
+    """
+    real = os.path.realpath(path)
+    forms = (directory.casefold(), os.path.realpath(directory).casefold())
+    if any(within(mine.casefold(), form) for mine in (os.path.normpath(path), real) for form in forms):
+        return True
+    target = _known_identity(directory, code)
+    return target is not None and any(target in _lineage(candidate, code) for candidate in (path, real))
+
+
 # --- the writer helper ---------------------------------------------------------------------------
 
 def ensure_dir(path, *, home_dir=None):
