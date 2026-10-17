@@ -97,6 +97,11 @@ def _escaped(data: bytes) -> str:
     return "".join(f"\\x{b:02x}" for b in data)
 
 
+def _octal(data: bytes, shortest: bool = False) -> str:
+    """Each byte as an octal escape: three digits, or C's shortest form (unambiguous when every byte is escaped)."""
+    return "".join(f"\\{b:o}" if shortest else f"\\{b:03o}" for b in data)
+
+
 def _xxd(data: bytes) -> str:
     """xxd's default layout: offset, eight groups of four hex digits, the printable characters."""
     lines = []
@@ -809,6 +814,12 @@ class EncodedDataTests(_RepoCase):
             "bytes repr": f"DATA = {member!r}\n",
             "wrapped repr": "DATA = (\n" + "".join(f"    {piece!r}\n" for piece in pieces) + ")\n",
             "C string": f'const char d[] = "{_escaped(member)}";\n',
+            # Nuance's re-review of #2, F7: a literal holding only octal escapes was never decoded.
+            "C string, octal": f'const char d[] = "{_octal(member)}";\n',
+            "C string, shortest octal": f'const char d[] = "{_octal(member, shortest=True)}";\n',
+            "shell string, octal": f"printf $'{_octal(member)}' > x\n",
+            "wrapped C string, octal": "const char d[] =\n" + "".join(f'    "{_octal(piece)}"\n' for piece in pieces)
+                                       + ";\n",
             # A quote that never closes comes first: the other kind is still read (round-4 finishing review).
             "C string after an unclosed quote": f'/* it\'s */ const char d[] = "{_escaped(member)}";\n',
         })
@@ -825,6 +836,16 @@ class EncodedDataTests(_RepoCase):
             shapes[f"hex {label}"] = _wrap(data.hex(), 20)
             shapes[f"escapes {label}"] = "D = (\n" + "".join(
                 f"    b'{_escaped(data[i:i + 10])}'\n" for i in range(0, len(data), 10)) + ")\n"
+            shapes[f"octal {label}"] = "D = (\n" + "".join(
+                f"    b'{_octal(data[i:i + 10])}'\n" for i in range(0, len(data), 10)) + ")\n"
+        # A last line of one to three octal escapes, under the four a line needs alone, still closes a run. Here it
+        # holds the end of the Adler-32 check of a zlib stream too short (under 96 bytes) to count as binary data, so
+        # only the whole stream is flagged.
+        short = zlib.compress(bytes(range(40)))
+        self.assertLess(len(short), 96)
+        width = next(w for w in range(8, 17) if 1 <= len(short) % w <= 3)
+        shapes["octal zlib, short last line"] = "D = (\n" + "".join(
+            f"    b'{_octal(short[i:i + width])}'\n" for i in range(0, len(short), width)) + ")\n"
         self.plant_shapes(shapes)
 
     def test_a_short_last_line_closes_a_run(self):
@@ -905,6 +926,11 @@ class EncodedDataTests(_RepoCase):
         hashes = [hashlib.sha256(f"synthetic {i}".encode()).hexdigest() for i in range(12)]
         magic = (b"\x1f\x8b", b"PK\x03\x04", b"PK\x05\x06", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd")
         reserved = _j('{"op":"mcm","id":"', SYN_MARKET, '","rc":[{"id":', SYN_SELECTION, "}]}").encode()
+        quoted = "".join(chr(b) if b < 128 else _octal(bytes([b])) for b in "caf\u00e9 \u65e5\u672c".encode())
+        esc = _octal(bytes([27]))
+        text = ("Caf\u00e9, cr\u00e8me and na\u00efve, " + "plain words " * 7).encode("latin-1")
+        latin1 = "".join(chr(b) if b < 128 else _octal(bytes([b])) for b in text)
+        self.assertEqual((latin1.count("\\"), len(text) >= 96), (3, True))
         files = {
             "pkg/hashes.py": "HASHES = [\n" + "".join(f'    "{h}",\n' for h in hashes) + "]\n",
             "pkg/pins.json": "{\n" + "".join(f'  "pkg/m{i}.py": "{h}",\n' for i, h in enumerate(hashes)) + "}\n",
@@ -919,6 +945,11 @@ class EncodedDataTests(_RepoCase):
             "docs/words.md": "we add a bad bed to the cafe; dead beef faced a decade\n" * 10,
             "pkg/ids.py": f"sha = '{hashes[0][:40]}'\nrun = '12345678-5ec0-40c0-93f4-4adfd5acd836'\n" * 5,
             "pkg/png.py": f'PNG = b"{_escaped(bytes([0x89]))}PNG\\r\\n{_escaped(bytes([0x1a]))}\\n"\n',
+            # Octal escapes that are not data (Nuance's re-review of #2, F7): paths as git quotes them, colour codes,
+            # and Latin-1 text with three escapes, which would be binary data if it were read (not UTF-8, 96+ bytes).
+            "docs/status.md": "".join(f'\t"docs/{quoted}{i}.md"\n' for i in range(8)),
+            "pkg/colour.sh": "".join(f'printf "{esc}[1m%s{esc}[0m {esc}[3{i}m%s{esc}[0m\\n" a b\n' for i in range(8)),
+            "pkg/latin1.c": "".join(f'const char *m{i} = "{latin1}";\n' for i in range(8)),
             "docs/reserved.md": base64.b64encode(reserved).decode() + "\n",
             # A price ladder in hundredths, as ui/ticks.json holds it: sorted, so not data.
             "ui/ladder.json": '{"ticks": [\n' + "".join("    " + ", ".join(str(t) for t in range(k, k + 16)) + ",\n"
@@ -1195,6 +1226,10 @@ class ScanTimeTests(_RepoCase):
         "spaces after an escaped literal": ('"' + "\\x5a" * 4 + '"', " ", "!"),
         "an unclosed literal of escaped single quotes": ("\\x41 '", "\\'", ""),
         "an unclosed literal of escaped double quotes": ('\\x41 "', '\\"', ""),
+        # Octal-escape literals (Nuance's re-review of #2, F7): one long literal, many short ones, and an unclosed one.
+        "octal escapes in one literal": ('"', "\\101", '"'),
+        "short literals of octal escapes": ("", "'\\1\\2\\3\\4'", ""),
+        "an unclosed literal of escaped quotes after octal escapes": ("\\101 '", "\\'", ""),
         "letters": ("", "a", ""),
         "digits": ("", "7", ""),
         "'=' and ':'": ("token", "=:", ""),

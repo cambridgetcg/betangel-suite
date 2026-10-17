@@ -147,7 +147,7 @@ RULES = {
     "secret_value": "secret-looking value assigned to a key, token, password or session field",
     "known_token": "token with a known provider prefix (GitHub, AWS, Slack, JWT, ...)",
     "bootstrap_code": "suite bootstrap-code URL fragment",
-    "encoded_blob": "base64, hex, \\xNN-escaped, decimal-byte or GIT-binary-patch data that decodes to an "
+    "encoded_blob": "base64, hex, \\xNN- or octal-escaped, decimal-byte or GIT-binary-patch data that decodes to an "
                     "archive, a zlib stream, 96+ bytes of binary, or text another rule flags",
     "filter_attribute": "path git gives a filter driver (clean filter, LFS), or a .gitattributes line "
                         "that sets one: git stores the filter's output, which the scan never sees",
@@ -509,7 +509,9 @@ def _plain_findings(lines) -> list:
 #        right after `\x` (a PostgreSQL bytea literal), or 0x-prefixed and comma-separated, or the
 #        hex columns of an xxd or `hexdump -C` line, or the octal words of an `od` line (its
 #        default output: 16-bit words, little-endian);
-#   esc  a quoted string literal holding at least one \xNN escape;
+#   esc  a quoted string literal holding at least one \xNN escape, or at least four octal escapes (\NNN, or C's
+#        shorter \N and \NN): a C or shell string of bytes (Nuance's re-review of #2, F7). Fewer octal escapes are
+#        not read (git's quoted paths, colour codes), except on the short last line of a run;
 #   dec  16+ integers from 0 to 255 split by commas or spaces: a byte list as `list(data)`,
 #        `Array.from(buf)` or `od -An -tu1` print it.
 # A token that ends its line (only a closing quote, bracket, `;`, `+` or `\` after it) runs on
@@ -598,6 +600,8 @@ _ESC_LITERAL = {"'": re.compile(r"'(?:[^'\\]|\\.)*+'", re.S), '"': re.compile(r"
 _QUOTE = re.compile(r"['\"]")
 _HAS_XNN = re.compile(r"\\x[0-9a-fA-F]{2}")
 _ESC = re.compile(r"\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|.)", re.S)
+_MAY_ESCAPE = re.compile(r"\\(?:x[0-9a-fA-F]{2}|[0-7])")  # a line without one holds no esc token
+ENCODED_MIN_OCTAL = 4  # octal escapes in a literal that holds no \xNN, before it is read as bytes
 _ESC_SIMPLE = {"n": 10, "r": 13, "t": 9, "a": 7, "b": 8, "f": 12, "v": 11, "\\": 92, "'": 39, '"': 34}
 _PURE_BEFORE = {"b64": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
                 "hex": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
@@ -636,6 +640,17 @@ def _unescape(body: str) -> bytes:
         pos = m.end()
     out += body[pos:].encode("utf-8")
     return bytes(out)
+
+
+def _octal_escapes(literal: str, least: int) -> bool:
+    """Whether the literal holds least or more octal escapes, read as _unescape reads them ("\\\\0" is not one)."""
+    count = 0
+    for m in _ESC.finditer(literal):
+        if m.group(1)[0] in "01234567":
+            count += 1
+            if count >= least:
+                return True
+    return False
 
 
 def _esc_literals(line: str) -> list:
@@ -687,9 +702,10 @@ def _segments(kind: str, line: str, short: bool = False) -> list:
     elif kind == "dec":
         matches = list(_DEC_TOKEN[short].finditer(line))
     else:
-        if "\\x" not in line:
+        if not _MAY_ESCAPE.search(line):
             return []
-        matches = [m for m in _esc_literals(line) if _HAS_XNN.search(m.group())]
+        least = 1 if short else ENCODED_MIN_OCTAL
+        matches = [m for m in _esc_literals(line) if _HAS_XNN.search(m.group()) or _octal_escapes(m.group(), least)]
     segments = []
     for m in matches:
         token = m.group()
