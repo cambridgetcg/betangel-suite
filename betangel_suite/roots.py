@@ -153,7 +153,8 @@ def check_placement(path, home_dir=None):
     SuiteError(suite_root_misplaced) otherwise.
 
     Any other path must not equal, lie in or contain the data home: root_overlaps_data_home otherwise, and also
-    when that cannot be judged. Two comparisons, each both ways:
+    when that cannot be judged (a stat of path or the data home that fails for any reason but the name not existing,
+    or an ancestor walk that cannot go on). Two comparisons, each both ways:
       - text: path and the data home, each as written and with its links resolved (realpath), casefolded
         (the lab's APFS volume folds case);
       - identity: the data home's (st_dev, st_ino) must not be that of path or of any directory above it, and
@@ -185,11 +186,26 @@ def _overlaps_data_home(path, home_dir):
                 return True
     if real_data.casefold().startswith("/.vol/"):
         return True
-    data_id = _identity(data)
+    data_id = _known_identity(data)
     if data_id is not None and data_id in _lineage(real):
         return True
-    path_id = _identity(real)
+    path_id = _known_identity(real)
     return path_id is not None and (path_id == data_id or path_id in _lineage(os.path.dirname(real_data)))
+
+
+def _known_identity(path):
+    """(st_dev, st_ino) of path, or None when it does not exist (a missing name, or a component that is not a
+    directory). SuiteError(root_overlaps_data_home) when stat fails otherwise (no search permission, a link loop, a
+    name too long): that cannot be judged. Read as missing, a data home behind a directory with no search permission
+    at arm() let a root linked into it through the firmlink spelling pass, to take writes there once the directory
+    was searchable again (the guard-paths review)."""
+    try:
+        info = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError:
+        raise SuiteError("root_overlaps_data_home") from None
+    return info.st_dev, info.st_ino
 
 
 def _real_dir_or_missing(path):

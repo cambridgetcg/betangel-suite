@@ -12,8 +12,10 @@ import os
 import stat
 import subprocess
 import unittest
+from unittest import mock
 
 from betangel_suite import config, guard, roots
+from betangel_suite.errors import SuiteError
 from tests import FORBID, PRELUDE, PYTHON, ROOT, child_env, make_home, rmtree, run_python, run_relayed, run_suite
 
 ATTEMPT = """
@@ -1568,6 +1570,53 @@ class RootPlacementTests(unittest.TestCase):
         self.assertEqual(self.placement(home, agreed=False, writes=writes),
                          {"arm": "ok", "mkdir_state": "ok", "open:suite": "state_root_not_agreed",
                           "sqlite:suite": "state_root_not_agreed"})
+
+    def test_a_placement_that_cannot_be_judged_is_refused(self):
+        # The guard-paths review: check_placement refuses "also when that cannot be judged", but a failed stat read
+        # as a missing name. Here the data home links to vault/data, and vault has no search permission when arm()
+        # runs, so neither the data home nor the state root can be stat()ed (EACCES), and the state root's link is
+        # spelt through the firmlink, which the text check does not see. arm() passed, and once vault was
+        # searchable again every write in the state root landed in vault/data/lab-state, in realpath(data home).
+        home = make_home(self)
+        vault = os.path.join(home, "vault")
+        lab = os.path.join(vault, "data", "lab-state")
+        os.makedirs(os.path.join(vault, "data", "historic-pro"))
+        os.rename(os.path.join(home, ".local", "state"), lab)
+        os.symlink(os.path.join(vault, "data"), roots.data_home(home))
+        before = sorted(os.listdir(os.path.join(lab, "betangel-suite")))
+        self.addCleanup(os.chmod, vault, 0o700)
+        for name, target in spellings(lab).items():
+            os.symlink(target, os.path.join(home, ".local", "state"))
+            os.chmod(vault, 0)
+            try:
+                for agreed, mode in ((True, "test"), (True, "vendor"), (False, "engine"), (True, "engine")):
+                    with self.subTest(spelling=name, agreed=agreed, mode=mode):
+                        results = self.placement(home, agreed=agreed, mode=mode)
+                        # The engine with the suite root agreed may be refused first for its suite root, which
+                        # cannot be lstat()ed at realpath(data home)/suite.noindex.
+                        codes = {"root_overlaps_data_home"} | ({"suite_root_misplaced"} if agreed and mode == "engine"
+                                                               else set())
+                        self.assertIn(results.get("arm"), codes)
+                        self.assertEqual(list(results), ["arm"])
+                for agreed in (False, True):
+                    with self.subTest(spelling=name, check_placement=True, agreed=agreed):
+                        with mock.patch.object(roots, "STATE_ROOT_AGREED", agreed):
+                            with self.assertRaises(SuiteError) as caught:
+                                roots.check_placement(roots.state_dir(home), home)
+                        self.assertEqual(caught.exception.code, "root_overlaps_data_home")
+            finally:
+                os.chmod(vault, 0o700)
+                os.remove(os.path.join(home, ".local", "state"))
+        self.assertEqual(sorted(os.listdir(os.path.join(lab, "betangel-suite"))), before)
+        # The control: a root behind a directory in the data home that cannot be searched was already refused (the
+        # ancestor walk falls back to the text parent).
+        locked = os.path.join(vault, "data", "locked")
+        os.makedirs(locked)
+        os.rename(lab, os.path.join(locked, "lab-state"))
+        os.symlink(FIRMLINK + os.path.realpath(locked) + "/lab-state", os.path.join(home, ".local", "state"))
+        os.chmod(locked, 0)
+        self.addCleanup(os.chmod, locked, 0o700)
+        self.assertEqual(self.placement(home, agreed=True, mode="test"), {"arm": "root_overlaps_data_home"})
 
     def test_no_link_or_rename_takes_the_place_of_a_root_or_tmpdir(self):
         # The guard allowed os.symlink(historic-pro, suite.noindex): a write in the roots, as text, that steers the
