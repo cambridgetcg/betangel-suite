@@ -403,17 +403,34 @@ def write_new(path, data, *, home_dir=None):
 
 
 def _make_dir(path):
-    """mkdir 0700 if missing, then insist on a real, owned directory with no group or other bits."""
+    """mkdir 0700 if missing, then insist on a real, owned directory with no group or other bits.
+
+    Another suite process may make the same directory at the same moment: two commands started together in a new
+    HOME both make the suite root and its tmp/ (the TMPDIR of serve, open and ssh-session). Between the lstat below
+    and the prospective path guard, or between that guard and mkdir, the directory can appear. The guard then
+    refuses path_denied:already_exists, which made the second command fail at random (the flaky
+    tests.test_session_process.SignalTests run, round 4b). Either way, whatever is there now is judged as an
+    existing entry instead: the path guard without prospective, then the same link, type, owner and mode checks.
+    """
     try:
         info = os.lstat(path)
     except FileNotFoundError:
         info = None
     if info is None:
-        _path_guard(path, prospective=True)
+        made_meanwhile = False
         try:
-            os.mkdir(path, 0o700)
-        except FileExistsError:
-            pass
+            _path_guard(path, prospective=True)
+        except SuiteError as exc:
+            if exc.code != "path_denied" or exc.reason != "already_exists":
+                raise
+            made_meanwhile = True
+        if not made_meanwhile:
+            try:
+                os.mkdir(path, 0o700)
+            except FileExistsError:
+                made_meanwhile = True
+        if made_meanwhile:
+            _path_guard(path, prospective=False)
         info = os.lstat(path)
     else:
         _path_guard(path, prospective=False)
