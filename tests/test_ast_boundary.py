@@ -16,9 +16,13 @@ of the package, bin/ and tools/ (test_imports.python_sources) and refuses:
                    (`from .engine import rx`): rx comes only from the package. rx is any name an import binds
                    to it (`from . import rx as r`, `import betangel_suite.rx as facade`), and any attribute
                    named rx, however its object was reached (betangel_suite.rx, engine.rx, x.rx), since every
-                   suite module that imports rx holds it as one; and getattr(x, "rx") or x["rx"] (vars or
-                   __dict__) are refused. So every upstream name suite code uses is spelt rx.<namespace>.<name>,
-                   which tests/test_upstream_contract.py's CoverageTests reads.
+                   suite module that imports rx holds it as one. The string "rx" is refused anywhere outside a
+                   docstring, so getattr(x, "rx"), x["rx"], x.get("rx") (vars, __dict__ or globals()),
+                   x.__getattribute__("rx") and operator.methodcaller("get", "rx") are, and so is an
+                   operator.attrgetter path with an rx part ("rx._archive"). So every upstream name that suite
+                   code reaches by a spelling this rule reads is spelt rx.<namespace>.<name>, which
+                   tests/test_upstream_contract.py's CoverageTests reads; a name built at run time is read by
+                   neither (see the end).
   globals_escape   __globals__, and the two other doors to a module's globals: f_globals (a frame's) and
                    __builtins__ (which holds __import__). Refused as a name, an attribute or a string.
   sys_modules      .modules on anything at all, but a literal read on sys: sys.modules.get("<name>") or
@@ -27,27 +31,32 @@ of the package, bin/ and tools/ (test_imports.python_sources) and refuses:
                    or builtins (guard.py looks up socket and _sqlite3 that way). So .modules on a call, a
                    subscript or any other name (__import__("sys").modules, sys.modules["sys"].modules,
                    s.modules after s = sys) is refused. Also `from <any module> import sys` or `modules` (sys
-                   only by `import sys`), getattr, vars or __dict__ on sys, and getattr(x, "modules") or
-                   x["modules"] on anything. Plus the allowlisted functions below.
+                   only by `import sys`), getattr, vars or __dict__ on sys, and the strings "modules" and "sys"
+                   anywhere outside a docstring (getattr(x, "modules"), x.get("modules"), x.__dict__["sys"],
+                   object.__getattribute__(s, "modules"), and an attrgetter path with either part). Plus the
+                   allowlisted functions below.
   computed_import  import_module or __import__ with anything but a literal string first, or with any literal
                    argument that is relative, names betangel_research or betangel_suite (the suite's own
                    modules are imported by import statements only), or is sys or builtins; any import by file
                    or loader (spec_from_file_location, module_from_spec, exec_module, SourceFileLoader, runpy,
-                   reload, ...) and inspect.getmodule; exec, eval and compile as builtins or as attributes of
-                   the builtins module; getattr, vars or __dict__ on builtins; `from <any module> import
-                   builtins`; and `from ... import` of any of these names, which would hide later calls from
-                   this rule.
+                   reload, ...), pkgutil.resolve_name (an import by a dotted name, attributes included) and
+                   inspect.getmodule; exec, eval and compile as builtins or as attributes of the builtins
+                   module; getattr, vars or __dict__ on builtins, and the string "builtins" anywhere outside a
+                   docstring (vars(m)["builtins"]); `from <any module> import builtins`; and `from ... import` of
+                   any of these names, which would hide later calls from this rule.
 
 ALLOWED lists the only exceptions, each with its reason, by (file, enclosing function, rule). A class statement's
 bases and keywords count as enclosed by the class, and module level, class bodies included, by None. An entry that
 no longer matches anything fails the test, so the list cannot quietly outlive its reason.
 
 Like the guard (guard.py docstring), this catches mistakes and the paths Nuance and the reviewers listed,
-including the short spellings lab-Claude's round-3 review found on adb7c63 (PlantedViolationTests). It is not
-proof against code written to evade it. It reads names, not values: getattr with a computed name on a local
-that holds an upstream object is not refused, because suite code uses computed getattr on its own objects
-(engine.py, synthetic.py), and neither is a module object reached some way it does not spell out (through gc,
-a frame other than by f_globals, or an object's class, say).
+including the short spellings lab-Claude's round-3 review found on adb7c63 and the literal keys and attrgetter
+paths round 4b's review found on d00436e (PlantedViolationTests). It is not proof against code written to evade
+it. It reads names and literal strings, not values: getattr with a computed name on a local that holds an
+upstream object is not refused, because suite code uses computed getattr on its own objects (engine.py,
+synthetic.py); nor is a name or key built at run time ("r" + "x"), an import by a route it does not name
+(pickle, say), or a module object reached some way it does not spell out (through gc, a frame other than by
+f_globals, or an object's class, say).
 """
 
 import ast
@@ -63,10 +72,14 @@ GLOBALS_NAMES = frozenset({"__globals__", "f_globals", "__builtins__"})
 IMPORT_CALLS = frozenset({"import_module", "__import__"})
 LOADER_NAMES = frozenset({"spec_from_file_location", "spec_from_loader", "module_from_spec", "exec_module",
                           "load_module", "SourceFileLoader", "SourcelessFileLoader", "ExtensionFileLoader",
-                          "run_path", "run_module", "reload", "getmodule"})
+                          "run_path", "run_module", "reload", "getmodule", "resolve_name"})
 CODE_BUILTINS = frozenset({"exec", "eval", "compile"})
 # Modules whose objects open every other door: an import_module, __import__ or sys.modules read may not name them.
 DOOR_MODULES = frozenset({"sys", "builtins"})
+# Strings refused anywhere outside a docstring, and as a part of an operator.attrgetter path, with the rule each
+# breaks: each names a door that x.get(...), x.pop(...), __getattribute__, methodcaller or a subscript would open
+# with no attribute this rule reads (vars(engine).get("rx"), x.__dict__.get("modules"); round 4b's review).
+DOOR_KEYS = {"rx": "rx_private", "modules": "sys_modules", "sys": "sys_modules", "builtins": "computed_import"}
 REFLECTION = frozenset({"getattr", "setattr", "delattr", "hasattr", "vars", "dir"})
 UPSTREAM = "betangel_research"
 SUITE = "betangel_suite"
@@ -214,8 +227,6 @@ class _Checker:
                 self.attribute(node)
             elif isinstance(node, ast.Call):
                 self.call(node)
-            elif isinstance(node, ast.Subscript):
-                self.subscript(node)
             elif isinstance(node, ast.keyword) and node.arg in FORBIDDEN_NAMES:
                 self.add(self.parents[node], "test_only_name")
             elif _literal_str(node) and node not in self.docstrings:
@@ -223,6 +234,8 @@ class _Checker:
                     self.add(node, "test_only_name")
                 if node.value in GLOBALS_NAMES:
                     self.add(node, "globals_escape")
+                if node.value in DOOR_KEYS:
+                    self.add(node, DOOR_KEYS[node.value])     # getattr(x, "rx"), x["modules"], x.get("sys")
         return self.findings
 
     def import_from(self, node):
@@ -277,22 +290,25 @@ class _Checker:
         if isinstance(func, ast.Name) and func.id in REFLECTION and node.args:
             if self.reaches_rx(node.args[0]):
                 self.add(node, "rx_private")
-            if len(node.args) > 1 and _literal_str(node.args[1]):
-                if node.args[1].value == "rx":
-                    self.add(node, "rx_private")        # getattr(engine, "rx")
-                if node.args[1].value == "modules":
-                    self.add(node, "sys_modules")       # getattr(s, "modules"), whatever s holds
             if self.is_sys(node.args[0]):
                 self.add(node, "sys_modules")
             if self.is_builtins(node.args[0]):
                 self.add(node, "computed_import")
+        if (func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)) == "attrgetter":
+            self.attrgetter_paths(node)
 
-    def subscript(self, node):
-        """A module's dict read by the literal key rx or modules: vars(engine)["rx"], s.__dict__["modules"]."""
-        if _literal_str(node.slice) and node.slice.value == "rx":
-            self.add(node, "rx_private")
-        if _literal_str(node.slice) and node.slice.value == "modules":
-            self.add(node, "sys_modules")
+    def attrgetter_paths(self, node):
+        """operator.attrgetter("rx._archive") reads each dotted part as an attribute: each part is judged as a name."""
+        for argument in node.args:
+            if not _literal_str(argument):
+                continue
+            for part in argument.value.split("."):
+                if part in DOOR_KEYS:
+                    self.add(node, DOOR_KEYS[part])
+                if part in FORBIDDEN_NAMES:
+                    self.add(node, "test_only_name")
+                if part in GLOBALS_NAMES:
+                    self.add(node, "globals_escape")
 
     def rx_use(self, node):
         """rx may only be rx.<namespace>.<public name>, or rx.call(...) or rx.map_error(...).
@@ -428,7 +444,7 @@ class PlantedViolationTests(unittest.TestCase):
         # The same doors by other spellings.
         "import importlib\nmodule = importlib.import_module('betangel_research.betfair.backtest.archive')\n":
             {"computed_import"},
-        "package = __import__('betangel_suite', fromlist=['rx'])\n": {"computed_import"},
+        "package = __import__('betangel_suite', fromlist=['rx'])\n": {"computed_import", "rx_private"},
         "import sys\ntable = getattr(sys, 'modules')\n": {"sys_modules"},
         "import sys\ntable = vars(sys)['modules']\n": {"sys_modules"},
         "import sys\ntable = sys.__dict__['modules']\n": {"sys_modules"},
@@ -456,7 +472,7 @@ class PlantedViolationTests(unittest.TestCase):
             {"sys_modules"},
         "import sys\nmodule = sys.modules['betangel_suite.rx']._archive\n": {"sys_modules"},
         "import sys\nmodule = sys.modules['betangel_suite.rx'].pin\n": {"sys_modules"},
-        "import sys\nsys.modules['builtins'].exec(code)\n": {"sys_modules"},
+        "import sys\nsys.modules['builtins'].exec(code)\n": {"computed_import", "sys_modules"},
         "__import__('builtins').exec(code)\n": {"computed_import"},
         "import importlib\nimportlib.import_module('builtins').exec(code)\n": {"computed_import"},
         "from . import engine\nmodule = engine.rx._archive\n": {"rx_private"},
@@ -475,9 +491,34 @@ class PlantedViolationTests(unittest.TestCase):
         "import sys\nmodule = sys.modules['betangel_suite']\n": {"sys_modules"},
         "from importlib import sys\nmodule = sys.modules.get('socket')\n": {"sys_modules"},
         "from os import builtins\nbuiltins.exec(code)\n": {"computed_import"},
-        "import importlib\nmodule = importlib.import_module('os', 'sys')\n": {"computed_import"},
+        "import importlib\nmodule = importlib.import_module('os', 'sys')\n": {"computed_import", "sys_modules"},
         "import inspect\nfrom . import rx\nmodule = inspect.getmodule(rx.archive.safe_path)\n": {"computed_import"},
         "from inspect import getmodule\n": {"computed_import"},
+        # Literal keys and attrgetter paths round 4b's review found on d00436e, and lab-Claude's variants
+        # (methodcaller, .pop, resolve_name), each of which reached rx, sys.modules or upstream with no finding then.
+        "from . import engine\nmodule = vars(engine).get('rx')._archive\n": {"rx_private"},
+        "from . import engine\nmodule = engine.__dict__.get('rx')._archive\n": {"rx_private"},
+        "module = globals().get('rx')._archive\n": {"rx_private"},
+        "import os\ntable = os.__dict__.get('sys').__dict__.get('modules')\n": {"sys_modules"},
+        "import importlib\ntable = importlib.import_module('os').__dict__['sys'].__dict__.get('modules')\n":
+            {"sys_modules"},
+        "import operator\nfrom . import engine\nmodule = operator.attrgetter('rx._archive')(engine)\n":
+            {"rx_private"},
+        "from operator import attrgetter\nfrom . import engine\nmodule = attrgetter('rx', 'x.rx._archive')(engine)\n":
+            {"rx_private"},
+        "import operator\nimport sys\ntable = operator.attrgetter('modules')(sys)\n": {"sys_modules"},
+        "import operator\nimport os\ntable = operator.attrgetter('sys.modules')(os)\n": {"sys_modules"},
+        "import operator\nfind = operator.attrgetter('archive.ingest_archive')\n": {"test_only_name"},
+        "import operator\nfind = operator.attrgetter('f.__globals__')\n": {"globals_escape"},
+        "import sys\ntable = sys.__getattribute__('modules')\n": {"sys_modules"},
+        "import sys\ntable = object.__getattribute__(sys, 'modules')\n": {"sys_modules"},
+        "import operator\nfrom . import engine\nfacade = operator.methodcaller('get', 'rx')(vars(engine))\n":
+            {"rx_private"},
+        "from . import engine\nfacade = vars(engine).pop('rx')\n": {"rx_private"},
+        "import inspect\nloader = vars(inspect)['builtins'].exec\n": {"computed_import"},
+        "import pkgutil\nfind = pkgutil.resolve_name('betangel_research.betfair.backtest.archive:ingest_archive')\n":
+            {"computed_import"},
+        "from pkgutil import resolve_name\n": {"computed_import"},
     }
     ALLOWED_SOURCE = (
         "from . import rx\nrx.ticks.snap(345, 'down')\nrx.call(rx.book.MarketBookCache, key_type='historical')\n",
@@ -494,6 +535,9 @@ class PlantedViolationTests(unittest.TestCase):
         "def handler(self, name):\n    return getattr(self, '_do_' + name, None)\n",
         '"""The engine never calls ingest_archive or index_archive (I-10)."""\n',
         "def f():\n    \"\"\"Not __globals__, not sys.modules.\"\"\"\n    return 1\n",
+        "def f():\n    \"\"\"rx\"\"\"\n    return {'port': 8765}.get('port')\n",   # the door keys in a docstring only
+        "import operator\nname = operator.attrgetter('name', 'market.id')\n",
+        "import os\nvalue = os.environ.get('LANG')\n",
     )
 
     def test_each_planted_violation_is_refused(self):
