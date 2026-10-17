@@ -410,8 +410,10 @@ class _Git:
     def __init__(self, repo, home):
         self.prefix = list(guard.RELEASE_GIT_PREFIX) + ["-C", repo]
         tmp = os.environ.get("TMPDIR", "")
-        self.env = {"HOME": home, "PATH": "/usr/bin:/bin", "LANG": "C", "GIT_TERMINAL_PROMPT": "0",
-                    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", guard.FORBID_NETWORK_ENV: "1"}
+        # guard.RELEASE_GIT_ENV: no user or system config, and no replace refs or grafts, which would let another
+        # commit's tree pass for this one's, or a commit main does not contain pass as on main
+        self.env = dict(guard.RELEASE_GIT_ENV, HOME=home, PATH="/usr/bin:/bin", LANG="C")
+        self.env[guard.FORBID_NETWORK_ENV] = "1"
         if tmp:
             self.env["TMPDIR"] = tmp                    # where /usr/bin/git's xcrun shim keeps its cache
 

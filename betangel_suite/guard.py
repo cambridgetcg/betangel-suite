@@ -117,8 +117,8 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           and -C this checkout's own root (never the deploy clone or a release copy): the filter-driver
           config query, the index listing, status (never entering a submodule), rev-parse of <id>^{commit},
           refs/heads/main^{commit} or <id>^{tree}, merge-base --is-ancestor and archive --format=tar <id>, with
-          no user or system git config (release_argv_ok); after, none. A release names its commit by full
-          object id, never a tag or other name (release.py). Its
+          no user or system git config and no replace refs or grafts (RELEASE_GIT_ENV, release_argv_ok); after,
+          none. A release names its commit by full object id, never a tag or other name (release.py). Its
           writes may also go under ~/.local/share/betangel-suite/app (the release copies) and nowhere else
           in the share dir.
   uisnap  (bin/suite uisnap, DESIGN.md 11) before seal(), exactly one argv: the Command Line Tools' swiftc with
@@ -212,7 +212,14 @@ _UISNAP_DIR_RE = re.compile(r"[0-9a-f]{64}")
 # transport or index write; revisions only as full object ids, plus refs/heads/main.
 RELEASE_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
                       "-c", "core.attributesFile=/dev/null", "--no-optional-locks")
-RELEASE_GIT_ENV_EXTRA = frozenset({"GIT_TERMINAL_PROMPT"})
+# The whole GIT_* part of every release git child's environment, exactly (release_argv_ok): no user or system config,
+# no prompt, and neither replace refs nor grafts. A refs/replace/ entry or an info/grafts line in this checkout would
+# make git archive copy another commit's tree under the id given, rev-parse <id>^{tree} name that tree (so the tree
+# check passes and RELEASE.json records it beside the id), and merge-base --is-ancestor count a commit main does not
+# contain as on main. GIT_NO_REPLACE_OBJECTS=1 and GIT_GRAFT_FILE=/dev/null switch both off, as for vendor (round 4b,
+# after phase0/foundation's fix for vendor).
+RELEASE_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
+                   "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": "/dev/null"}
 # release.py refuses a repository whose own config (includes too) defines a filter driver: git status would run its
 # clean command and git archive its smudge command, as this user and outside the guard (release_git_filter).
 RELEASE_FILTER_QUERY = ("config", "--includes", "--null", "--get-regexp", r"^filter\.")
@@ -1012,12 +1019,11 @@ def release_argv_ok(argv, env, repo, research, app_root):
     never --recurse-submodules);
     rev-parse --verify --quiet <id>^{commit} | refs/heads/main^{commit} | <id>^{tree}, <id> a full object id;
     merge-base --is-ancestor <id> <id>; archive --format=tar <id>. Every subcommand is local (no fetch, no
-    remote archive). The environment must be explicit, with no user or system git config and no other GIT_*
-    variable. repo must not lie in the deploy clone or the app root (a release copy is never a source).
+    remote archive). The environment must be explicit, and its GIT_* variables exactly RELEASE_GIT_ENV: no user or
+    system git config, no replace refs or grafts, nothing else. repo must not lie in the deploy clone or the app
+    root (a release copy is never a source).
     """
-    if env is None or any(env.get(key) != value for key, value in TEST_GIT_ENV.items()):
-        return False
-    if any(key.startswith("GIT_") and key not in TEST_GIT_ENV and key not in RELEASE_GIT_ENV_EXTRA for key in env):
+    if env is None or {key: value for key, value in env.items() if key.startswith("GIT_")} != RELEASE_GIT_ENV:
         return False
     if not (isinstance(repo, str) and os.path.isabs(repo) and os.path.normpath(repo) == repo):
         return False

@@ -353,6 +353,33 @@ class ReleaseCommandTests(ReleaseTestCase):
         self.assertEqual(launch(home, self.repo.path, "release"), (2, "", "refused:bad_arguments\n"))
         self.assertEqual(tree_listing(home), before)
 
+    def test_replace_refs_and_grafts_are_ignored(self):
+        # A replace ref or a graft in the checkout makes git see other objects (round 4b; as for vendor on
+        # phase0/foundation): refs/replace/<c1> naming c2 would copy c2's tree under c1's id and record it as c1's
+        # tree, and a graft giving c1 the parent c2 would put c2 on main. release's git runs with neither
+        # (guard.RELEASE_GIT_ENV: GIT_NO_REPLACE_OBJECTS=1, GIT_GRAFT_FILE=/dev/null).
+        replace = os.path.join(self.repo.path, ".git", "refs", "replace", self.c1)
+        grafts = os.path.join(self.repo.path, ".git", "info", "grafts")
+        self.addCleanup(lambda: os.path.lexists(replace) and os.remove(replace))
+        self.addCleanup(lambda: os.path.lexists(grafts) and os.remove(grafts))
+        self.repo.write_ref("refs/replace/" + self.c1, self.c2)
+        tree2 = self.repo.git("rev-parse", "--verify", "-q", self.c2 + "^{tree}")
+        self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", self.c1 + "^{tree}"), tree2)  # plain git: c2's
+        home = self.fresh_home()
+        code, out, err = self.release(home, self.c1)
+        self.assertEqual((code, err), (0, ""), err)
+        manifest = release.verify_copy(os.path.join(roots.app_dir(home), self.name1))
+        self.assertEqual((manifest["commit"], manifest["tree"]), (self.c1, self.tree1))
+        self.assertNotIn("side.txt", manifest["files"])
+        os.remove(replace)
+        os.makedirs(os.path.dirname(grafts), exist_ok=True)
+        with open(grafts, "w", encoding="ascii") as handle:
+            handle.write("%s %s\n" % (self.c1, self.c2))          # c1's parent would be c2, so c2 on main
+        home = self.fresh_home()
+        before = tree_listing(home)
+        self.assertRefused(self.release(home, self.c2), "release_not_on_main")
+        self.assertEqual(tree_listing(home), before)
+
     def test_a_dirty_tree_is_refused(self):
         home = self.fresh_home()
         before = tree_listing(home)

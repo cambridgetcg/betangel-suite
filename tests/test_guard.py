@@ -1554,7 +1554,8 @@ class ReleaseModeTests(unittest.TestCase):
     REPO = "/h/betangel-suite"
     RESEARCH = "/h/betangel-research"
     APP = "/h/.local/share/betangel-suite/app"
-    ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", FORBID: "1", "PATH": "/usr/bin:/bin"}
+    ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
+           "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": "/dev/null", FORBID: "1", "PATH": "/usr/bin:/bin"}
     COMMIT = "0a1b2c3d4e5f" * 3 + "0a1b"
     TREE = "f" * 40
 
@@ -1622,12 +1623,20 @@ class ReleaseModeTests(unittest.TestCase):
                                                self.ENV, self.REPO, self.RESEARCH, self.APP))
         self.assertFalse(guard.release_argv_ok(list(guard.RELEASE_GIT_PREFIX) + ["-C", self.REPO] + status, None,
                                                self.REPO, self.RESEARCH, self.APP))      # an inherited environment
+        # The GIT_* part of the environment is exactly guard.RELEASE_GIT_ENV: replace refs and grafts off too (a
+        # replace ref or a graft would let another commit's tree, or a commit main does not contain, pass).
+        self.assertEqual({key: value for key, value in self.ENV.items() if key.startswith("GIT_")},
+                         guard.RELEASE_GIT_ENV)
         for change in ({"GIT_CONFIG_GLOBAL": None}, {"GIT_CONFIG_NOSYSTEM": None}, {"GIT_CONFIG_GLOBAL": "/h/.gitconfig"},
                        {"GIT_DIR": self.RESEARCH + "/.git"}, {"GIT_WORK_TREE": self.RESEARCH}, {"GIT_CONFIG_COUNT": "1"},
-                       {"GIT_SSH_COMMAND": "ssh"}, {"GIT_EXEC_PATH": "/x"}, {"GIT_AUTHOR_NAME": "x"}):
+                       {"GIT_SSH_COMMAND": "ssh"}, {"GIT_EXEC_PATH": "/x"}, {"GIT_AUTHOR_NAME": "x"},
+                       {"GIT_TERMINAL_PROMPT": None}, {"GIT_TERMINAL_PROMPT": "1"},
+                       {"GIT_NO_REPLACE_OBJECTS": None}, {"GIT_NO_REPLACE_OBJECTS": "0"},
+                       {"GIT_GRAFT_FILE": None}, {"GIT_GRAFT_FILE": self.REPO + "/.git/info/grafts"},
+                       {"GIT_REPLACE_REF_BASE": "refs/other/"}):
             env = {key: value for key, value in dict(self.ENV, **change).items() if value is not None}
             self.assertFalse(self.ok(status, env=env), change)
-        self.assertTrue(self.ok(status, env=dict(self.ENV, GIT_TERMINAL_PROMPT="0")))
+        self.assertTrue(self.ok(status, env=dict(self.ENV, HOME="/h", TMPDIR="/h/tmp", LANG="C")))
 
     def test_release_is_its_own_mode(self):
         from betangel_suite import cli
