@@ -151,7 +151,7 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
   - lab-Claude merges a PR only when every reviewer routed to it in section 3.9 has accepted the same head SHA, and the tests pass on 3.13 and 3.11 at that SHA;
   - until Yu rules on the governance row (section 3.9), a PR that touches a rule document waits for both Nuance and Astra to accept the same head SHA (Nuance's recommendation), and a diff that no row covers goes to Yu and waits for Yu's acceptance;
   - PR #5 also waits for Yu's written approval of proposal 002 (on phase0/viewing), after Nuance's and Astra's reviews of it;
-  - the merge order is #1, #2, #4, #5.
+  - the merge order is #1, #2, #4, #5, in one sitting with nothing merged in between. Some fixes exist only on a later branch and correct text that an earlier PR still carries (f931637, ab766a0 and 0c1335b, on #5; Nuance's PR #1 review, P3: "merge the four together, or move each fix down"). Stale text that can stand on its own is also moved down to the earliest branch that carries it, as 3.2's fork-and-spawn sentence and the `risk` oracle rows (sections 4.2 and 7.7) were moved to #1.
 - **The UI-only half: asked of Yu in the packet, not answered.** Lab-Claude's reason for treating it as open, although Nuance points to section 3.9 as its source: the packet, the page Yu answered, put it to Yu as an open question with no recommendation, and Yu's 2026-10-16 answer does not take it up separately. Section 3.9's UI-only rule stays a proposal until Yu answers.
 
 **Bet Angel on Yu's Betfair account:** never used (Yu, 2026-10-15), so the design needs no handling for orders or limits shared with Bet Angel. If Bet Angel is ever installed against the account, that needs a fresh review first.
@@ -243,7 +243,7 @@ Yu, in the lab session: "bet angel never used. Lets go with what you recommended
 - **Loader thread.** Builds the catalogue and prescans the market being opened.
   - It prefetches the next race at the same meeting **only in display mode or while paused**. It works in chunks of about 2,000 lines, yields between chunks, and stops when an actor tick overruns.
   - The reason: python3.13 has the GIL. Prescan is pure-Python parse and apply (about 0.75 s of CPU for a median member and about 6 s for the largest), so running it during exact mode adds lag and jitter.
-  - A worker process is not an option, because the guard refuses fork and spawn after `seal()` (I-5).
+  - A worker process is not an option. After `seal()` the guard refuses every way to start one. In every phase it also refuses a direct `_posixsubprocess.fork_exec`, and importing `multiprocessing` or `concurrent.futures.process`: these start children with no audit event of their own (I-5; Nuance's PR #2 review, item 3, found the old "refuses fork and spawn after `seal()`" false for them; 56a2631).
 - **HTTP threads.** `ThreadingHTTPServer` with daemon threads. They only enqueue commands and read immutable frame objects, which the actor publishes by swapping a reference. There is one streaming GET per connected tab.
 
 ### 3.3 Data flow
@@ -427,7 +427,7 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
   - Astra reviews `guard.py`, `rx.py`, `errors.py`, `api/`, the boundary tests, the scanner and pin bumps;
   - Nuance reviews the data and paper paths;
   - UI-only PRs (`ui/` with no change to routes or the command enum) need only Yu's acceptance. This is a proposal: the packet asked Yu with no recommendation, and Yu has not answered it (section 2.2.1).
-  - **Rule documents: no row yet; to be asked of Yu.** AGENTS.md, this document, `docs/data-handling.md`, `docs/proposals/` and `tools/stage/` match no row, so the author judges its own widening. Nuance recommends a governance row (PR #1 review, item 9, amending her view on Q-N12): these files go to Nuance and Astra, accepted at a named SHA; a diff that no row covers goes to Yu; and a change of meaning follows rule 10 unless both reviewers say it does not widen. Yu rules. Until then, in lab-Claude's reading of "sensible" (section 2.2.1, labelled there as lab-Claude's), a PR that touches a rule document waits for both Nuance and Astra to accept the same head SHA, and a diff that no row covers goes to Yu.
+  - **Rule documents: no row yet; asked of Yu, not answered.** AGENTS.md, this document, `docs/data-handling.md`, `docs/proposals/` and `tools/stage/` match no row, so the author judges its own widening. Nuance recommends a governance row (PR #1 review, item 9, amending her view on Q-N12): these files go to Nuance and Astra, accepted at a named SHA; a diff that no row covers goes to Yu; and a change of meaning follows rule 10 unless both reviewers say it does not widen. Yu rules. Until then, in lab-Claude's reading of "sensible" (section 2.2.1, labelled there as lab-Claude's), a PR that touches a rule document waits for both Nuance and Astra to accept the same head SHA, and a diff that no row covers goes to Yu.
 - **Collab.** Edit tasks use `root_path=/Users/user/betangel-suite`.
 - **Upstream changes.** Any betangel-research change goes to Nuance as a proposal (section 14).
 - **Yu's feedback channel.** Yu's acceptance and feedback reach lab-Claude only in a lab-Claude session that Yu types into (on the lab, or one Yu opens from the Air).
@@ -449,7 +449,7 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
   7. **Nuance's runs.** While the run marker exists, no suite engine or real-data command runs and nothing writes under `~/betangel-data` (section 6.8).
   8. **No credential fields.** The suite UI never has credential fields. Any login prompt inside it is an attack.
   9. **Live-key data.** Paper or practice never runs on live-key data (section 2.3).
-  10. **Scope.** Every widening of scope goes through the proposal process (section 14). Who judges whether a change widens is part of the governance row, to be asked of Yu (above).
+  10. **Scope.** Every widening of scope goes through the proposal process (section 14). Who judges whether a change widens is part of the governance row, asked of Yu and not answered (above).
 
 ---
 
@@ -496,8 +496,9 @@ The **upstream closure** loads no `socket`, `ssl`, `http` or `urllib`. The suite
 | `paper.run_paper_replay(recording_paths, orders_path, params, out_dir, *, repo_root, snapshot_reader=None, key_type=None)`; `ORDER_FILE_KEYS` | paper.py:956, :61 | The parity oracle, on **small synthetic fixtures only** (capped at about 2,000 messages and 6 runners). It holds every snapshot in a list (paper.py:991-996); *measured (synthetic)* at about 1.98 GB RSS and 141 s for one 60k-message market. It is never run on real data. `repo_root` is always a temp `git clone --local` of the deps clone, never `~/betangel-research`, because `receipts.git_state` runs `git status --porcelain` there, which can rewrite `.git/index` (receipts.py:132-145; paper.py:956-957, :1053). A test asserts this. |
 | `book.snapshots_from_recording(path, *, key_type)` | book.py:526-582 | The oracle for the yield tracker (section 6.2), including 503 windows. |
 | `market_index._messages(stream, limits)` (private) | market_index.py:268-297 | Reader parity: one test imports it, so drift is caught on pin bumps. |
-| `risk.worst_case_market_loss(orders, outcome_ids, *, hedge_credit=False)`; `risk.exposure_by_market`; `STATUS_EXPOSURE_BASIS` | risk.py:136, :167, :52 | The oracle for the suite's own exposure code, on both bases. Note the default is `hedge_credit=False`. The engine never imports risk (INTERNAL_ONLY, tests/test_betfair_boundaries.py:22). Whether even test-only use is acceptable is a question for Nuance. |
 | `archive.ingest_archive(tar_path, data_root)`; `market_index.index_archive(root, sha)` | archive.py:765; market_index.py:870 | End-to-end data tests: a synthetic TAR is ingested and indexed into a temp root. Engine code never calls them (AST test). |
+
+**No `risk` oracle (Nuance, Q-N1).** `risk` is not a test oracle. It is not pinned: Nuance found that a tampered copy of `risk.py` passed `pin.verify`. The suite's exposure code is checked instead against an independent exposure oracle written in the tests, as upstream's own tests do (tests/test_betfair_support_orders.py:724-760). The engine never imports risk (INTERNAL_ONLY, tests/test_betfair_boundaries.py:22). Nuance's Q-N1 answer is recorded on phase0/foundation (section 15.2).
 
 ### 4.3 Later phases (Air, Nuance-owned), never imported on the lab
 
@@ -1018,7 +1019,7 @@ Parity runs only on small synthetic fixtures; `run_paper_replay` materialises ev
   - **paper** (worst case with hedge credit);
   - **live** (worst case without hedge credit, as live R8-R10 count it; STATUS_EXPOSURE_BASIS, risk.py:52).
   
-  Unmatched, pending and unknown portions count at their full adverse loss in both bases. Tests check it against `risk.worst_case_market_loss(..., hedge_credit=True/False)` on randomised order sets. Showing both bases makes visible that greening at live defaults would use up the £20 daily cap.
+  Unmatched, pending and unknown portions count at their full adverse loss in both bases. Tests check it against an independent exposure oracle written in the tests, on both bases and on randomised order sets. `risk` is not used as the oracle, because it is not pinned (Nuance, Q-N1; section 4.2). Showing both bases makes visible that greening at live defaults would use up the £20 daily cap.
 
 ### 7.8 Green-up / close trade (new suite code; an operator action)
 
@@ -1695,7 +1696,7 @@ Nuance's PR #1 review (2026-10-16) answered Q-N4..Q-N11 and Q-N13. The answers b
 
 Base: the mvp-ux draft. The following were fixed or grafted in:
 
-1. **INTERNAL_ONLY.** The engine no longer imports `risk` or `capability` (tests/test_betfair_boundaries.py:22). Exposure is computed in suite code on both bases, and `risk.worst_case_market_loss` (whose default is `hedge_credit=False`, risk.py:136) is a test oracle only. One `rx.py` facade, enforced by an AST test.
+1. **INTERNAL_ONLY.** The engine no longer imports `risk` or `capability` (tests/test_betfair_boundaries.py:22). Exposure is computed in suite code on both bases, and `risk.worst_case_market_loss` (whose default is `hedge_credit=False`, risk.py:136) is a test oracle only. (Superseded: Nuance answered Q-N1 that risk is not an oracle either; section 4.2.) One `rx.py` facade, enforced by an AST test.
 2. **Sampled stepping removed.** Exact mode is the default whenever orders are pending or open; the clock lags instead of sampling. The reasons: per-step flooring (paper.py:543), and 503 windows raising high-water marks without filling (paper.py:470-482, :552-553).
 3. **Clock-stamped snapshots removed from the default path.** Stamping the activation book at A would count the first interval (paper.py:321, :496-503) and break parity. (Draft 0.1 kept an opt-in relaxation at A − 1 ms; draft 0.2 cut it, section 7.5.)
 4. **Integer timestamps.** `utc_from_ns` takes an integer only (receipts.py:29-31), so the design always uses `ms * 1_000_000`.
@@ -1767,7 +1768,7 @@ Nuance reviewed this document at daf9c64 from the upstream and data side: one co
 - **6.** Screen capture on the Air: rule 5, sections 8.6 and 9.4, Q-Y10.
 - **7.** Other Air loopback services: sections 8.6, 9.4, 12 (L1) and 16.
 - **8.** The silent-disconnect bound, and the 5 s `not_watched` pause owed before 1b: sections 8.6, 10 (I-19), 12 and 16.
-- **9.** The governance row for rule documents, to be asked of Yu: section 3.9, Q-N12, Q-Y8.
+- **9.** The governance row for rule documents, asked of Yu and not answered: section 3.9, Q-N12, Q-Y8.
 - **10.** Q-Y8 corrected, and R-3 and R-7 marked as stated defaults: sections 2.2.1, 3.9 and 15.1.
 - **11 (P3).** The Rule-4 cut-off (7.9); the SP tap's terms (6.6); the trial ledger and inspected months (5.3, 5.5); session ids and end statuses (7.10); partial invariants and the Air viewing gate (0, 12); no data-root read before the root is agreed (5.2); the practice loss limit (7.2); the Air-side repo (3.1); "tick-by-tick" (5.1); the Safari clean-up now (8.6, Q-Y11); `research_months_ruling` (3.8); release by merge SHA, silent codes, the checklist as a log and scanned outbound text (8.6, 9.1, 3.9, 5.6); stale I-14 and c2b3b3/c2b3b4 (0, 2.4, 10, 16, Q-Y16).
 - **Questions.** Nuance's answers to Q-N4..Q-N11 and Q-N13 are recorded as hers, and Yu can override them (section 15.2).
