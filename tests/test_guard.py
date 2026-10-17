@@ -18,6 +18,9 @@ from betangel_suite import config, guard, roots
 from betangel_suite.errors import SuiteError
 from tests import FORBID, PRELUDE, PYTHON, ROOT, child_env, make_home, rmtree, run_python, run_relayed, run_suite
 
+MODES = guard.MODES                                         # "every mode" below: uisnap and stop included
+NON_ENGINE = tuple(mode for mode in MODES if mode != "engine")
+
 ATTEMPT = """
 import json, os
 from betangel_suite import guard, roots
@@ -628,7 +631,7 @@ attempt("loopback_after_seal", loopback)
         # and arm() fails closed if socket.socket already has a listen of its own.
         home = make_home(self)
         early = "import socket\nearly = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
-        for mode in ("engine", "test", "vendor"):
+        for mode in MODES:
             results = checks(self, home, setup=early, mode=mode, body=self.LISTEN + """
 attempt("early_unbound", lambda: early.listen(1))
 early.close()
@@ -784,7 +787,7 @@ results["outside"] = sorted(os.listdir(outside))
 
     def test_children_without_an_audit_event_are_refused_in_every_mode(self):
         home = make_home(self)
-        for mode in ("test", "vendor"):
+        for mode in NON_ENGINE:
             results = checks(self, home, setup=self.CHILDREN_SETUP, mode=mode, body=self.CHILDREN + """
 attempt("fork_exec", fork_exec)
 attempt("process_start", lambda: process_start("process"))
@@ -831,6 +834,103 @@ results["outside"] = sorted(os.listdir(outside))
             self.assertEqual(results[name], "dlopen_refused", name)
         self.assertEqual((results["loaded"], results["outside"]), ([], []))
 
+    # Fresh loads of a refused extension module (Astra's re-review of #2, finding 1; Nuance's re-review, F4). The
+    # wrapper sits on one _posixsubprocess instance: popping it from sys.modules and importing again, module_from_spec,
+    # _imp.create_dynamic and a dotted ExtensionFileLoader name each gave a module whose fork_exec started
+    # /usr/bin/touch outside the roots after seal(). A dotted "x._ctypes" loads _ctypes, and a subinterpreter (its own
+    # audit hooks, none of ours) ran os.mkdir outside the roots. Each helper uses what it loaded, so a load that got
+    # through leaves a name in outside/.
+    FRESH = """
+import _imp, importlib, importlib.machinery, importlib.util, subprocess, sys
+outside = os.path.join(os.environ["HOME"], "outside")
+SUBINTERPRETERS = [name for name in ("_interpreters", "_xxsubinterpreters") if importlib.util.find_spec(name)]
+def spawn_with(module, name):
+    read, write = os.pipe()
+    try:
+        pid = module.fork_exec(
+            [b"/usr/bin/touch", os.fsencode(os.path.join(outside, name))], [b"/usr/bin/touch"], True, (),
+            None, None, -1, -1, -1, -1, -1, -1, read, write, False, False, -1, None, None, None, -1, None,
+            subprocess._USE_VFORK)
+    finally:
+        os.close(read)
+        os.close(write)
+    os.waitpid(pid, 0)
+def reimport():
+    saved = sys.modules.pop("_posixsubprocess")
+    try:
+        import _posixsubprocess as fresh
+    finally:
+        sys.modules["_posixsubprocess"] = saved
+    return fresh
+def from_spec():
+    return importlib.util.module_from_spec(importlib.util.find_spec("_posixsubprocess"))
+def create_dynamic():
+    return _imp.create_dynamic(importlib.util.find_spec("_posixsubprocess"))
+def dotted(name, as_name):
+    loader = importlib.machinery.ExtensionFileLoader(as_name, importlib.util.find_spec(name).origin)
+    return importlib.util.module_from_spec(importlib.util.spec_from_loader(as_name, loader))
+class Disguised(str):
+    # A name that answers the string methods for itself; CPython loads by the characters it holds.
+    def rpartition(self, sep):
+        return ("", sep, "harmless")
+    def startswith(self, *args):
+        return False
+    def __eq__(self, other):
+        return False
+    __hash__ = str.__hash__
+def disguised():
+    spec = importlib.util.find_spec("_posixsubprocess")
+    spec = importlib.util.spec_from_loader(Disguised("yy._posixsubprocess"),
+                                           importlib.machinery.ExtensionFileLoader("yy._posixsubprocess", spec.origin))
+    return importlib.util.module_from_spec(spec)
+def reloaded():
+    return importlib.reload(sys.modules["_posixsubprocess"])
+def run_inside(module, name):
+    code = "import os; os.mkdir(%r)" % os.path.join(outside, name)
+    if hasattr(module, "run_in_subinterp"):
+        module.run_in_subinterp(code)
+    else:
+        module.run_string(module.create(), code)
+def phase(suffix):
+    for label, load in (("reimport", reimport), ("from_spec", from_spec), ("create_dynamic", create_dynamic),
+                        ("dotted", lambda: dotted("_posixsubprocess", "zz._posixsubprocess")),
+                        ("disguised", disguised), ("reload", reloaded)):
+        attempt(label + suffix, lambda: spawn_with(load(), label + suffix))
+    attempt("ctypes_dotted" + suffix, lambda: dotted("_ctypes", "zz._ctypes").dlsym)
+    for name in SUBINTERPRETERS + ["_testcapi"]:
+        attempt(name + suffix, lambda: run_inside(importlib.import_module(name), name + suffix))
+        attempt(name + "_dotted" + suffix, lambda: run_inside(dotted(name, "zz." + name), name + "_dotted" + suffix))
+    attempt("_testinternalcapi" + suffix, lambda: importlib.import_module("_testinternalcapi"))
+    attempt("cached_import" + suffix, lambda: __import__("_posixsubprocess"))
+phase("")
+guard.seal()
+phase("_sealed")
+results["still_wrapped"] = type(sys.modules["_posixsubprocess"].fork_exec) is not type(len)
+results["subinterpreter_modules"] = len(SUBINTERPRETERS)
+results["loaded"] = sorted(name for name in sys.modules if name.rpartition(".")[2] in (
+    "_ctypes", "_interpreters", "_xxsubinterpreters", "_testcapi", "_testinternalcapi") or name.startswith(("yy", "zz")))
+results["outside"] = sorted(os.listdir(outside))
+"""
+
+    def test_fresh_loads_of_a_refused_extension_are_refused_in_every_mode(self):
+        home = make_home(self)
+        for mode in MODES:
+            results = checks(self, home, setup=self.CHILDREN_SETUP, mode=mode, body=self.FRESH)
+            with self.subTest(mode=mode):
+                self.assertEqual(results.pop("subinterpreter_modules"), 1)     # _interpreters or _xxsubinterpreters
+                for suffix in ("", "_sealed"):
+                    for label in ("reimport", "from_spec", "create_dynamic", "dotted", "disguised", "ctypes_dotted",
+                                  "_testcapi", "_testcapi_dotted", "_testinternalcapi"):
+                        self.assertEqual(results.pop(label + suffix), "import_refused", label + suffix)
+                    for name in ("_interpreters", "_xxsubinterpreters"):
+                        for label in (name, name + "_dotted"):
+                            if label + suffix in results:
+                                self.assertEqual(results.pop(label + suffix), "import_refused", label + suffix)
+                    # reload keeps the wrapper on the one instance, which refuses the call itself.
+                    self.assertEqual(results.pop("reload" + suffix), "subprocess_refused", suffix)
+                    self.assertEqual(results.pop("cached_import" + suffix), "ok", suffix)
+                self.assertEqual(results, {"still_wrapped": True, "loaded": [], "outside": []})
+
     def test_arm_fails_closed_when_a_child_route_is_already_open(self):
         # The import event fires only for a module not loaded yet, and subprocess binds fork_exec when it is
         # imported, so arm() refuses rather than trust either.
@@ -843,6 +943,17 @@ results["outside"] = sorted(os.listdir(outside))
                 ("import subprocess\nsubprocess._fork_exec = lambda *args: 0\n", "call_replaced_early"),
                 ("import _posixsubprocess\noriginal = _posixsubprocess.fork_exec\n"
                  "_posixsubprocess.fork_exec = lambda *args: original(*args)\n", "call_replaced_early"),
+                # A subinterpreter runner or a second, unwrapped _posixsubprocess already loaded (Astra's and
+                # Nuance's re-reviews of #2): the hook never sees an import that has already happened.
+                ("import importlib.util\n__import__(next(name for name in ('_interpreters', '_xxsubinterpreters')"
+                 " if importlib.util.find_spec(name)))\n", "module_loaded_early"),
+                ("import _testcapi\n", "module_loaded_early"),
+                ("import importlib.machinery, importlib.util, sys\n"
+                 "loader = importlib.machinery.ExtensionFileLoader('zz._posixsubprocess',"
+                 " importlib.util.find_spec('_posixsubprocess').origin)\n"
+                 "sys.modules['zz._posixsubprocess'] = importlib.util.module_from_spec("
+                 "importlib.util.spec_from_loader('zz._posixsubprocess', loader))\n", "module_loaded_early"),
+                ("import _posixsubprocess\n", "ok"),
                 ("import subprocess, concurrent.futures\n", "ok")):
             code = ATTEMPT + setup + "attempt('arm', lambda: guard.arm('engine'))\nprint(json.dumps(results))\n"
             result = run_python(code, home)
@@ -1032,14 +1143,26 @@ results["partial_made"] = os.path.lexists(partial)
 
     def test_test_runner_argv_shapes(self):
         interpreters = frozenset(guard.TEST_INTERPRETERS)
+        launch_env = dict(self.GIT_ENV, HOME=self.TMP + "/home-x/home")     # a temporary HOME, as tests give one
 
-        def ok(argv):
-            return guard.runner_argv_ok(argv, self.GIT_ENV, interpreters, guard.LAUNCHER, self.TMP)
+        def ok(argv, env=self.GIT_ENV):
+            return guard.runner_argv_ok(argv, env, interpreters, guard.LAUNCHER, self.TMP, "/h")
 
         self.assertTrue(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", "-c", "pass"]))
+        self.assertTrue(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", "-c", "pass"], None))
         self.assertFalse(ok(["/opt/homebrew/bin/python3.13", "-c", "pass"]))
         self.assertFalse(ok(["/opt/homebrew/bin/python3", "-I", "-S", "-B", "-c", "pass"]))
-        self.assertTrue(ok(["/bin/sh", guard.LAUNCHER, "selfcheck"]))
+        self.assertTrue(ok(["/bin/sh", guard.LAUNCHER, "selfcheck"], launch_env))
+        self.assertTrue(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", ROOT + "/bin/_launch.py", "selfcheck"],
+                           launch_env))
+        # A launcher child needs an explicit environment whose HOME keeps it out of the runner's data home (Nuance's
+        # re-review of #2, F2; the hook-level cases are in test_launcher_children_keep_out_of_the_runners_data_home).
+        for env in (None, self.GIT_ENV, dict(launch_env, HOME="relative"), dict(launch_env, HOME="/h"),
+                    dict(launch_env, HOME="/h/betangel-data/x"), dict(launch_env, HOME="/"),
+                    dict(launch_env, TMPDIR="/h/betangel-data/tmp")):
+            self.assertFalse(ok(["/bin/sh", guard.LAUNCHER, "selfcheck"], env), env)
+            self.assertFalse(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", "bin/_launch.py", "selfcheck"], env),
+                             env)
         self.assertFalse(ok(["/bin/sh", "-c", "true"]))
         self.assertTrue(ok(["/usr/bin/git", "-C", self.REPO, "rev-parse", "HEAD"]))
         self.assertFalse(ok(["/usr/bin/git", "status"]))
@@ -1072,10 +1195,23 @@ results["partial_made"] = os.path.lexists(partial)
                      ["-C", repo, "--exec-path=/x", "init"], ["-C", repo]):
             self.assertFalse(ok(argv), argv)
         self.assertFalse(guard.runner_git_ok([guard.GIT, "-C", repo, "init"], None, self.TMP))
+        # The environment is an exact allowlist (Nuance's re-review of #2, F6): the keys test_hygiene's _git_env and
+        # test_vendor give, with HOME and TMPDIR under the temp root, pass; any other key or value does not.
+        full = dict(self.GIT_ENV, HOME=self.TMP + "/hygiene-x/home", TMPDIR=self.TMP + "/hygiene-x", LANG="en_GB.UTF-8",
+                    GIT_AUTHOR_NAME="Synthetic Tester", GIT_AUTHOR_EMAIL="tester@example.invalid",
+                    GIT_COMMITTER_NAME="Synthetic Tester", GIT_COMMITTER_EMAIL="tester@example.invalid",
+                    GIT_TERMINAL_PROMPT="0")
+        self.assertTrue(ok(["-C", repo, "init"], full))
+        self.assertTrue(ok(["-C", repo, "init"], {key: full[key] for key in guard.TEST_GIT_ENV}))
         for change in ({"GIT_CONFIG_GLOBAL": None}, {"GIT_CONFIG_NOSYSTEM": None}, {"GIT_CONFIG_GLOBAL": "/h/.gitconfig"},
                        {"GIT_DIR": research + "/.git"}, {"GIT_WORK_TREE": research}, {"GIT_CONFIG_COUNT": "1"},
-                       {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='x'"}, {"GIT_SSH_COMMAND": "ssh"}, {"GIT_EXEC_PATH": "/x"}):
-            env = {key: value for key, value in dict(self.GIT_ENV, **change).items() if value is not None}
+                       {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='x'"}, {"GIT_SSH_COMMAND": "ssh"}, {"GIT_EXEC_PATH": "/x"},
+                       {"DEVELOPER_DIR": "/x"}, {"SDKROOT": "/x"}, {"XDG_CONFIG_HOME": "/h/.config"}, {"PAGER": "/bin/sh"},
+                       {"EDITOR": "/bin/sh"}, {"DYLD_INSERT_LIBRARIES": "/x"}, {"PYTHONPATH": "/x"},
+                       {"PATH": "/x:/usr/bin:/bin"}, {"GIT_TERMINAL_PROMPT": "1"}, {FORBID: None}, {FORBID: "0"},
+                       {"HOME": "/h"}, {"HOME": research}, {"HOME": self.TMP + "/../x"}, {"HOME": "relative"},
+                       {"TMPDIR": "/private/tmp"}, {"TMPDIR": self.TMP + "/x/"}, {"LANG": "../../x"}, {"LANG": ""}):
+            env = {key: value for key, value in dict(full, **change).items() if value is not None}
             self.assertFalse(ok(["-C", repo, "init"], env), change)
 
     def test_test_runner_children_keep_the_switch_and_a_clean_git_config(self):
@@ -1089,6 +1225,86 @@ results["partial_made"] = os.path.lexists(partial)
         with self.assertRaises(guard.GuardRefusal):     # the switch, but the user's git config
             subprocess.run([guard.GIT, "-C", home, "init", "-q"], env=child_env(home), capture_output=True, timeout=30)
         self.assertFalse(os.path.lexists(os.path.join(home, ".git")))
+
+    def test_test_runner_git_refuses_developer_dir(self):
+        # Nuance's re-review of #2, F6: runner_git_ok accepted any non-GIT_ key, and a test-armed child ran /usr/bin/git
+        # with DEVELOPER_DIR=<fake>, which made git run <fake>/usr/bin/xcrun. Here a test-mode child with a temporary
+        # HOME tries it; the fake xcrun would leave a name in outside/.
+        home = make_home(self)
+        fake = os.path.join(home, "developer", "usr", "bin")
+        os.makedirs(fake)
+        os.makedirs(os.path.join(home, "outside"))
+        with open(os.path.join(fake, "xcrun"), "w") as handle:
+            handle.write("#!/bin/sh\n/usr/bin/touch %s\nexit 1\n" % os.path.join(home, "outside", "xcrun-ran"))
+        os.chmod(os.path.join(fake, "xcrun"), 0o755)
+        results = checks(self, home, mode="test", setup="import subprocess\n", body="""
+home = os.environ["HOME"]
+repo = os.path.join(os.environ["TMPDIR"], "repo")
+os.mkdir(repo)
+env = {"PATH": "/usr/bin:/bin", "HOME": home + "/.local/state/betangel-suite/tmp", "GIT_CONFIG_GLOBAL": "/dev/null",
+       "GIT_CONFIG_NOSYSTEM": "1", guard.FORBID_NETWORK_ENV: "1"}
+def git(env):
+    subprocess.run([guard.GIT, "-C", repo, "init", "-q", "--template="], env=env, capture_output=True, timeout=60)
+attempt("developer_dir", lambda: git(dict(env, DEVELOPER_DIR=os.path.join(home, "developer"))))
+attempt("sdkroot", lambda: git(dict(env, SDKROOT=os.path.join(home, "developer"))))
+attempt("plain", lambda: git(env))
+results["repo_made"] = os.path.isdir(os.path.join(repo, ".git"))
+results["outside"] = sorted(os.listdir(os.path.join(home, "outside")))
+""")
+        self.assertEqual(results, {"developer_dir": "subprocess_refused", "sdkroot": "subprocess_refused", "plain": "ok",
+                                   "repo_made": True, "outside": []})
+
+    def test_launcher_children_keep_out_of_the_runners_data_home(self):
+        # Nuance's re-review of #2, F2: a child of the test runner started with env=None inherits the runner's HOME,
+        # the real one under bin/suite test, and an engine-mode child armed with it wrote suite.noindex. The child's
+        # own guard judges its roots against its own HOME, so the runner judges a launcher child's HOME, the roots
+        # under it and its TMPDIR against the runner's data home, by realpath and identity. Here a test-mode child
+        # with a temporary HOME plays the runner; every target is synthetic and inside the temporary tree.
+        runner = make_home(self)
+        data = roots.data_home(runner)
+        os.makedirs(os.path.join(data, "historic-pro"), mode=0o700)
+        os.makedirs(os.path.join(data, "lab-state", "state", "betangel-suite", "tmp"), mode=0o700)
+        inside = os.path.join(data, "inside")
+        os.makedirs(inside, mode=0o700)
+        control = make_home(self)
+        linked_data, linked_local = make_home(self), make_home(self)
+        os.symlink(data, roots.data_home(linked_data))                              # its betangel-data is the runner's
+        rmtree(os.path.join(linked_local, ".local"))
+        os.symlink(os.path.join(data, "lab-state"), os.path.join(linked_local, ".local"))  # its roots in the data home
+        alias = os.path.join(os.path.dirname(control), "alias")
+        os.symlink(runner, alias)
+        before = sorted(os.listdir(data))
+        homes = dict(("spelt_" + name, spelling) for name, spelling in spellings(runner).items())
+        homes.update(dotdot=os.path.join(runner, ".local", os.pardir), alias=alias, inside=inside, data_home=data,
+                     linked_data=linked_data, linked_local=linked_local)
+        envs = {name: child_env(spelled, TMPDIR=roots.tmp_dir("test", control),
+                                SQLITE_TMPDIR=roots.tmp_dir("test", control)) for name, spelled in homes.items()}
+        envs.update(tmpdir_in_data=child_env(control, TMPDIR=inside, SQLITE_TMPDIR=inside),
+                    no_home=child_env(control, HOME=None), relative_home=child_env(control, HOME="home"))
+        results = checks(self, runner, mode="test", setup="import subprocess, sys\n", body="""
+envs = %r
+script = os.path.join(os.path.dirname(guard.LAUNCHER), "_launch.py")
+def launch(argv, env):
+    result = subprocess.run(argv + ["no-such-command"], env=env, capture_output=True, text=True, timeout=60)
+    results["stderr"].add(result.stderr)
+results["stderr"] = set()
+for name, env in sorted(envs.items()):
+    attempt("sh:" + name, lambda: launch(["/bin/sh", guard.LAUNCHER], env))
+    attempt("py:" + name, lambda: launch([sys.executable, "-I", "-S", "-B", script], env))
+attempt("sh:inherited", lambda: launch(["/bin/sh", guard.LAUNCHER], None))
+attempt("py:inherited", lambda: launch([sys.executable, "-I", "-S", "-B", script], None))
+attempt("interpreter_inherits", lambda: subprocess.run([sys.executable, "-I", "-S", "-B", "-c", "pass"], check=True,
+                                                       timeout=60))
+results["stderr"] = sorted(results["stderr"])
+""" % dict(envs, control=child_env(control)))
+        expected = {"interpreter_inherits": "ok", "sh:control": "ok", "py:control": "ok",
+                    "stderr": ["refused:unknown_command\n"]}
+        for name in list(envs) + ["inherited"]:
+            expected.update({"sh:" + name: "subprocess_refused", "py:" + name: "subprocess_refused"})
+        self.assertEqual(results, expected)
+        self.assertEqual(sorted(os.listdir(data)), before)
+        self.assertEqual(sorted(os.listdir(os.path.join(data, "historic-pro"))), [])
+        self.assertFalse(os.path.lexists(roots.data_home(control)))
 
     def test_vendor_mode_refuses_other_git_commands(self):
         home = make_home(self)
@@ -1525,9 +1741,9 @@ attempt("write_outside", lambda: write(os.path.join(home, "outside.txt")))
 
     def test_only_engine_mode_writes_the_agreed_suite_root(self):
         # The test runner runs with the real HOME, so with the flag on it must still never reach a real
-        # ~/betangel-data/suite.noindex; vendor, uisnap (synthetic PNGs) and release (its copies under app/) have
-        # no use for it either.
-        for mode in ("test", "vendor", "uisnap", "release"):
+        # ~/betangel-data/suite.noindex; vendor, uisnap (synthetic PNGs), release (its copies under app/) and stop
+        # have no use for it either.
+        for mode in NON_ENGINE:
             with self.subTest(mode=mode):
                 home = make_home(self)
                 os.makedirs(roots.data_home(home), mode=0o700)
@@ -1544,6 +1760,59 @@ attempt("write_state", lambda: write(os.path.join(state, "ok.txt")))
                                            "write_suite_root": "write_outside_roots", "write_state": "ok"})
                 self.assertEqual(os.listdir(roots.data_home(home)), [])
 
+    def test_uisnap_and_stop_have_the_state_root_alone(self):
+        # Nuance's re-review of #2, Q2 conditions 2 and 3, and Astra's: cli.py mapped uisnap (and stop) to engine mode,
+        # which can write the suite root. Each now arms a mode of its own, with the state root as its only write root
+        # and the state root's tmp/ as its TMPDIR, and starts no child in either phase.
+        for mode in ("uisnap", "stop"):
+            home = make_home(self)
+            os.makedirs(roots.data_home(home), mode=0o700)
+            suite_tmp = os.path.join(roots.suite_root(home), "tmp")
+            with self.subTest(mode=mode, tmpdir="suite"):    # the engine's TMPDIR is no longer theirs
+                self.assertEqual(armed_attempts(self, home, mode=mode, body="pass",
+                                                env=child_env(home, TMPDIR=suite_tmp, SQLITE_TMPDIR=suite_tmp)),
+                                 {"arm": "tmpdir_mismatch"})
+            results = checks(self, home, mode=mode, setup=self.SETUP + "roots.STATE_ROOT_AGREED = True\n", body="""
+import sqlite3, subprocess
+suite = roots.suite_root()
+def write(path):
+    with open(path, "w") as handle:
+        handle.write("x")
+def git():
+    subprocess.run(["git", "-C", state, "rev-parse", "--is-inside-work-tree"], capture_output=True, timeout=30)
+attempt("mkdir_suite_root", lambda: os.mkdir(suite, 0o700))
+attempt("write_suite_root", lambda: write(os.path.join(suite, "x")))
+attempt("sqlite_suite_root", lambda: sqlite3.connect(os.path.join(suite, "x.sqlite")).close())
+attempt("write_state", lambda: write(os.path.join(state, "ok.txt")))
+attempt("sqlite_state", lambda: sqlite3.connect(os.path.join(state, "ok.sqlite")).close())
+attempt("git_before_seal", git)
+guard.seal()
+attempt("git_after_seal", git)
+results["mode"] = guard.armed_mode()
+""")
+            with self.subTest(mode=mode):
+                self.assertEqual(results, {"mkdir_suite_root": "write_outside_roots",
+                                           "write_suite_root": "write_outside_roots",
+                                           "sqlite_suite_root": "write_outside_roots", "write_state": "ok",
+                                           "sqlite_state": "ok", "git_before_seal": "subprocess_refused",
+                                           "git_after_seal": "subprocess_refused", "mode": mode})
+                self.assertEqual(os.listdir(roots.data_home(home)), [])
+        # Through bin/suite: with the suite root a link to a data root, which engine mode refuses at arm, stop, uisnap
+        # and release arm their own modes and reach cli.main. stop is built, and with no engine it prints not_running;
+        # on phase0/viewing uisnap and release are built too, so each is given arguments its parser refuses, which
+        # it reaches only past arm (no build, no git).
+        home = make_home(self)
+        historic = os.path.join(roots.data_home(home), "historic-pro")
+        os.makedirs(historic, mode=0o700)
+        os.symlink(historic, roots.suite_root(home))
+        for argv, expected in ((["stop"], (0, "not_running\n", "")),
+                               (["uisnap", "--seed", "x"], (2, "", "refused:bad_arguments\n")),
+                               (["release"], (2, "", "refused:bad_arguments\n")),
+                               (["selfcheck"], (2, "", "refused:suite_root_misplaced\n"))):
+            command = argv[0]
+            result = run_suite(argv, home)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), expected, command)
+        self.assertEqual(os.listdir(historic), [])
 
 
 class ReleaseModeTests(unittest.TestCase):
@@ -1730,6 +1999,135 @@ attempt("rmdir_share", lambda: os.rmdir(share))
         self.assertEqual(sorted(os.listdir(roots.share_dir(home))), ["deps"])
 
 
+class ReadTests(unittest.TestCase):
+    """Reads in ~/betangel-data: refused in every mode but engine (Nuance's re-review of #2, Q2 condition 1).
+
+    Nuance probed that in test and vendor mode reading and listing historic-pro worked; only the append was refused.
+    Every check runs in a fresh child with a temporary HOME whose data home holds synthetic files only.
+    """
+
+    maxDiff = None
+
+    SETUP = """
+home = os.environ["HOME"]
+data = roots.data_home()
+historic = os.path.join(data, "historic-pro")
+outside = os.path.join(home, "outside")
+for directory in (historic, os.path.join(data, "locked"), outside, os.path.join(outside, "locked"), roots.state_dir()):
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, "file"), "w") as handle:
+        handle.write("synthetic")
+os.symlink(historic, os.path.join(home, "alias"))
+for directory in (os.path.join(data, "locked"), os.path.join(outside, "locked")):
+    os.chmod(directory, 0)                      # unsearchable: its file can be judged only at the directory
+held = os.open(historic, os.O_RDONLY)            # a descriptor opened before arm()
+os.chdir(historic)                              # the cwd, before arm(), in the data home
+"""
+
+    BODY = """
+import glob, shutil
+spelt = %r
+def read(path):
+    with open(path) as handle:
+        handle.read()
+def os_read(path):
+    os.close(os.open(path, os.O_RDONLY))
+def walk(top):
+    for _ in os.walk(top):
+        pass
+def fwalk(top):
+    os.chdir(outside)               # fwalk opens each directory by its name relative to its parent's descriptor
+    for _ in os.fwalk(top):
+        pass
+attempt("listdir_cwd", lambda: os.listdir())
+attempt("scandir_cwd", lambda: list(os.scandir()))
+attempt("relative_in_cwd", lambda: read("file"))
+attempt("chdir_home", lambda: os.chdir(home))
+attempt("relative", lambda: read(os.path.join("betangel-data", "historic-pro", "file")))
+attempt("relative_listdir", lambda: os.listdir("betangel-data"))
+attempt("open", lambda: read(os.path.join(historic, "file")))
+attempt("open_bytes", lambda: read(os.fsencode(os.path.join(historic, "file"))))
+attempt("os_open", lambda: os_read(os.path.join(historic, "file")))
+attempt("open_directory", lambda: os_read(historic))
+attempt("open_data_home", lambda: os_read(data))
+attempt("alias", lambda: read(os.path.join(home, "alias", "file")))
+for name, path in spelt.items():
+    attempt("spelt_" + name, lambda: read(os.path.join(path, "file")))
+    attempt("spelt_listdir_" + name, lambda: os.listdir(path))
+attempt("behind_locked", lambda: read(os.path.join(data, "locked", "file")))
+attempt("listdir", lambda: os.listdir(historic))
+attempt("listdir_data_home", lambda: os.listdir(data))
+attempt("scandir", lambda: list(os.scandir(historic)))
+attempt("listdir_descriptor", lambda: os.listdir(held))      # judged by the descriptor's F_GETPATH path
+attempt("scandir_descriptor", lambda: list(os.scandir(held)))
+attempt("glob", lambda: glob.glob(os.path.join(historic, "*")))
+attempt("walk_home", lambda: walk(home))
+attempt("fwalk_home", lambda: fwalk(home))
+attempt("copyfile", lambda: shutil.copyfile(os.path.join(historic, "file"), os.path.join(roots.state_dir(), "copy")))
+attempt("chdir", lambda: os.chdir(historic))
+attempt("fchdir", lambda: os.fchdir(held))
+os.chdir(home)
+# Controls, the same in every mode: outside the data home, its name in a listing of HOME, and stat-level calls.
+attempt("outside_open", lambda: read(os.path.join(outside, "file")))
+attempt("outside_listdir", lambda: os.listdir(outside))
+attempt("state_open", lambda: read(os.path.join(roots.state_dir(), "file")))
+results["home_listing"] = sorted(os.listdir(home))
+attempt("stat", lambda: os.stat(os.path.join(historic, "file")))
+attempt("outside_locked", lambda: read(os.path.join(outside, "locked", "file")))
+attempt("nul", lambda: read(os.path.join(historic, "file") + "\\0x"))
+"""
+
+    REFUSED = ("listdir_cwd", "scandir_cwd", "relative_in_cwd", "relative", "relative_listdir", "open", "open_bytes",
+               "os_open", "open_directory", "open_data_home", "alias", "behind_locked", "listdir", "listdir_data_home",
+               "scandir", "listdir_descriptor", "scandir_descriptor", "glob", "walk_home", "fwalk_home", "copyfile",
+               "chdir", "fchdir")
+
+    def test_reads_in_the_data_home_are_refused_outside_engine_mode(self):
+        for mode in MODES:
+            home = make_home(self)
+            historic = os.path.join(roots.data_home(home), "historic-pro")
+            os.makedirs(historic)                                   # for spellings(); the child fills it
+            spelt = {name: path for name, path in spellings(historic).items() if name != "plain"}
+            for locked in (os.path.join(roots.data_home(home), "locked"), os.path.join(home, "outside", "locked")):
+                self.addCleanup(lambda path=locked: os.path.isdir(path) and os.chmod(path, 0o700))
+            results = checks(self, home, mode=mode, setup=self.SETUP, body=self.BODY % spelt)
+            with self.subTest(mode=mode):
+                self.assertEqual(results.pop("home_listing"), [".local", "alias", "betangel-data", "outside"])
+                expected = {"chdir_home": "ok", "outside_open": "ok", "outside_listdir": "ok", "state_open": "ok",
+                            "stat": "ok", "outside_locked": "other:PermissionError", "nul": "other:ValueError"}
+                names = list(self.REFUSED) + ["spelt_" + name for name in spelt] + ["spelt_listdir_" + name
+                                                                                     for name in spelt]
+                for name in names:
+                    expected[name] = "data_home_read_refused" if mode != "engine" else "ok"
+                if mode == "engine":                                # engine mode reads as before (Phase 1a)
+                    expected["behind_locked"] = "other:PermissionError"
+                self.assertEqual(results, expected)
+                self.assertGreaterEqual(len(spelt), 1)              # the firmlink spelling, at least, on the lab
+
+    def test_reads_judged_through_an_unsearchable_directory(self):
+        # roots.lies_in_for_read judges a path whose stat fails (no search permission on the way) at its nearest
+        # existing ancestor, so a firmlink spelling into the data home through such a directory is still refused,
+        # while one outside the data home is left to fail with its own error.
+        home = make_home(self)
+        data = roots.data_home(home)
+        locked = os.path.join(data, "locked")
+        outside = os.path.join(home, "outside", "locked")
+        for directory in (locked, outside):
+            os.makedirs(directory)
+            self.addCleanup(os.chmod, directory, 0o700)
+            os.chmod(directory, 0)
+        for path, expected in ((FIRMLINK + os.path.realpath(locked) + "/x", True), (locked + "/x", True),
+                               (FIRMLINK + os.path.realpath(outside) + "/x", False), (outside + "/x", False)):
+            self.assertIs(roots.lies_in_for_read(path, data, "data_home_read_refused"), expected, path)
+        missing = os.path.join(home, "no-such-home", "betangel-data")
+        self.assertFalse(roots.lies_in_for_read(outside + "/x", missing, "data_home_read_refused"))
+        os.chmod(os.path.dirname(data), 0o000)                  # the data home itself cannot be looked at
+        self.addCleanup(os.chmod, os.path.dirname(data), 0o700)
+        with self.assertRaises(SuiteError) as caught:
+            roots.lies_in_for_read("/private/var/x", data, "data_home_read_refused")
+        self.assertEqual(caught.exception.code, "data_home_read_refused")
+
+
 FIRMLINK = "/System/Volumes/Data"       # macOS: the data volume, under which /Users is a firmlink
 
 PLACEMENT = ATTEMPT + """
@@ -1800,7 +2198,7 @@ class RootPlacementTests(unittest.TestCase):
                 continue                                # this machine has no such spelling
             self.replace_with_link(os.path.join(home, ".local", "state"), target)
             writes = [("state", os.path.join(roots.state_dir(home), "x"))]
-            cases = [(agreed, mode) for agreed in (False, True) for mode in ("engine", "test", "vendor")]
+            cases = [(agreed, mode) for agreed in (False, True) for mode in MODES]
             for agreed, mode in cases if name == "plain" else [(False, "engine"), (True, "engine")]:
                 with self.subTest(spelling=name, agreed=agreed, mode=mode):
                     results = self.placement(home, agreed=agreed, mode=mode, writes=writes)
@@ -1862,7 +2260,7 @@ class RootPlacementTests(unittest.TestCase):
         self.assertEqual(self.placement(home, agreed=True), {"arm": "suite_root_misplaced"})
         os.remove(suite)
         os.symlink(historic, suite)
-        for mode in ("test", "vendor"):                 # the suite root is no write root of theirs
+        for mode in NON_ENGINE:                 # the suite root is no write root of theirs
             with self.subTest(mode=mode):
                 self.assertEqual(self.placement(home, agreed=True, mode=mode, writes=writes),
                                  {"arm": "ok", "mkdir_state": "ok", "open:suite": "write_outside_roots",
@@ -2041,7 +2439,7 @@ results["tmpdir_in_place"] = os.path.realpath(tmp) == os.path.join(os.path.realp
             os.symlink(os.path.join(state, "missing"), tmp)                       # dangling
             return tmp, tmp
 
-        for mode in ("test", "engine", "vendor"):
+        for mode in MODES:
             for name in ("link", "relative_link", "link_to_deeper", "link_between", "dangling"):
                 home = make_home(self)
                 os.makedirs(os.path.join(home, "outside"))
@@ -2080,7 +2478,7 @@ attempt("rename_tmpdir", lambda: os.rename(tmp, tmp + "-moved"))
                    "rename_onto", "replace_onto", "hard_link_onto", "symlink_onto", "rmtree_run",
                    "rename_run_away", "replace_run_away", "rename_run_other_case", "rename_run_trailing_slash",
                    "move_run_away", "rename_dir_onto_run", "symlink_onto_run")
-        for mode in ("engine", "test", "vendor"):
+        for mode in MODES:
             home = make_home(self)
             os.makedirs(roots.run_dir(home), 0o700)
             open(os.path.join(roots.run_dir(home), "realdata.lock"), "w").close()
@@ -2127,7 +2525,7 @@ results["nothing_moved"] = (os.path.isdir(run) and not os.path.islink(run)
             self.assertEqual((results["lock_is_file"], results["lock_same_inode"], results["nothing_moved"]),
                              (True, True, True), mode)
         # While run/ is missing, nothing may take its place either; making it as a real directory stays allowed.
-        for mode in ("engine", "test", "vendor"):
+        for mode in MODES:
             home = make_home(self)
             results = checks(self, home, mode=mode, body="""
 run = roots.run_dir()
@@ -2167,7 +2565,7 @@ results["run_is_dir"] = os.path.isdir(run) and not os.path.islink(run)
             return lock, os.path.join(state, os.path.relpath(real, state).split(os.sep)[0])
 
         names = ("sibling", "relative", "nested", "firmlink", "dangling", "lock_is_a_link")
-        for mode in ("engine", "test", "vendor"):
+        for mode in MODES:
             for name in names:
                 home = make_home(self)
                 lock, top = layout(home, name)              # top: the directory below the state root on its way
@@ -2186,7 +2584,7 @@ attempt("rename_its_directory", lambda: os.rename(top, top + "-moved"))
         # Nuance's wrapper creates or removes ACTIVE and its own lab-runs/LOCK. ~/.local/state/lab-runs lies
         # outside every write root, so the hook refuses each of these in every mode, whether the files exist or
         # not.
-        for mode in ("engine", "test", "vendor"):
+        for mode in MODES:
             home = make_home(self)
             lab_runs = os.path.join(home, ".local", "state", "lab-runs")
             os.mkdir(lab_runs, 0o700)
@@ -2207,6 +2605,53 @@ attempt("remove_directory", lambda: os.rmdir(lab_runs))
             self.assertEqual(set(results.values()), {"write_outside_roots"}, (mode, results))
             self.assertEqual(len(results), 8)
             self.assertEqual(sorted(os.listdir(lab_runs)), ["ACTIVE", "LOCK"])
+
+    def test_no_root_lies_in_around_or_onto_the_run_markers_directory(self):
+        # Nuance's re-review of #2, F5: with the state root linked to ~/.local/state, arm() succeeded and removing
+        # lab-runs/ACTIVE or renaming the wrapper's lab-runs/LOCK were allowed, since lab-runs/ was then inside a
+        # root. check_placement now refuses a write root or TMPDIR in, around or onto lab-runs/, by realpath and
+        # identity, in every mode; a root elsewhere is refused only in the modes that write it.
+        def layout(home, name):
+            """Make lab-runs/ with ACTIVE and LOCK, then the named link; return the modes it is a root of."""
+            local_state = os.path.join(home, ".local", "state")
+            lab = os.path.join(local_state, "lab-runs")
+            os.makedirs(os.path.join(lab, "sub"), mode=0o700)
+            for marker in ("ACTIVE", "LOCK"):
+                open(os.path.join(lab, marker), "w").close()
+            state = roots.state_dir(home)
+            if name.startswith(("around", "onto", "into")):
+                target = {"around": local_state, "onto": lab, "into": os.path.join(lab, "sub")}[name.split("_")[0]]
+                if name.endswith("_firmlink"):
+                    target = FIRMLINK + os.path.realpath(target)
+                rmtree(state)
+                os.symlink(target, state)
+                return MODES
+            if name == "share_into":                # vendor's deps root and release's app root lie in the share dir
+                os.rmdir(os.path.join(home, ".local", "share"))
+                os.symlink(os.path.join(lab, "sub"), os.path.join(home, ".local", "share"))
+                return ("vendor", "release")
+            os.symlink(os.path.join(lab, "sub"), roots.data_home(home))           # suite_root_in: the suite root
+            return ("engine",)
+
+        names = ("around", "around_firmlink", "onto", "into", "into_firmlink", "share_into", "suite_root_in")
+        for name in names:
+            for mode in MODES:
+                home = make_home(self)
+                refused_in = layout(home, name)
+                results = armed_attempts(self, home, mode=mode, body="""
+lab = os.path.join(os.environ["HOME"], ".local", "state", "lab-runs")
+attempt("remove_marker", lambda: os.remove(os.path.join(lab, "ACTIVE")))
+attempt("rename_lock", lambda: os.rename(os.path.join(lab, "LOCK"), os.path.join(lab, "LOCK.old")))
+""")
+                with self.subTest(layout=name, mode=mode):
+                    if mode in refused_in:
+                        self.assertEqual(results, {"arm": "root_overlaps_lab_runs"})
+                    else:
+                        self.assertEqual(results, {"arm": "ok", "remove_marker": "write_outside_roots",
+                                                   "rename_lock": "write_outside_roots"})
+                    lab = os.path.join(home, ".local", "state", "lab-runs")
+                    self.assertEqual(sorted(os.listdir(lab)), ["ACTIVE", "LOCK", "sub"])
+                    self.assertEqual(os.listdir(os.path.join(lab, "sub")), [])
 
     def test_bin_suite_refuses_before_creating_anything(self):
         # The evidence's own commands: bin/suite test made lab-state/betangel-suite/tmp; an engine command would

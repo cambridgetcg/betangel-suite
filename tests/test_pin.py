@@ -271,8 +271,38 @@ class ActivationTests(unittest.TestCase):
             "from betangel_suite import pin\n"
             "deps = pin.deps_dir(pin.load())\n"
             "print(os.path.realpath(betangel_research.__file__).startswith(os.path.realpath(deps) + os.sep))\n"
-            "print(sys.path[-1] == deps)\n")
+            "print(deps not in sys.path)\n")
         self.assertEqual(outcome(self, home, code).splitlines(), ["imported", "upstream_loaded", "True", "True"])
+
+    def test_nothing_but_the_closure_is_imported_from_the_deps_directory(self):
+        # Nuance's re-review of #2, F1: activate() appended the deps directory to sys.path, so after seal() every
+        # top-level name in the deps tree but betangel_research loaded unhashed: scripts.backup_metadata (real at
+        # 76f71dc), a planted module, and the standard library's probes for modules that macOS lacks (nt and _winapi on
+        # 3.13, org on 3.11), which reached the deps directory during a plain import of rx. The directory is no longer
+        # on sys.path: each planted module below is not found, and none of their code runs, during rx's import or after.
+        home = make_home(self, deps=True)
+        deps = pin.deps_dir(pin.load(), home)
+        names = ("extra_mod", "scripts.backup_metadata", "nt", "_winapi", "_wmi", "org")
+        for relpath in ("extra_mod.py", "scripts/__init__.py", "scripts/backup_metadata.py", "nt.py", "_winapi.py",
+                        "_wmi.py", "org/__init__.py"):
+            path = os.path.join(deps, relpath)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("print('synthetic planted module ran: %s')\n" % relpath)
+        code = ARM_ENGINE + TRY_RX + """
+import importlib
+from betangel_suite import guard
+guard.seal()
+for name in %r:
+    try:
+        importlib.import_module(name)
+        print(name, "imported")
+    except ModuleNotFoundError:
+        print(name, "not found")
+print(%r in sys.path)
+""" % (names, deps)
+        self.assertEqual(outcome(self, home, code).splitlines(),
+                         ["imported", "upstream_loaded"] + ["%s not found" % name for name in names] + ["False"])
 
     def test_research_clone_on_sys_path_is_refused(self):
         # The lab's APFS volume folds case and U+017F (long s), so BetAngel-Research and betangel-reſearch
@@ -316,6 +346,62 @@ class ActivationTests(unittest.TestCase):
             with self.subTest(entry=entry):
                 code = ARM_ENGINE + "sys.path.append(%r)\n" % entry + TRY_RX
                 self.assertEqual(outcome(self, home, code).splitlines(), expected)
+
+    def test_an_empty_sys_path_entry_is_judged_as_the_cwd(self):
+        # Astra's re-review of #2 (judgement items): "" on sys.path is the cwd to the import system, and
+        # refuse_research_on_path skipped it, so a cwd in the deploy clone put the clone on the path unseen. It is
+        # judged as the cwd now: refused with the cwd in the clone or below it, allowed elsewhere.
+        home = make_home(self, deps=True)
+        research = roots.research_clone(home)
+        os.makedirs(os.path.join(research, "sub"))
+        elsewhere = os.path.join(home, "elsewhere")
+        os.makedirs(elsewhere)
+        for cwd, expected in ((research, ["research_clone_on_path", "upstream_absent"]),
+                              (os.path.join(research, "sub"), ["research_clone_on_path", "upstream_absent"]),
+                              (elsewhere, ["imported", "upstream_loaded"])):
+            with self.subTest(cwd=os.path.relpath(cwd, home)):
+                code = ARM_ENGINE + "import os\nos.chdir(%r)\nsys.path.insert(0, '')\n" % cwd + TRY_RX
+                self.assertEqual(outcome(self, home, code).splitlines(), expected)
+
+    def test_a_research_clone_or_an_entry_that_cannot_be_judged_is_refused(self):
+        # Nuance's re-review of #2, F11: _in_research read a failed stat of the clone as "no clone", unlike
+        # roots.lies_in (26fb4c4). Here ~/betangel-research links through vault/x to the real clone, which is reachable
+        # by its own path, and vault has no search permission, so the clone's name cannot be stat()ed (EACCES). A deps
+        # root linked into the real clone then passed, and activate() loaded the closure from it; so did a sys.path
+        # entry in the real clone. Now a clone that cannot be judged refuses every activation (research_clone_on_path),
+        # an unrelated entry's included. An entry that cannot be judged refuses too: with the clone at its usual
+        # place, vault/x links into it and the entry is vault/x/sub. With vault searchable, the same placements are
+        # refused by name and identity, and the unrelated entry passes.
+        refused = ["research_clone_on_path", "upstream_absent"]
+        for case in ("deps", "entry", "unjudgeable entry", "unrelated entry"):
+            home = make_home(self, deps=True)
+            research = roots.research_clone(home)
+            vault = os.path.join(home, "vault")
+            os.makedirs(vault)
+            self.addCleanup(os.chmod, vault, 0o700)
+            if case == "unjudgeable entry":
+                os.makedirs(os.path.join(research, "sub"))
+                os.symlink(research, os.path.join(vault, "x"))
+                entry = os.path.join(vault, "x", "sub")
+            else:
+                real = os.path.join(home, "real-clone")
+                os.makedirs(os.path.join(real, "sub"))
+                os.symlink(real, os.path.join(vault, "x"))
+                os.symlink(os.path.join(vault, "x"), research)
+                entry = os.path.join(real, "sub") if case == "entry" else os.path.join(home, "elsewhere")
+                if case == "deps":
+                    os.rename(roots.deps_root(home), os.path.join(real, "vendor"))
+                    os.symlink(os.path.join(real, "vendor"), roots.deps_root(home))
+            code = ARM_ENGINE + "sys.path.append(%r)\n" % entry + TRY_RX
+            with self.subTest(case=case, vault="searchable"):
+                self.assertEqual(outcome(self, home, code).splitlines(),
+                                 ["imported", "upstream_loaded"] if case == "unrelated entry" else refused)
+            os.chmod(vault, 0)
+            try:
+                with self.subTest(case=case, vault="not searchable"):
+                    self.assertEqual(outcome(self, home, code).splitlines(), refused)
+            finally:
+                os.chmod(vault, 0o700)
 
     def test_deps_reached_through_a_link_into_the_research_clone_is_refused(self):
         # The deps directory itself is real, but an ancestor links into the deploy clone (I-13): refused
@@ -424,9 +510,10 @@ print(results)
         self.assertEqual(outcome(self, home, code).splitlines(), ["imported", "upstream_loaded", "upstream_origin_mismatch"])
 
     def test_only_the_closure_is_imported_after_activation(self):
-        # Nuance's PR #2 review, item 7: the deps directory is on sys.path, so after seal() an unpinned module there
-        # (risk.py, say) could be imported and its unhashed code run. The finder refuses it, however it is imported
-        # (an import hook would miss import_module), and its code never runs.
+        # Nuance's PR #2 review, item 7: the betangel_research package's __path__ is in the deps directory (which was
+        # on sys.path too until Nuance's re-review of #2, F1), so after seal() an unpinned module there (risk.py, say)
+        # could be imported and its unhashed code run. The finder refuses it, however it is imported (an import hook
+        # would miss import_module), and its code never runs.
         home = make_home(self, deps=True)
         deps = pin.deps_dir(pin.load(), home)
         with open(os.path.join(deps, "betangel_research", "betfair", "risk.py"), "w", encoding="utf-8") as handle:
@@ -501,8 +588,9 @@ class MovingCloneTests(unittest.TestCase):
 
 
 def sys_path():
+    """This process's sys.path entries as the import system reads them: an empty entry is the cwd."""
     import sys
-    return [entry for entry in sys.path if isinstance(entry, str) and entry]
+    return [entry or os.getcwd() for entry in sys.path if isinstance(entry, str)]
 
 
 if __name__ == "__main__":

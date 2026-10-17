@@ -10,6 +10,7 @@ that this file does not contain them.
 import ast
 import json
 import os
+import sys
 import unittest
 
 from betangel_suite import pin
@@ -106,8 +107,10 @@ def module_and_package(relpath):
 
 
 def upstream_imports(tree, package, is_module):
-    """(line, module) for every betangel_research module a parsed source imports, anywhere in it (inside functions
-    too); "<dynamic>" for an import_module or __import__ call whose module is not a literal absolute name.
+    """(line, module) for every module outside the standard library that a parsed source imports, anywhere in it
+    (inside functions too): every betangel_research module, and any other top-level name a deps tree could hold
+    (scripts.backup_metadata, say), judged by the top-level name against sys.stdlib_module_names; "<dynamic>" for an
+    import_module or __import__ call whose module is not a literal absolute name.
 
     `import a.b.c` imports a, a.b and a.b.c. `from <base> import name` imports base, and base.name too when
     is_module(base.name) says that is a module (a file or package directory in the pinned tree), not an attribute.
@@ -144,7 +147,7 @@ def upstream_imports(tree, package, is_module):
                 else:
                     found.append((node.lineno, "<dynamic>"))
     return [(line, name) for line, name in found
-            if name == "<dynamic>" or name == "betangel_research" or name.startswith("betangel_research.")]
+            if name == "<dynamic>" or name.partition(".")[0] not in sys.stdlib_module_names]
 
 
 def deps_module(name):
@@ -308,9 +311,11 @@ class ClosureTests(unittest.TestCase):
         self.assertEqual(len(EXPECTED_CLOSURE), 25)
 
     def test_pinned_files_import_only_the_closure(self):
-        # Nuance's PR #2 review, item 7: the deps clone is on sys.path, so a pinned module that imported anything
-        # outside the closure (a lazy import in a function, say) would load unhashed code. Every import statement and
-        # literal import call in the 25 pinned modules must name closure modules only, and none may be dynamic.
+        # Nuance's PR #2 review, item 7: a pinned module that imported anything outside the closure (a lazy import in
+        # a function, say) would load unhashed code; the closure finder now refuses such a betangel_research name, and
+        # the deps directory is off sys.path (Nuance's re-review of #2, F1), so any other name from the deps tree is not
+        # found. Every import statement and literal import call in the 25 pinned modules must name closure modules or
+        # the standard library only (the filter was betangel_research names only: F1), and none may be dynamic.
         problems = []
         for relpath in pin.PINNED_FILES:
             if relpath.endswith(".py"):
@@ -337,7 +342,13 @@ class ClosureTests(unittest.TestCase):
                 ("import importlib\nm = importlib.import_module('.risk', 'betangel_research.betfair')\n", ["<dynamic>"]),
                 ("from betangel_research.betfair import paper, book\nfrom .book import MarketBookCache\n", []),
                 ("from ..betfair.backtest import archive\nimport json\n", []),
-                ("from betangel_research.betfair.ticks import snap, LADDER_CLASSIC\n", [])):
+                ("from betangel_research.betfair.ticks import snap, LADDER_CLASSIC\n", []),
+                # Names outside betangel_research and the standard library (Nuance's re-review of #2, F1).
+                ("import scripts.backup_metadata\n", ["scripts", "scripts.backup_metadata"]),
+                ("def later():\n    from extra_mod import thing\n", ["extra_mod"]),
+                ("import importlib\nm = importlib.import_module('org.python.core')\n",
+                 ["org", "org.python", "org.python.core"]),
+                ("from __future__ import annotations\nimport json, os.path\nfrom collections import abc\n", [])):
             names = [name for _line, name in upstream_imports(ast.parse(source), package, is_module)]
             self.assertEqual(sorted(set(names) - EXPECTED_CLOSURE), expected, source)
 

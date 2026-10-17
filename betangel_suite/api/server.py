@@ -624,7 +624,8 @@ def attach(*, opener=None, out=None, home_dir=None, print_url=False, marker=None
     takeover's reply (which can take control.CONNECTION_TIMEOUT_S) and before the hand-over: a run announced
     meanwhile refuses with run_marker_present or run_marker_unreadable, and no URL goes to /usr/bin/open or out
     for an engine that is freezing for the run. The takeover itself has happened (the engine paused, earlier codes
-    and tokens dead)."""
+    and tokens dead). This branch's check (e9729a6) was moved down to phase0/http in round 5 (lab-Claude's
+    decision), so that both branches behave the same."""
     out = sys.stdout if out is None else out
     reply = control.request("attach", home_dir)
     if reply is None:

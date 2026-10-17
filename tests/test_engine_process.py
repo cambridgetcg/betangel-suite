@@ -792,9 +792,9 @@ sys.exit(run(["serve", "--port", "0"]))
     def test_open_attaching_holds_the_lock_and_hands_on_no_url_once_the_marker_appears(self):
         # open's attach path (an engine already running): cli.main took the lock, which open holds while it takes the
         # engine over and until it exits. A run announced during the takeover refuses before the hand-over
-        # (server.attach checks the marker after the reply; round 4b): no URL goes to /usr/bin/open. The engine runs
-        # server.run directly (support.run_child), so only open holds the lock; open's attach request waits after
-        # its reply for the test's go file, while the test makes the marker.
+        # (server.attach checks the marker after the reply; this branch's e9729a6, moved down to phase0/http in round
+        # 5): no URL goes to /usr/bin/open. The engine runs server.run directly (support.run_child), so only open holds
+        # the lock; open's attach request waits after its reply for the test's go file, while the test makes the marker.
         home = support.short_home(self)
         serving = support.run_child(self, home, "def main():\n    return server.run(cfg, command='serve', port=0)\n")
         serving.wait_ready()

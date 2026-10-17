@@ -58,11 +58,12 @@ COMMANDS = ("serve", "open", "ssh-session", "stop", "catalogue", "selfcheck", "d
 # vendor refuse under the marker").
 NO_RUN_MARKER_CHECK = ("stop",)
 # The commands that may read a real data root or write under ~/betangel-data. Each takes LOCK_SH on run/realdata.lock
-# before its TMPDIR is created, checks the marker again under the lock and holds it until it exits, so Nuance's
-# wrapper, which takes LOCK_EX, waits for it (Nuance's PR #2 review, item 6; PR #1 review, item 5). test, uisnap and
-# vendor read no data root and write nothing there (the guard refuses those writes, but not reads: runmarker.py) and
-# do not take it; stop must work during a run and takes nothing (runmarker.py says why; lab-Claude's decision, asked
-# of Nuance on 2026-10-17, not answered).
+# before its TMPDIR is created, checks the marker again under the lock and holds it until it exits. Nuance's wrapper,
+# which takes LOCK_EX, waits at least 60 s for the lock, then refuses its own run (fails closed) if it is still held
+# (Nuance's PR #2 review, item 6; PR #1 review, item 5; the wording is Nuance's re-review of #2). test, uisnap and
+# vendor read no data root and write nothing under ~/betangel-data (in their guard modes the guard refuses both,
+# within the limits guard.py lists) and do not take it; stop must work during a run and takes nothing (runmarker.py
+# says why; lab-Claude's decision, asked of Nuance on 2026-10-17, not answered).
 # main() refuses (run_lock_not_held) any other command whose TMPDIR would be made under ~/betangel-data.
 REALDATA_COMMANDS = ("serve", "open", "ssh-session", "catalogue", "selfcheck", "diagnose", "ledger-summary")
 # They create no temporary files and must not need upstream, so main() makes no TMPDIR for them and never asks them
@@ -75,9 +76,16 @@ REPO_ROOT = guard.REPO_ROOT
 VIA_SSH_ENV = "SUITE_VIA_SSH"                     # set by bin/suite: "1" for ssh-session after its SSH checks, else "0"
 
 
+# The commands that run in a guard mode of their own name (guard.MODES); every other command runs in engine mode. uisnap
+# and stop are among them so that neither is given the suite root, which only engine mode may write: uisnap renders
+# synthetic markets only, and stop only reduces activity (Nuance's re-review of #2, Q2 conditions 2 and 3; Astra's
+# re-review of #2 found uisnap mapped to engine mode here). release (phase0/viewing) writes only the release copy.
+OWN_MODE_COMMANDS = ("test", "vendor", "uisnap", "release", "stop")
+
+
 def guard_mode(command):
     """The guard mode a command runs in; chosen by command name only."""
-    return command if command in ("test", "vendor", "uisnap", "release") else "engine"
+    return command if command in OWN_MODE_COMMANDS else "engine"
 
 
 def main(argv):

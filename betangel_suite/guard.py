@@ -45,32 +45,50 @@ What the hook refuses, in every mode and phase:
        (arm() does it at once if socket is already loaded, and never imports socket), and refuses to create a
        socket whose class would not call that wrapper: a bare _socket.socket, or a subclass with its own listen;
   I-5  os.system, os.exec*, os.spawn*, os.fork and os.forkpty always; subprocess.Popen and os.posix_spawn
-       except as below. Always, too:
-       - a direct call of _posixsubprocess.fork_exec, which starts a child from C with no audit event of its
-         own. arm() replaces it with a wrapper that raises one, "_posixsubprocess.fork_exec", and leaves
-         subprocess its own reference to the original, behind the subprocess.Popen event. arm() refuses
-         (call_replaced_early) unless both are the C original when it runs;
+       except as below. Always, too, for the calls and loads the hook sees or arm() wraps (the limits below
+       name the routes it does not see):
+       - a call of _posixsubprocess.fork_exec through the module, which starts a child from C with no audit event
+         of its own. arm() replaces that attribute with a wrapper that raises one, "_posixsubprocess.fork_exec",
+         and leaves subprocess its own reference to the original, behind the subprocess.Popen event. arm()
+         refuses (call_replaced_early) unless both are the C original when it runs. The wrapper is on one module
+         instance, so once it is in place the hook refuses every fresh load of the extension (import_refused):
+         an import after the module was taken out of sys.modules, importlib.util.module_from_spec,
+         _imp.create_dynamic, and a load under a dotted name such as "x._posixsubprocess" (CPython finds an
+         extension's init function by the last part of the name). The import that arm() itself makes, and the
+         cached, wrapped module, are untouched; arm() refuses (module_loaded_early) a second instance already
+         in sys.modules under a dotted name (Astra's re-review of #2, finding 1; Nuance's, F4);
        - importing multiprocessing (any submodule) or concurrent.futures.process, which start children through
          fork_exec, and ctypes or _ctypes (any submodule), since _ctypes reaches libc through dlsym and
-         call_function with no dlopen (import_refused). arm() refuses (module_loaded_early) if one of them is
-         already loaded: the import event fires only for a module that is not loaded yet;
+         call_function with no dlopen (import_refused); and the modules that run code in a subinterpreter, whose
+         audit hooks are its own, not this one: _interpreters (3.13), _xxsubinterpreters (3.11), interpreters and
+         concurrent.interpreters (where present), and CPython's test modules _testcapi (run_in_subinterp) and
+         _testinternalcapi. Each extension among them (_ctypes, _interpreters, _xxsubinterpreters, _testcapi,
+         _testinternalcapi) is refused under a dotted name too. arm() refuses (module_loaded_early) if one of them
+         is already loaded: the import event fires only for a module that is not loaded yet;
        - ctypes.dlopen, plus ctypes.dlsym and ctypes.call_function as a backstop, and SQLite extension loading.
        Threads are unaffected;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
        link (both paths: a hard link would alias an outside inode inside the roots), symlink, truncate,
        chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. The write roots are the state
        root in every mode; the suite root only in engine mode, and only while roots.STATE_ROOT_AGREED is
-       True; in vendor mode also the deps clone and this checkout's pin/; and in release mode also the
-       release copies (app/). So the test runner, uisnap and release never write under ~/betangel-data,
-       whatever the flag says: the tests use temporary HOMEs. While the flag is False a write under
-       ~/betangel-data is refused as state_root_not_agreed, judged on the path text alone. A relative
-       path in a write open is refused too: the open event does not say which dir_fd it is relative to
-       (the other events do, and a dir_fd is resolved with F_GETPATH). The roots check resolves the path
-       as given, as the OS does: "link/.." and a final "/" follow the link.
+       True (never in test, vendor, uisnap, release or stop mode); in vendor mode also the deps clone and
+       this checkout's pin/; and in release mode also the release copies (app/). So the test runner itself,
+       uisnap and release never write under ~/betangel-data, whatever the flag says, nor read there (below).
+       The test runner's children are another matter (Nuance's re-review of #2, F2): a
+       launcher child arms its own guard from the HOME it is given, so the runner checks that HOME when it
+       starts one (runner_argv_ok), and an interpreter child that does not import betangel_suite is
+       unguarded, so keeping it in its temporary HOME is conduct. While the flag is False a write under
+       ~/betangel-data is refused as state_root_not_agreed, judged on the path text alone. A relative path
+       in a write open is refused too: the open event does not say which dir_fd it is relative to (the
+       other events do, and a dir_fd is resolved with F_GETPATH). The roots check
+       resolves the path as given, as the OS does: "link/.." and a final "/" follow the link.
        That check trusts each root's real path, so arm() first refuses any write root, and TMPDIR, that
        the file system puts in, around or onto ~/betangel-data (roots.check_placement, stat calls only):
        root_overlaps_data_home, or suite_root_misplaced for an engine suite root that is not a real
-       directory, or missing, at exactly realpath(~/betangel-data)/suite.noindex. And the hook refuses a
+       directory, or missing, at exactly realpath(~/betangel-data)/suite.noindex; and any that it puts in,
+       around or onto the run marker's directory, ~/.local/state/lab-runs (root_overlaps_lab_runs; Nuance's
+       re-review of #2, F5): a state root linked to ~/.local/state took lab-runs/ into the roots, and with it
+       the removal of ACTIVE and the renaming of the wrapper's LOCK. And the hook refuses a
        symlink, hard link or rename that puts a name where a root, TMPDIR or a directory between TMPDIR and its
        root really is, or moves one away (root_replace_refused): os.symlink(<a data root>, suite.noindex) would
        otherwise pass as a write in the roots and steer the next process. Links elsewhere in the roots stay
@@ -101,6 +119,16 @@ What the hook refuses, in every mode and phase:
        unless the setting then reads 2, and the hook refuses connect("") (sqlite_connect_refused), whose
        private database is such a temporary file. Rollback journals and WAL files sit beside the database.
 
+And in every mode but engine (test, vendor, uisnap, release and stop), reads in ~/betangel-data
+(data_home_read_refused; Nuance's re-review of #2, Q2 condition 1, which lab-Claude took as fail closed): an open
+without a write flag, a listing (os.listdir and os.scandir, a descriptor judged by its F_GETPATH path and no
+argument as the cwd) and os.chdir, of the data home or anything in it, judged by text, realpath and (st_dev,
+st_ino), stat calls only (roots.lies_in_for_read). A relative path is judged against the cwd. Engine mode reads as
+before: Phase 1a reads the data roots there. Not covered: os.open with a dir_fd and a relative path (the open event
+carries no dir_fd, so the path is judged against the cwd; a listing of that descriptor is refused), a descriptor
+opened before arm() or inherited, a hard link made elsewhere to a file in the data home, and stat-level calls
+(os.stat, os.lstat, os.readlink), which raise no audit event and which the guard's own checks use.
+
 Subprocesses by mode (the launcher picks the mode from the command name; nothing else can):
 
   engine  before seal(), exactly two argv shapes: git -C <dir in the write roots> rev-parse
@@ -129,11 +157,16 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           by a symlink or by a script afterwards is never started. Both need an explicit environment of HOME,
           LANG, TMPDIR, PATH=/usr/bin:/bin and the network switch only (uisnap_argv_ok). No git, no
           /usr/bin/open, nothing else, in either phase.
+  stop    none, in either phase. A mode of its own only so that it is not given the suite root.
   test    the test runner never seals. It may start /opt/homebrew/bin/python3.13 or 3.11 (or this
           interpreter) with -I -S -B, /bin/sh on this checkout's bin/suite, and /usr/bin/git only as
           git -C <dir under TMPDIR> [-c <test identity key>=...] <local subcommand> with relative operands,
-          no user or system git config and no other GIT_* variable (runner_git_ok). Tests of the engine
-          policy run in fresh engine-mode subprocesses, because a hook cannot be taken back.
+          no user or system git config and an environment of allowed keys only (runner_git_ok: no other
+          GIT_* variable and no DEVELOPER_DIR or any other key; HOME and TMPDIR under TMPDIR). A launcher child
+          (bin/suite, or an interpreter running _launch.py) needs an explicit environment whose HOME, roots
+          under it and TMPDIR stay out of, and do not contain, the runner's data home, judged by realpath and
+          (st_dev, st_ino) (_launcher_env_ok). Tests of the engine policy run in fresh engine-mode
+          subprocesses, because a hook cannot be taken back.
 
 Every child must keep BETANGEL_BETFAIR_FORBID_NETWORK=1 and carry no stray BETFAIR variable.
 
@@ -145,8 +178,13 @@ before arm(), subprocess's private _fork_exec or _socket.socket.listen called di
 sqlite3.Connection.setlimit called on a connection directly. Nor does it close check-then-use gaps on the
 paths in a child's argv (lab-Claude's reading, not a reviewer's finding): engine_argv_ok, runner_git_ok,
 vendor_argv_ok and release_argv_ok judge a path, links resolved, when the child is started, and git resolves
-it again when it runs, so a process of this user that changes a link on that path in between is not covered. Refusals
-raise GuardRefusal, whose str() is the code only, never the path or address.
+it again when it runs, so a process of this user that changes a link on that path in between is not covered. Also
+left, as same-process routes: a fresh instance of the built-in posix module (importlib.util.module_from_spec on its
+spec), whose mkfifo and mknod are the unwrapped originals, since a built-in module raises no import event and
+the hook never sees the load (Astra's re-review of #2); and an extension module refused above that was loaded
+before arm() and then taken out of sys.modules, since CPython then serves a single-phase one (_ctypes on
+3.11, _testcapi) from its extension cache with no import event (lab-Claude's probe, round 5). Refusals raise
+GuardRefusal, whose str() is the code only, never the path or address.
 Standard library only.
 """
 
@@ -165,9 +203,13 @@ FORBID_NETWORK_ENV = "BETANGEL_BETFAIR_FORBID_NETWORK"
 STRAY_PREFIXES = ("BETFAIR", "BETANGEL_BETFAIR_")
 PINNED_ENV = (FORBID_NETWORK_ENV, "TMPDIR", "SQLITE_TMPDIR")
 ALLOWED_VERSIONS = ((3, 11), (3, 13))                # I-14; bin/_launch.py holds the same tuple
-MODES = ("engine", "test", "vendor", "uisnap", "release")
+# uisnap and stop have modes of their own, whose only write root is the state root, as test's is: neither ever gets
+# the suite root (Nuance's re-review of #2, Q2 conditions 2 and 3; Astra's re-review of #2: cli.py mapped uisnap to
+# engine mode, "which can write its synthetic suite root"). release's mode (phase0/viewing) adds the release copies.
+MODES = ("engine", "test", "vendor", "uisnap", "release", "stop")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LAUNCHER = os.path.join(REPO_ROOT, "bin", "suite")
+LAUNCH_SCRIPT_NAME = "_launch.py"                   # bin/_launch.py, which bin/suite runs
 GIT = "/usr/bin/git"
 OPEN = "/usr/bin/open"
 SEARCH_DIRS = ("/usr/bin", "/bin")                   # where a bare program name may be found
@@ -193,9 +235,16 @@ TEST_GIT_SUBCOMMANDS = frozenset({"init", "add", "commit", "update-index", "chec
 TEST_GIT_CONFIG_KEYS = frozenset({"init.defaultBranch", "user.name", "user.email"})
 TEST_GIT_OPTIONS = frozenset({"-q", "--quiet", "--template=", "-f", "-A", "--", "-m", "--add", "--cacheinfo",
                               "--no-index", "--verify"})
-TEST_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
-TEST_GIT_ENV_EXTRA = frozenset({"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
-                                "GIT_TERMINAL_PROMPT"})
+# Its environment is an exact allowlist of keys, as vendor's is (Nuance's re-review of #2, F6; Astra's re-review:
+# "adopt an exact key/value allowlist, as vendor does"): any other key can change what git runs, DEVELOPER_DIR
+# (which made /usr/bin/git run <DEVELOPER_DIR>/usr/bin/xcrun) among them. TEST_GIT_ENV must be there with these
+# values; TEST_GIT_ENV_FIXED may be, with these values only; HOME and TMPDIR may be, each a directory under the
+# runner's TMPDIR (test_hygiene's _git_env names both); LANG a locale name; and the synthetic identity any text.
+TEST_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", FORBID_NETWORK_ENV: "1"}
+TEST_GIT_ENV_FIXED = {"PATH": "/usr/bin:/bin", "GIT_TERMINAL_PROMPT": "0"}
+TEST_GIT_ENV_DIRS = frozenset({"HOME", "TMPDIR"})
+TEST_GIT_ENV_EXTRA = frozenset({"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"})
+_LANG_RE = re.compile(r"[A-Za-z0-9_.@-]{1,64}")
 # bin/suite uisnap (uisnap_argv_ok): the Command Line Tools' swiftc and SDK, the build directory layout under the
 # state root, and the only environment keys its two children may get.
 SWIFTC = "/Library/Developer/CommandLineTools/usr/bin/swiftc"
@@ -244,8 +293,20 @@ _SPAWN = frozenset({"subprocess.Popen", "os.posix_spawn", "os.system", "os.exec"
 # already loaded (module_loaded_early). multiprocessing (spawn, the macOS default, and forkserver) and
 # concurrent.futures.process start children through _posixsubprocess.fork_exec, which raises no audit event of
 # its own (Nuance's PR #2 review, item 3). _ctypes calls into libc with dlsym(RTLD_DEFAULT, name) and
-# call_function, which need no dlopen (item 18); the ctypes package imports it.
-_REFUSED_IMPORTS = ("multiprocessing", "concurrent.futures.process", "ctypes", "_ctypes")
+# call_function, which need no dlopen (item 18); the ctypes package imports it. The rest run code in a
+# subinterpreter, which has audit hooks of its own and none of this one (Nuance's re-review of #2, F4: their
+# run_string "ran os.posix_spawn outside the roots"): _interpreters on 3.13, _xxsubinterpreters on 3.11,
+# interpreters and concurrent.interpreters where present, and the test modules _testcapi (run_in_subinterp, probed
+# on both interpreters by lab-Claude) and _testinternalcapi.
+_REFUSED_IMPORTS = ("multiprocessing", "concurrent.futures.process", "ctypes", "_ctypes", "_interpreters",
+                    "_xxsubinterpreters", "interpreters", "concurrent.interpreters", "_testcapi", "_testinternalcapi")
+# Extension modules refused under any name whose last part is theirs: CPython finds an extension's init function as
+# PyInit_<last part of the name>, so ExtensionFileLoader("x._ctypes", <the _ctypes file>) loads _ctypes itself
+# (Nuance's re-review of #2, F4). _posixsubprocess is here too, but only for loads after arm(): arm() imports it and
+# wraps fork_exec on that instance, and any fresh instance would carry the C original (Astra's re-review, finding 1).
+_REFUSED_EXTENSIONS = frozenset({"_posixsubprocess", "_ctypes", "_interpreters", "_xxsubinterpreters", "_testcapi",
+                                 "_testinternalcapi"})
+_FORK_EXEC_MODULE = "_posixsubprocess"
 # ctypes.dlsym, ctypes.dlsym/handle and ctypes.call_function back up the ctypes refusal: _ctypes cannot be loaded
 # once the hook is in place, but if it ever were, a symbol lookup or a raw call is refused too.
 _LIBRARY_LOADS = frozenset({"ctypes.dlopen", "ctypes.dlsym", "ctypes.dlsym/handle", "ctypes.call_function",
@@ -267,7 +328,10 @@ _MUTATIONS = {
     "os.mkfifo": ((0, 2, False, False),),   # raised by the wrapper arm() installs
     "os.mknod": ((0, 3, False, False),),    # likewise
 }
-_WATCHED = frozenset(set(_NETWORK) | _SPAWN | set(_MUTATIONS) | _LIBRARY_LOADS
+# Reads judged in every mode but engine (_check_read), besides "open" without a write flag: listing a directory and
+# making it the cwd. Each carries its path (None for the cwd) or a descriptor.
+_READS = frozenset({"os.listdir", "os.scandir", "os.chdir"})
+_WATCHED = frozenset(set(_NETWORK) | _SPAWN | set(_MUTATIONS) | _LIBRARY_LOADS | _READS
                      | {"socket.bind", "socket.__new__", "socket.listen", "os.putenv", "os.unsetenv", "open",
                         "sqlite3.connect", "import"})
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
@@ -519,7 +583,9 @@ def _check_placement(state):
 
     The hook trusts each root's real path, so a root that a link puts in, around or onto ~/betangel-data would
     take every write there: root_overlaps_data_home, or suite_root_misplaced for a suite root that is not a real
-    directory (or missing) at exactly realpath(data home)/suite.noindex. Stat calls only; nothing is opened.
+    directory (or missing) at exactly realpath(data home)/suite.noindex. Likewise a root in, around or onto
+    ~/.local/state/lab-runs would let the suite remove the run marker or the wrapper's lock (root_overlaps_lab_runs;
+    Nuance's re-review of #2, F5). Stat calls only; nothing is opened.
     """
     for path in state.roots + (state.tmp_root,):
         roots.check_placement(path, state.home)
@@ -562,14 +628,24 @@ def _no_link_below(root, path):
 
 
 def _import_refused(name):
-    """True for a module in _REFUSED_IMPORTS or a submodule of one."""
-    return isinstance(name, str) and any(name == top or name.startswith(top + ".") for top in _REFUSED_IMPORTS)
+    """True for a module in _REFUSED_IMPORTS or a submodule of one, and for any name whose last part names an
+    extension in _REFUSED_EXTENSIONS ("_posixsubprocess" itself included: the hook sees only loads after arm()).
+
+    The name is judged as an exact str: a str subclass could answer startswith or rpartition for itself, while
+    CPython loads by the characters it holds."""
+    if not isinstance(name, str):
+        return False
+    name = str.__str__(name)
+    return (any(name == top or name.startswith(top + ".") for top in _REFUSED_IMPORTS)
+            or name.rpartition(".")[2] in _REFUSED_EXTENSIONS)
 
 
 def _refuse_loaded_modules():
     """module_loaded_early if a refused module is already loaded: the import event fires only for a module that is
-    not in sys.modules yet, so the hook could not stop it, and fail closed is the only safe answer."""
-    if any(_import_refused(name) for name in list(sys.modules)):
+    not in sys.modules yet, so the hook could not stop it, and fail closed is the only safe answer. The one module
+    that may be loaded is _posixsubprocess under its own name, whose fork_exec arm() wraps next; a second instance
+    under a dotted name would keep the C original."""
+    if any(_import_refused(name) and str.__str__(name) != _FORK_EXEC_MODULE for name in list(sys.modules)):
         raise SuiteError("module_loaded_early")
 
 
@@ -586,7 +662,12 @@ def _mknod(path, mode=0o600, device=0, *, dir_fd=None):
 
 
 def _wrap_node_calls():
-    """Make os.mkfifo and os.mknod (and their posix originals) raise an audit event the hook checks."""
+    """Make os.mkfifo and os.mknod (and their posix originals) raise an audit event the hook checks.
+
+    A limit, kept as a same-process residual (Astra's re-review of #2): the wrappers sit on the posix module
+    instance in sys.modules. A fresh instance of the built-in posix module (importlib.util.module_from_spec on its
+    spec) has the unwrapped originals, and a built-in module raises no import event, so the hook cannot refuse
+    that load as it refuses a fresh _posixsubprocess."""
     import posix
     for name, wrapper in (("mkfifo", _mkfifo), ("mknod", _mknod)):
         if name in _ORIGINAL_NODE_CALLS:
@@ -665,6 +746,12 @@ def _wrap_fork_exec():
     module attribute is then replaced. Imported after this, subprocess would bind the wrapper and every Popen,
     the startup git included, would be refused. The wrapper's event carries no arguments: there is no argv the
     hook could judge, and nothing the suite or the pinned closure runs calls fork_exec directly.
+
+    The wrapper sits on this one module instance. A fresh instance (the module taken out of sys.modules and
+    imported again, module_from_spec, _imp.create_dynamic, or a dotted name ending in _posixsubprocess) would
+    carry the C original, so the hook refuses every such load (_REFUSED_EXTENSIONS; Astra's re-review of #2,
+    finding 1). importlib.reload of this instance raises no import event and keeps the wrapper: the extension
+    sets its functions when the module is made, not when it is executed again.
     """
     import _posixsubprocess
     import subprocess
@@ -766,6 +853,11 @@ def _check(state, event, args):
         writes = isinstance(flags, int) and flags & _WRITE_FLAGS
         if writes or (isinstance(mode, str) and any(c in mode for c in "wax+")):
             _check_write(state, path, None, True)       # None: the open event does not carry dir_fd
+        elif state.mode != "engine" and not isinstance(path, int):
+            _check_read(state, path)                    # open() of a descriptor: judged at its own open
+    elif event in _READS:
+        if state.mode != "engine":
+            _check_read(state, args[0])
     elif event == "sqlite3.connect":
         _check_sqlite(state, args[0])
     elif event == "import":
@@ -860,7 +952,7 @@ def _check_spawn(state, event, args):
         if event != "subprocess.Popen" or not all(entry in SEARCH_DIRS for entry in search.split(os.pathsep)):
             raise GuardRefusal("subprocess_refused")
     if state.mode == "test":
-        if runner_argv_ok(argv, names, state.interpreters, LAUNCHER, state.tmp_root):
+        if runner_argv_ok(argv, names, state.interpreters, LAUNCHER, state.tmp_root, state.home):
             return
     elif state.mode == "uisnap":
         if uisnap_argv_ok(argv, names, state.uisnap_build, state.sealed) and (
@@ -1051,33 +1143,66 @@ def release_argv_ok(argv, env, repo, research, app_root):
     return False
 
 
-def runner_argv_ok(argv, env, interpreters, launcher, tmp_root):
-    """What the test runner may start: isolated interpreters, this checkout's launcher, and local git."""
+def runner_argv_ok(argv, env, interpreters, launcher, tmp_root, home):
+    """What the test runner may start: isolated interpreters, this checkout's launcher, and local git.
+
+    A launcher child, /bin/sh on bin/suite or an interpreter running a script named _launch.py (bin/_launch.py, as
+    tests/test_launcher.py starts it), arms its own guard from the HOME it is given, so its environment must pass
+    _launcher_env_ok against home, the runner's own HOME (Nuance's re-review of #2, F2). Other interpreter children
+    may inherit this process's environment (env None): a nested test child does, and one that does not import
+    betangel_suite is unguarded anyway (the limits in this module's docstring).
+    """
     if argv[0] in interpreters:
-        return argv[1:4] == ["-I", "-S", "-B"]
+        if argv[1:4] != ["-I", "-S", "-B"]:
+            return False
+        return not (len(argv) > 4 and os.path.basename(argv[4]) == LAUNCH_SCRIPT_NAME) or _launcher_env_ok(env, home)
     if argv[0] == "/bin/sh":
-        return len(argv) >= 2 and argv[1] == launcher
+        return len(argv) >= 2 and argv[1] == launcher and _launcher_env_ok(env, home)
     return argv[0] == GIT and runner_git_ok(argv, env, tmp_root)
+
+
+def _launcher_env_ok(env, home):
+    """A test-runner launcher child's environment (Nuance's re-review of #2, F2): explicit, with an absolute HOME none
+    of whose roots, nor its TMPDIR or SQLITE_TMPDIR, equals, lies in or contains the runner's data home.
+
+    env None would hand the child this process's HOME, the real one under `bin/suite test`, and an engine-mode child
+    armed with it writes the real suite root; a child whose HOME lies in the data home puts its own state root there.
+    The child's guard cannot see either: it judges its roots against its own HOME's data home. So the runner judges
+    them against its own: HOME itself, HOME/betangel-data, the state and share roots under HOME, and TMPDIR, each by
+    text, realpath and (st_dev, st_ino) (roots.overlaps_data_home, stat calls only), so a firmlink, another case,
+    "..", "//" or a link on any of them (HOME/betangel-data or HOME/.local linked into the data home, say) gives the
+    same answer as the plain spelling. False when that cannot be judged.
+    """
+    if env is None:
+        return False
+    child = env.get("HOME", "")
+    if not isinstance(child, str) or not os.path.isabs(child) or "\0" in child:
+        return False
+    paths = [child, roots.data_home(child), roots.state_dir(child), roots.share_dir(child)]
+    for key in ("TMPDIR", "SQLITE_TMPDIR"):
+        value = env.get(key)
+        if value is not None:
+            if not isinstance(value, str) or not os.path.isabs(value) or "\0" in value:
+                return False
+            paths.append(value)
+    try:
+        return not any(roots.overlaps_data_home(path, home) for path in paths)
+    except SuiteError:
+        return False
 
 
 def runner_git_ok(argv, env, tmp_root):
     """git -C <dir under tmp_root> [-c key=value ...] <local subcommand> <allowed options, relative operands>.
 
-    The environment must be explicit, with no user or system git config and no other GIT_* variable (which
-    could inject config, a git dir or an ssh command). No network transport is reachable: every allowed
-    subcommand is local. The -C directory must lie under the test temp root, so neither the deploy clone
-    nor this checkout is ever touched.
+    The environment must be explicit and hold only the keys above (TEST_GIT_ENV and the rest; Nuance's re-review of
+    #2, F6): no user or system git config, no other GIT_* variable (which could inject config, a git dir or an ssh
+    command), and no other key at all, such as DEVELOPER_DIR, which picks the git that /usr/bin/git runs. No network
+    transport is reachable: every allowed subcommand is local. The -C directory, and HOME and TMPDIR if given, must
+    lie under the test temp root, so neither the deploy clone nor this checkout is ever touched.
     """
-    if env is None or any(env.get(key) != value for key, value in TEST_GIT_ENV.items()):
+    if env is None or not tmp_root or not _runner_git_env_ok(env, tmp_root):
         return False
-    if any(key.startswith("GIT_") and key not in TEST_GIT_ENV and key not in TEST_GIT_ENV_EXTRA for key in env):
-        return False
-    if len(argv) < 4 or argv[0] != GIT or argv[1] != "-C" or not tmp_root:
-        return False
-    directory = argv[2]
-    if not (os.path.isabs(directory) and os.path.normpath(directory) == directory
-            and roots.within(directory, tmp_root)
-            and roots.within(os.path.realpath(directory), os.path.realpath(tmp_root))):
+    if len(argv) < 4 or argv[0] != GIT or argv[1] != "-C" or not _under_tmp_root(argv[2], tmp_root):
         return False
     rest = argv[3:]
     while len(rest) >= 2 and rest[0] == "-c":
@@ -1096,11 +1221,61 @@ def runner_git_ok(argv, env, tmp_root):
     return True
 
 
+def _runner_git_env_ok(env, tmp_root):
+    """The test runner's git environment: exactly the allowed keys, each with an allowed value (runner_git_ok)."""
+    if any(env.get(key) != value for key, value in TEST_GIT_ENV.items()):
+        return False
+    for key, value in env.items():
+        if key in TEST_GIT_ENV or key in TEST_GIT_ENV_EXTRA:
+            continue
+        if key in TEST_GIT_ENV_FIXED:
+            if value != TEST_GIT_ENV_FIXED[key]:
+                return False
+        elif key in TEST_GIT_ENV_DIRS:
+            if not _under_tmp_root(value, tmp_root):
+                return False
+        elif key != "LANG" or not _LANG_RE.fullmatch(value):
+            return False
+    return True
+
+
+def _under_tmp_root(path, tmp_root):
+    """path is absolute and normalised and lies under tmp_root, as text and with its links resolved."""
+    return (os.path.isabs(path) and os.path.normpath(path) == path and roots.within(path, tmp_root)
+            and roots.within(os.path.realpath(path), os.path.realpath(tmp_root)))
+
+
 def _check_env_change(event, args):
     key = os.fsdecode(args[0])
     if key in PINNED_ENV or _stray(key):
         if not (event == "os.putenv" and key == FORBID_NETWORK_ENV and os.fsdecode(args[1]) == "1"):
             raise GuardRefusal("environment_change_refused")
+
+
+def _check_read(state, path):
+    """Every mode but engine: no open, listing or chdir in the data home (data_home_read_refused; Nuance's re-review
+    of #2, Q2 condition 1). path is the event's: None for the cwd (os.listdir() and os.scandir() with no argument), a
+    descriptor (listdir, scandir or fchdir of one), judged by its F_GETPATH path, or a path, judged against the cwd
+    when relative (the open event does not carry a dir_fd: the limit in this module's docstring). Text, realpath and
+    identity, stat calls only (roots.lies_in_for_read). A path with a NUL in it opens nothing (the call raises
+    ValueError) and is let through to it; anything else that cannot be judged is refused."""
+    try:
+        if path is None:
+            raw = os.getcwd()
+        elif isinstance(path, int):
+            raw = _fd_path(path)
+        else:
+            raw = os.fsdecode(os.fspath(path))
+            if "\0" in raw:
+                return
+            if not os.path.isabs(raw):
+                raw = os.path.join(os.getcwd(), raw)
+        if not os.path.isabs(raw) or roots.lies_in_for_read(raw, roots.data_home(state.home), "data_home_read_refused"):
+            raise GuardRefusal("data_home_read_refused")
+    except GuardRefusal:
+        raise
+    except (OSError, OverflowError, ValueError, SuiteError):
+        raise GuardRefusal("data_home_read_refused") from None
 
 
 def _check_sqlite(state, database):

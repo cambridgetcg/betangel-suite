@@ -2,7 +2,8 @@
 
 Roots, under the home directory taken from $HOME (bin/suite passes the caller's HOME through env -i):
 
-    ~/.local/state/betangel-suite/            0700  config, prefs, run/ (realdata.lock), tmp/, install-salt (Phase 0)
+    ~/.local/state/betangel-suite/            0700  config, prefs, run/ (realdata.lock), tmp/, install-salt and
+                                                    salt-provisioned (Phase 0)
     ~/.local/share/betangel-suite/deps/       read-only pinned upstream code (written only by the vendor tool)
     ~/.local/share/betangel-suite/app/        release copies <sha12>/ and the current symlink (written only by release)
     ~/betangel-data/suite.noindex/            0700  the suite root, ONLY while STATE_ROOT_AGREED is True
@@ -11,9 +12,10 @@ STATE_ROOT_AGREED is True: Yu agreed the suite root (R-4), and Nuance agreed it 
 PR #4 review (Q-N3; DESIGN.md 3.7). Nuance's PR #2 review makes the root half conditional again, on Nuance's
 item 1, which check_placement answers; its re-check was asked of Nuance on 2026-10-17, not answered, and the
 flag stays True meanwhile (lab-Claude's call). So the suite root is writable (by the engine only: guard.py gives
-it to no other mode), and its tmp/ is the TMPDIR of every command except test, uisnap, release and vendor. The
-flag and bin/suite's default TMP branch, which a shell script cannot read from here, change together. The launcher
-refuses any mismatch between them (tmpdir_mismatch), so a half-done change fails closed.
+it to no other mode), and its tmp/ is the TMPDIR of every command except test, uisnap, release, vendor and stop,
+whose guard modes never have the suite root (cli.OWN_MODE_COMMANDS). The flag and
+bin/suite's default TMP branch, which a shell script cannot read from here, change together. The launcher refuses
+any mismatch between them (tmpdir_mismatch), so a half-done change fails closed.
 
 With the flag False (tests still cover it, under temporary HOMEs) nothing may be created or written
 anywhere under ~/betangel-data: the writer helper refuses with state_root_not_agreed on the path text
@@ -28,8 +30,9 @@ and every Git worktree).
 
 Path text is not enough for the roots themselves: a link on an ancestor (~/.local/state pointing into
 ~/betangel-data/lab-state, say) or a suite.noindex that is a link to a data root would put every write there.
-So check_placement() judges each root on the file system, with stat calls only (Nuance's PR #2 review, item 1).
-guard.arm() runs it on every write root and TMPDIR, and the writer helper on the root of every path it writes.
+So check_placement() judges each root on the file system, with stat calls only (Nuance's PR #2 review, item 1),
+against the data home and against the run marker's directory, ~/.local/state/lab-runs (Nuance's re-review of #2,
+F5). guard.arm() runs it on every write root and TMPDIR, and the writer helper on the root of every path it writes.
 """
 
 import os
@@ -43,8 +46,11 @@ DATA_HOME_PARTS = ("betangel-data",)
 SUITE_ROOT_PARTS = ("betangel-data", "suite.noindex")
 STATE_DIR_PARTS = (".local", "state", "betangel-suite")
 SHARE_DIR_PARTS = (".local", "share", "betangel-suite")
+# The directory of the run marker, ~/.local/state/lab-runs/ACTIVE (config's run_marker accepts only that path), which
+# holds Nuance's wrapper's lab-runs/LOCK too. No write root and no TMPDIR may lie in, on or around it (check_placement).
+LAB_RUNS_PARTS = (".local", "state", "lab-runs")
 # Commands whose TMPDIR is always the state root's tmp/: their guard modes never get the suite root (guard.py).
-STATE_TMP_COMMANDS = ("test", "uisnap", "release", "vendor")
+STATE_TMP_COMMANDS = ("test", "uisnap", "release", "vendor", "stop")
 REALDATA_LOCK_NAME = "realdata.lock"                 # in run/; never unlinked (runmarker.hold_shared)
 _MAX_ANCESTORS = 256                                 # deeper than any real tree: past it, fail closed
 
@@ -90,6 +96,11 @@ def run_dir(home_dir=None):
     return os.path.join(state_dir(home_dir), "run")
 
 
+def lab_runs_dir(home_dir=None):
+    """~/.local/state/lab-runs: the run marker's directory, which only Nuance's run wrapper writes (runmarker.py)."""
+    return os.path.join(_home(home_dir), *LAB_RUNS_PARTS)
+
+
 def realdata_lock_path(home_dir=None):
     """run/realdata.lock in the state root: every real-data command holds LOCK_SH on it for its whole life, and Nuance's
     run wrapper takes LOCK_EX on it before a run touches sources or data (runmarker.py; DESIGN.md 6.8). It lies in the
@@ -103,6 +114,13 @@ def config_path(home_dir=None):
 
 def salt_path(home_dir=None):
     return os.path.join(state_dir(home_dir), "install-salt")       # Phase 0 adaptation B
+
+
+def salt_marker_path(home_dir=None):
+    """The salt's provisioned marker, beside it: written once, after the salt is on disk, and never read; while it
+    exists a missing salt is refused, never made again (errors._provisioned_salt). Its name does not start with
+    install-salt: it holds nothing (lab-Claude's decision, round 5)."""
+    return os.path.join(state_dir(home_dir), "salt-provisioned")
 
 
 def research_clone(home_dir=None):
@@ -151,8 +169,9 @@ def place(path, home_dir=None):
 
 def check_placement(path, home_dir=None):
     """Refuse a write root, or a path in one (TMPDIR), that the file system puts in the wrong place relative to
-    ~/betangel-data (Nuance's PR #2 review, item 1; DESIGN.md 3.7, I-6). Stat calls only: realpath's lstat and
-    readlink, and os.stat. Nothing is opened, read or listed.
+    ~/betangel-data (Nuance's PR #2 review, item 1; DESIGN.md 3.7, I-6) or to the run marker's directory (Nuance's
+    re-review of #2, F5). Stat calls only: realpath's lstat and readlink, and os.stat. Nothing is opened, read or
+    listed.
 
     While STATE_ROOT_AGREED, the suite root and every path in it (by text): the suite root must be a real
     directory, or missing, at exactly realpath(data home)/suite.noindex, and path must resolve inside it. A
@@ -161,7 +180,14 @@ def check_placement(path, home_dir=None):
 
     Any other path must not equal, lie in or contain the data home: root_overlaps_data_home otherwise, and also
     when that cannot be judged (a stat of path or the data home that fails for any reason but the name not existing,
-    or an ancestor walk that cannot go on). Two comparisons, each both ways:
+    or an ancestor walk that cannot go on).
+
+    Then every path, the suite root's included, must not equal, lie in or contain the run marker's directory,
+    ~/.local/state/lab-runs, judged the same way: root_overlaps_lab_runs otherwise (Nuance's re-review of #2, F5).
+    The guard refuses every suite write in lab-runs/ only because it lies outside the roots; a state root linked to
+    ~/.local/state put it inside them, and removing ACTIVE or renaming the wrapper's LOCK was allowed.
+
+    The two comparisons, each both ways:
       - text: path and the data home, each as written and with its links resolved (realpath), casefolded
         (the lab's APFS volume folds case);
       - identity: the data home's (st_dev, st_ino) must not be that of path or of any directory above it, and
@@ -178,26 +204,40 @@ def check_placement(path, home_dir=None):
         if not (_real_dir_or_missing(expected) and os.path.realpath(suite) == expected
                 and within(os.path.realpath(path), expected)):
             raise SuiteError("suite_root_misplaced")
-        return
-    if _overlaps_data_home(path, home_dir):
+    elif _overlaps_data_home(path, home_dir):
         raise SuiteError("root_overlaps_data_home")
+    if _overlaps(path, lab_runs_dir(home_dir), "root_overlaps_lab_runs"):
+        raise SuiteError("root_overlaps_lab_runs")
+
+
+def overlaps_data_home(path, home_dir=None):
+    """True when path equals, lies in or contains the data home of home_dir, by text, realpath or identity, as
+    check_placement judges every path outside the suite root; SuiteError(root_overlaps_data_home) when that cannot be
+    judged. Stat calls only. The guard also judges a test-runner launcher child's HOME and roots with it, against the
+    runner's own data home (guard._launcher_env_ok; Nuance's re-review of #2, F2)."""
+    return _overlaps_data_home(os.path.normpath(path), home_dir)
 
 
 def _overlaps_data_home(path, home_dir):
-    data = data_home(home_dir)
-    real_data = os.path.realpath(data)
+    return _overlaps(path, data_home(home_dir), "root_overlaps_data_home")
+
+
+def _overlaps(path, other, code):
+    """True when path equals, lies in or contains other, by text, realpath or identity (check_placement's two
+    comparisons); SuiteError(code) when that cannot be judged."""
+    real_other = os.path.realpath(other)
     real = os.path.realpath(path)
     for mine in (path.casefold(), real.casefold()):
-        for theirs in (data.casefold(), real_data.casefold()):
+        for theirs in (other.casefold(), real_other.casefold()):
             if within(mine, theirs) or within(theirs, mine):
                 return True
-    if real_data.casefold().startswith("/.vol/"):
+    if real_other.casefold().startswith("/.vol/"):
         return True
-    data_id = _known_identity(data)
-    if data_id is not None and data_id in _lineage(real):
+    other_id = _known_identity(other, code)
+    if other_id is not None and other_id in _lineage(real, code):
         return True
-    path_id = _known_identity(real)
-    return path_id is not None and (path_id == data_id or path_id in _lineage(os.path.dirname(real_data)))
+    path_id = _known_identity(real, code)
+    return path_id is not None and (path_id == other_id or path_id in _lineage(os.path.dirname(real_other), code))
 
 
 def _known_identity(path, code="root_overlaps_data_home"):
@@ -293,6 +333,26 @@ def lies_in(path, directory, code):
     for candidate in (path, real):
         _known_identity(candidate, code)  # a path that cannot be stat()ed but is not missing cannot be judged either
     return any(target in _lineage(candidate, code) for candidate in (path, real))
+
+
+def lies_in_for_read(path, directory, code):
+    """lies_in for the guard's read check (guard._check_read; Nuance's re-review of #2, Q2 condition 1): True when
+    path is directory or lies below it, by text (casefolded, as written and with links resolved) or by identity
+    (directory's (st_dev, st_ino) among the directories at and above path, or above its resolved text, through
+    ".." as the kernel resolves it). Stat calls only.
+
+    Unlike lies_in, a path whose own stat fails otherwise than missing (no search permission on the way, a link loop,
+    a name too long) is judged at its nearest existing ancestor instead of raising: the open, listing or chdir the
+    check comes before fails the same way, and a test that probes such a failure outside the data home still sees
+    its own error. SuiteError(code) when directory's own stat fails otherwise than missing, or an ancestor walk
+    cannot go on.
+    """
+    real = os.path.realpath(path)
+    forms = (directory.casefold(), os.path.realpath(directory).casefold())
+    if any(within(mine.casefold(), form) for mine in (os.path.normpath(path), real) for form in forms):
+        return True
+    target = _known_identity(directory, code)
+    return target is not None and any(target in _lineage(candidate, code) for candidate in (path, real))
 
 
 # --- the writer helper ---------------------------------------------------------------------------

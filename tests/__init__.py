@@ -8,8 +8,12 @@ clone through betangel_suite.pin, so tests may import test-only oracles from bet
 from the 25 modules of the closure: pin's closure finder refuses any other (upstream_import_refused).
 
 The test-mode guard confines this process's writes to ~/.local/state/betangel-suite (TMPDIR is its tmp/),
-refuses all network use, and lets the runner start only isolated interpreters, this checkout's bin/suite
-and local git in repositories under TMPDIR (guard.runner_git_ok), each child with the network switch on.
+refuses its reads in ~/betangel-data (opens, listings and chdir; guard.py), refuses all network use, and lets
+the runner start only isolated interpreters, this checkout's bin/suite and local git in repositories under
+TMPDIR (guard.runner_git_ok), each child with the network switch on. A bin/suite or bin/_launch.py child also
+needs an explicit environment whose HOME keeps it out of the runner's own data home (guard.runner_argv_ok); an
+interpreter child that does not import betangel_suite is unguarded, so every test gives its children a
+temporary HOME (conduct).
 Every audit-hook test runs in a fresh subprocess, because a hook cannot be removed. Each test makes its own
 temporary HOME (make_home) under TMPDIR and removes it afterwards; bin/suite test fails the run if anything
 in the real state root outside tmp/ changed (cli.state_listing).
