@@ -21,12 +21,14 @@ clone, and is never uploaded or shared. A model context counts as an upload.
 | **The browser** | A Safari Private window (or a profile with no Betfair login, extensions or iCloud sync); UI preferences in `localStorage` | The session token in storage, cookies, external requests; a page title that names a race (it is always `betangel-suite`) |
 | **Disk** | Derivatives under the suite root (0700); data roots are read-only to the suite | Decompressed members anywhere; any derivative outside `~/betangel-data`; temp files outside the suite's own `TMPDIR` |
 
-Phase 0 is synthetic-only, so it writes no licensed derivative. The suite root is agreed
-(AGENTS.md, Phase 0 status A): an engine command creates `~/betangel-data/suite.noindex/` and its
-`tmp/` (both 0700), and only the engine may write there. Tests use temporary HOMEs and never
-write under the real `~/betangel-data`. A `suite.noindex` that is a link, or a state root that a
-link puts in `~/betangel-data`, is refused before anything is written (62c39c6). The suite never
-writes `~/.local/state/lab-runs/`, where Nuance's run wrapper keeps its marker and lock.
+Phase 0 is synthetic-only, so it writes no licensed derivative. Yu agreed the suite root (R-4);
+Nuance's agreement is conditional again pending the item 1 re-check, and `roots.STATE_ROOT_AGREED`
+stays True meanwhile (AGENTS.md, Phase 0 status A). An engine command creates
+`~/betangel-data/suite.noindex/` and its `tmp/` (both 0700), and only the engine may write there.
+Tests use temporary HOMEs and never write under the real `~/betangel-data`. A `suite.noindex` that
+is a link, or a state root that a link puts in `~/betangel-data`, is refused before anything is
+written (62c39c6). The suite never writes `~/.local/state/lab-runs/`, where Nuance's run wrapper
+keeps its marker and lock.
 
 ## Exceptions: not available pending Q-Y9
 
@@ -67,9 +69,10 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   and bootstrap-code URLs. It also fails on binary data anywhere (a NUL anywhere, or bytes that are
   not UTF-8), on `encoded_blob` (data hidden in text that decodes to an archive, a zlib stream,
   96 or more bytes of binary, or text another rule flags: base64, hex in its common dump forms,
-  `\xNN` escapes, decimal byte lists and GIT binary patches; a list of full 40- or 64-digit
-  hashes, one per line, is not counted as binary; DESIGN.md 5.6 lists the encodings it does not
-  decode and the other known gaps), and on `filter_attribute` (a
+  `\xNN` escapes, decimal byte lists and GIT binary patches; a list of up to 64 full 40- or
+  64-digit hashes, one per line, is not counted as binary, but a signature or a zlib stream at any
+  of its lines still counts; DESIGN.md 5.6 lists the encodings it does not decode, the other known
+  gaps and the known false positives), and on `filter_attribute` (a
   path git gives a clean filter or LFS, or a `.gitattributes` line that sets one: git stores the
   filter's output, which the scan never sees). It reads the objects git stores: replace refs and
   grafts, which show one object in another's place, are ignored. `--list-rules` lists the codes. For each finding it prints one line,

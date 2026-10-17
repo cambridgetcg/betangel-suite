@@ -7,10 +7,11 @@ the last colon survives, and only when it is a listed reason; everything else is
 hash, so equal failures still correlate without the identifier being shown.
 
 The salt is per install: 32 random bytes in a 0600 file at ~/.local/state/betangel-suite/install-salt
-(AGENTS.md adaptation B), not under the suite root, although that root is now agreed. The first process that
-hashes an identifier makes it, and every guard mode may write the state root, while only the engine may write
-the suite root. Whether the salt should move is open; if it ever does, the same bytes must move with it, or
-earlier hashes stop matching.
+(AGENTS.md adaptation B), not under the suite root, although Yu agreed that root (R-4; AGENTS.md adaptation A).
+The first process that hashes an identifier makes it, and every guard mode may write the state root, while only
+the engine may write the suite root. Moving the salt byte for byte into suite.noindex is lab-Claude's proposal,
+asked of Nuance on 2026-10-17, not answered (DESIGN.md 9.2 item 9); if it ever moves, the same bytes must move with
+it, or earlier hashes stop matching.
 
 tools/hygiene_scan.py and tools/pre-commit print their own refusal codes (refused:usage, git_failed,
 python3.13_missing, ...). They are a separate enum on purpose: the scanner must run without importing

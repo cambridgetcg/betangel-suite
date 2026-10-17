@@ -33,8 +33,8 @@ From the repository root, on the lab:
     nice -n 10 bin/suite test --py311   # the same tests on python3.11
 
 Tests use temporary HOMEs and synthetic fixtures only. `bin/suite test` refuses while
-Nuance's run marker exists (AGENTS.md rule 7). Install the git hooks as AGENTS.md,
-"Repository hygiene", describes.
+Nuance's run marker exists (AGENTS.md, "Lab constraints this repo inherits" and Phase 0
+status E). Install the git hooks as AGENTS.md, "Repository hygiene", describes.
 
 ## Ground rules
 

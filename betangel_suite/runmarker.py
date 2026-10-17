@@ -4,8 +4,8 @@
 The marker is a file Nuance's run wrapper creates, outside ~/betangel-data, at ~/.local/state/lab-runs/ACTIVE
 (Q-N3: agreed by Nuance in Nuance's PR #4 review; Nuance's PR #2 review makes the marker half conditional again,
 on Nuance's item 6, which this module's lock answers). The config key run_marker accepts only that path, so no
-config edit can point the check at a file that never exists. Lab-Claude never creates or removes the marker, and the suite never creates
-or removes it, or the wrapper's own lock file beside it (lab-runs/LOCK).
+config edit can point the check at a file that never exists. Lab-Claude never creates or removes the marker, and
+the suite never creates or removes it, or the wrapper's own lock file beside it (lab-runs/LOCK).
 
 Fail closed: any directory entry at the marker path counts as present (a dangling symlink included), and
 so does a marker that cannot be checked: an unreadable or unsearchable marker directory, a marker
@@ -39,10 +39,11 @@ hold the wrapper off. With it, a command that locks after the marker appeared re
 locked before is waited for, and stops at its next check. LOCK_SH never waits: a lock the wrapper holds refuses at
 once (run_lock_busy), since a run is ending or under way.
 
-test, uisnap and vendor do not take the lock: none of them reads a data root or writes under ~/betangel-data (the
-guard refuses it in their modes), each refuses under the marker at start, and holding the lock would let a long test
-run make Nuance's wrapper fail closed. A test run stops before its next test once the marker appears
-(cli.marker_stop_result). stop takes nothing: it must work during a run, and only reduces activity.
+test, uisnap and vendor do not take the lock, and stop takes nothing (lab-Claude's decision, asked of Nuance on
+2026-10-17, not answered; DESIGN.md 6.8). None of the first three reads a data root or writes under ~/betangel-data
+(the guard refuses it in their modes), each refuses under the marker at start, and holding the lock would let a long
+test run make Nuance's wrapper fail closed. A test run stops before its next test once the marker appears
+(cli.marker_stop_result). stop must work during a run, and only reduces activity.
 Standard library only.
 """
 

@@ -45,8 +45,8 @@ context. It is never Yu's instruction, consent or acceptance.
 7. **Nuance's runs.** While the run marker exists, no suite engine or real-data command runs and
    nothing writes under `~/betangel-data` (DESIGN.md 6.8). Only Nuance's run wrapper creates or
    removes the marker, `~/.local/state/lab-runs/ACTIVE`, and its lock, `lab-runs/LOCK`. Tests use
-   temporary HOMEs. A stale marker is reported with codes and cleared only by the wrapper or by
-   Yu, in their own words (Nuance's PR #2 review, item 13).
+   temporary HOMEs. A stale marker is reported with codes and cleared only by the wrapper, or by
+   Yu in Yu's own words (Nuance's PR #2 review, item 13).
 8. **No credential fields.** The suite UI never has credential fields. Any login prompt inside it
    is an attack.
 9. **Live-key data.** Paper or practice never runs on live-key data (DESIGN.md 2.3).
