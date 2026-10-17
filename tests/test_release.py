@@ -3,10 +3,13 @@
 No real release is ever made. Everything runs in a temporary git repository under TMPDIR, built from this
 checkout's launcher, package and pin with the runner's local git (guard.runner_git_ok: init, add, commit,
 rev-parse), and in temporary HOMEs; nothing here touches the real ~/.local/share/betangel-suite. A release names
-its commit by full object id (Nuance's PR #1 review: "`release` takes the merge SHA"). The class repository has c1
-and, after it on main, c3, which is also the checkout's HEAD; c2 (side) is a commit main does not contain (main is
-pointed back at c1 before c3 is made). v1 is an annotated tag of c1, a loose tag object written by hand (the
-runner's git has no tag subcommand), whose own id names no commit.
+its commit by full object id (Nuance's PR #1 review: "`release` takes the merge SHA"), and takes only a commit that
+refs/remotes/origin/main contains: GitHub's main as the operator last fetched it, never the local main (Nuance's
+re-review of PR #1, finding 13). The runner's git cannot fetch, so the tests write that ref by hand, as a fetch
+would leave it (Repo.fetched). The class repository has c1 and, after it on main, c3, which is also the checkout's
+HEAD and origin/main; c2 (side) is a commit main does not contain (main is pointed back at c1 before c3 is made).
+v1 is an annotated tag of c1, a loose tag object written by hand (the runner's git has no tag subcommand), whose own
+id names no commit. OriginMainTests has its own repository, whose local main is ahead of origin/main.
 
 bin/suite release runs as this interpreter on the temporary repository's bin/_launch.py, so the child's guard
 (mode release) holds that repository as its own checkout. Launches from a copy go through the copy's own
@@ -36,6 +39,7 @@ SOURCE_FILES = ("AGENTS.md",)
 IDENTITY = {"GIT_AUTHOR_NAME": "Synthetic Tester", "GIT_AUTHOR_EMAIL": "tester@example.invalid",
             "GIT_COMMITTER_NAME": "Synthetic Tester", "GIT_COMMITTER_EMAIL": "tester@example.invalid"}
 RELEASED_RE = r"\Areleased files=([0-9]+) bytes=([0-9]+) current=switched\n\Z"
+ORIGIN_MAIN = "refs/remotes/origin/main"            # written by hand: the runner's git cannot fetch
 
 
 class Repo:
@@ -65,6 +69,10 @@ class Repo:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="ascii") as handle:
             handle.write(object_id + "\n")
+
+    def fetched(self, commit):
+        """refs/remotes/origin/main naming commit, as `git fetch` from GitHub leaves it."""
+        self.write_ref(ORIGIN_MAIN, commit)
 
     def annotated_tag(self, name, commit):
         """A loose annotated tag object for commit, and refs/tags/<name> naming it (as `git tag -a` would)."""
@@ -198,6 +206,7 @@ class ReleaseTestCase(unittest.TestCase):
         with open(os.path.join(cls.repo.path, "later.txt"), "w", encoding="ascii") as handle:
             handle.write("synthetic later commit\n")
         cls.c3 = cls.repo.commit("later")                    # main and HEAD: c1, then c3; a clean tree
+        cls.repo.fetched(cls.c3)                             # and origin/main, as fetched: c1, then c3
         cls.tree3 = cls.repo.git("rev-parse", "--verify", "-q", cls.c3 + "^{tree}")
         cls.name1, cls.name3 = cls.c1[:12], cls.c3[:12]
         cls.home = new_home(cls.base, "home")
@@ -234,6 +243,7 @@ class ReleaseCommandTests(ReleaseTestCase):
         self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "refs/tags/v1"), self.tag1)     # annotated
         self.assertNotEqual(self.tag1, self.c1)
         self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "refs/heads/main"), self.c3)
+        self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "refs/remotes/origin/main"), self.c3)
         self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "HEAD"), self.c3)
         self.assertNotEqual(self.name1, self.name3)
 
@@ -347,8 +357,8 @@ class ReleaseCommandTests(ReleaseTestCase):
         for unknown in ("f" * 40, self.tag1, self.tree1, "e" * 64):   # nothing; a tag's id; a tree's; SHA-256 here
             self.assertRefused(self.release(home, unknown), "release_commit_unknown")
         self.assertRefused(self.release(home, self.c2), "release_not_on_main")
-        for name in ("v1", "main", "HEAD", "refs/heads/main", self.name1, self.c1.upper(), self.c1 + "^{commit}",
-                     "../" + self.c1, self.c3[:-1]):
+        for name in ("v1", "main", "HEAD", "refs/heads/main", "origin/main", "refs/remotes/origin/main", self.name1,
+                     self.c1.upper(), self.c1 + "^{commit}", "../" + self.c1, self.c3[:-1]):
             self.assertRefused(self.release(home, name), "release_commit_invalid")
         self.assertEqual(launch(home, self.repo.path, "release"), (2, "", "refused:bad_arguments\n"))
         self.assertEqual(tree_listing(home), before)
@@ -489,6 +499,77 @@ class ReleaseCommandTests(ReleaseTestCase):
         rmtree(roots.share_dir(home))
         self.assertRefused(self.release(home, self.c1), "root_parent_missing")
         self.assertFalse(os.path.lexists(roots.share_dir(home)))
+
+
+class OriginMainTests(unittest.TestCase):
+    """release takes a commit only if refs/remotes/origin/main contains it (Nuance's re-review of PR #1, finding 13;
+    lab-Claude's decision in round 5). The local main can hold merges nobody has reviewed yet: Nuance's probe, in a
+    throwaway repository, had an unreviewed local commit pass against refs/heads/main and be refused against
+    refs/remotes/origin/main. Here local main and HEAD are c2, ahead of origin/main at c1. The ref is named in
+    full, so neither a tag nor a local branch called main or origin/main stands in for it. The suite never fetches:
+    the operator does, before release."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.base = tempfile.mkdtemp(prefix="rel-origin-")
+        cls.addClassCleanup(rmtree, cls.base)
+        cls.repo = Repo(os.path.join(cls.base, "repo"))
+        copy_sources(cls.repo.path)
+        cls.c1 = cls.repo.commit("reviewed")
+        cls.repo.fetched(cls.c1)
+        with open(os.path.join(cls.repo.path, "unreviewed.txt"), "w", encoding="ascii") as handle:
+            handle.write("synthetic local merge\n")
+        cls.c2 = cls.repo.commit("unreviewed")              # local main and HEAD; a clean tree
+
+    def release(self, commit):
+        base = tempfile.mkdtemp(prefix="h-", dir=self.base)
+        home = new_home(base, "home")
+        before = tree_listing(home)
+        outcome = launch(home, self.repo.path, "release", commit)
+        return home, before, outcome
+
+    def refs(self):
+        """Every ref file and FETCH_HEAD under .git, with its content: what a fetch would change."""
+        found = {}
+        git_dir = os.path.join(self.repo.path, ".git")
+        for directory, _dirs, files in os.walk(os.path.join(git_dir, "refs")):
+            for name in files:
+                with open(os.path.join(directory, name), encoding="ascii") as handle:
+                    found[os.path.relpath(os.path.join(directory, name), git_dir)] = handle.read()
+        found["FETCH_HEAD"] = os.path.lexists(os.path.join(git_dir, "FETCH_HEAD"))
+        return found
+
+    def test_a_commit_only_on_the_local_main_is_refused(self):
+        self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "refs/heads/main"), self.c2)   # local main's tip
+        self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", ORIGIN_MAIN), self.c1)
+        refs = self.refs()
+        home, before, outcome = self.release(self.c2)
+        self.assertEqual(outcome, (2, "", "refused:release_not_on_main\n"))
+        self.assertEqual(tree_listing(home), before)
+        home, _before, (code, out, err) = self.release(self.c1)
+        self.assertEqual((code, err), (0, ""), err)
+        self.assertRegex(out, RELEASED_RE)
+        manifest = release.verify_copy(os.path.join(roots.app_dir(home), self.c1[:12]))
+        self.assertEqual(manifest["commit"], self.c1)
+        self.assertNotIn("unreviewed.txt", manifest["files"])
+        self.assertEqual(self.refs(), refs, "release fetched nothing and moved no ref")
+
+    def test_no_tag_or_branch_named_main_or_origin_main_stands_in_for_it(self):
+        added = ("refs/tags/main", "refs/tags/origin/main", "refs/heads/origin/main", "refs/remotes/origin/HEAD")
+        for ref in added:
+            self.addCleanup(lambda ref=ref: os.remove(os.path.join(self.repo.path, ".git", *ref.split("/"))))
+            self.repo.write_ref(ref, self.c2)
+        _home, _before, outcome = self.release(self.c2)
+        self.assertEqual(outcome, (2, "", "refused:release_not_on_main\n"))
+
+    def test_without_a_fetched_origin_main_nothing_is_released(self):
+        path = os.path.join(self.repo.path, ".git", *ORIGIN_MAIN.split("/"))
+        os.remove(path)
+        self.addCleanup(self.repo.fetched, self.c1)
+        home, before, outcome = self.release(self.c1)
+        self.assertEqual(outcome, (2, "", "refused:release_main_missing\n"))
+        self.assertEqual(tree_listing(home), before)
+        self.assertFalse(os.path.lexists(os.path.join(self.repo.path, ".git", "FETCH_HEAD")))
 
 
 class VerifyCopyTests(ReleaseTestCase):

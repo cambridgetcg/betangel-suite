@@ -70,6 +70,7 @@ class ReleaseViewingTests(unittest.TestCase):
         cls.repo = Repo(os.path.join(cls.base, "repo"))
         copy_sources(cls.repo.path)
         cls.commit = cls.repo.commit("synthetic release")
+        cls.repo.fetched(cls.commit)                          # release takes what origin/main contains
 
     def released_home(self, config=None):
         """A short HOME (deps copy included) with app/<sha12> released from the class's repository; (home, copy)."""

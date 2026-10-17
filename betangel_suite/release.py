@@ -1,8 +1,8 @@
 """Release copies (DESIGN.md 3.4, 8.6; invariant I-18): `bin/suite release <commit>` and the RELEASE.json check.
 
 Every command Yu runs uses a release copy, ~/.local/share/betangel-suite/app/current/bin/suite: a git archive
-of a reviewed commit on the local main branch, read-only, with a RELEASE.json that names the commit, the git tree
-and the sha256 of every file. The commit is named by its full object id, the merge commit's SHA (Nuance's PR #1
+of a reviewed commit, one that GitHub's main contains as this checkout last fetched it (refs/remotes/origin/main),
+read-only, with a RELEASE.json that names the commit, the git tree and the sha256 of every file. The commit is named by its full object id, the merge commit's SHA (Nuance's PR #1
 review: "`release` takes the merge SHA"), never by a tag or branch name, which a process of this user could move,
 and never as the checkout's HEAD: what is released is that commit's tree, whatever the checkout holds. The copy is
 app/<sha12>, the first SHA12 hex digits of the id (lab-Claude's naming, DESIGN.md 3.7).
@@ -19,8 +19,13 @@ make(commit), the release command (guard mode "release"), in this order:
      (release_gitlink: git status would enter that repository and run its own filters; checked next, by a
      read-only index listing, and status itself never enters a submodule); a dirty tree,
      tracked or untracked (release_dirty_tree); an id that names no commit here, the id of an annotated tag
-     or of a tree included: <id>^{commit} must give the id itself (release_commit_unknown); no local main branch
-     (release_main_missing); a commit that main does not contain (release_not_on_main). Nothing is fetched;
+     or of a tree included: <id>^{commit} must give the id itself (release_commit_unknown); no
+     refs/remotes/origin/main (release_main_missing); a commit that refs/remotes/origin/main does not contain
+     (release_not_on_main). That ref is GitHub's main as of the last `git fetch`, which the operator runs in the
+     checkout first; the suite never fetches (the guard allows no transport). It is named in full, never as main:
+     the local main can hold merges nobody has reviewed yet (lab-Claude's own, before a push), and a tag or a
+     local branch named main or origin/main would shadow a short name (Nuance's re-review of PR #1, finding 13;
+     lab-Claude's decision in round 5). Main's first-parent line is not checked (asked of Nuance in round 5);
   3. git archive of that commit into app/.<sha12>.partial, regular files and directories only; then
      guard.seal(): no subprocess from here on;
   4. the git tree id is recomputed from the copied bytes and must equal the commit's tree
@@ -60,7 +65,7 @@ from .errors import SuiteError
 FORMAT = 2                           # 1 named a tag (Phase 0c's first build); 2 names the commit only
 MANIFEST = "RELEASE.json"
 CURRENT = "current"
-MAIN_REF = "refs/heads/main"
+MAIN_REF = guard.RELEASE_MAIN_REF     # refs/remotes/origin/main, as last fetched; never the local main (docstring)
 SHA12 = 12                           # app/<the commit id's first SHA12 hex digits>
 MANIFEST_KEYS = frozenset({"format", "commit", "tree", "files", "executables"})
 MAX_FILES = 20000

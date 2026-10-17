@@ -410,7 +410,9 @@ reviewed PR changes them.
     `watch_grace_s`, the `abandoned` end after it, and `max_session_s` for every engine;
   - `open --print-url` and `claim_control`;
   - `bin/suite release <merge-sha>`, and the `RELEASE.json` check at every launch from a release
-    copy (Phase 0c's first build took a tag; the merge commit's full SHA since round 4b, cdda336);
+    copy (Phase 0c's first build took a tag; the merge commit's full SHA since round 4b, cdda336;
+    since round 5 only a commit that `refs/remotes/origin/main` contains, after a `git fetch` the
+    operator runs; the suite never fetches);
   - `bin/suite uisnap`;
   - the staged viewer-key and sshd drop-in script and the Air self-test under `tools/stage/`. Yu
     runs them. Nuance may start the Air self-test, but only Yu types the key's passphrase. Tests
@@ -419,7 +421,7 @@ reviewed PR changes them.
   The engine still replays synthetic markets only and refuses every configured data root
   (`synthetic_only`), from a release copy too. There is no data-root reading and no paper trading
   yet. No real release copy exists yet. Making one, with `bin/suite release <merge-sha>` in the clean
-  main checkout after review, is Yu's decision (DESIGN.md Q-Y18). `catalogue`, `selfcheck`,
+  main checkout after review and a `git fetch`, is Yu's decision (DESIGN.md Q-Y18). `catalogue`, `selfcheck`,
   `diagnose` and `ledger-summary` are not built; they refuse with code `not_implemented` and exit 2.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE` (Q-N3: agreed by Nuance in
   Nuance's PR #4 review; Nuance's PR #2 review makes the marker half conditional again, on

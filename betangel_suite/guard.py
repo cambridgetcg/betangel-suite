@@ -144,7 +144,7 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
   release (bin/suite release, betangel_suite/release.py; I-18) before seal(), only git with RELEASE_GIT_PREFIX
           and -C this checkout's own root (never the deploy clone or a release copy): the filter-driver
           config query, the index listing, status (never entering a submodule), rev-parse of <id>^{commit},
-          refs/heads/main^{commit} or <id>^{tree}, merge-base --is-ancestor and archive --format=tar <id>, with
+          refs/remotes/origin/main^{commit} or <id>^{tree}, merge-base --is-ancestor and archive --format=tar <id>, with
           no user or system git config and no replace refs or grafts (RELEASE_GIT_ENV, release_argv_ok); after,
           none. A release names its commit by full object id, never a tag or other name (release.py). Its
           writes may also go under ~/.local/share/betangel-suite/app (the release copies) and nowhere else
@@ -258,7 +258,8 @@ UISNAP_ENV_KEYS = frozenset({"HOME", "LANG", "TMPDIR", "PATH", FORBID_NETWORK_EN
 MAX_BINARY_BYTES = 256 << 20                         # the registered uisnap binary is hashed at every spawn
 _UISNAP_DIR_RE = re.compile(r"[0-9a-f]{64}")
 # bin/suite release (release_argv_ok): local git on this checkout only, no hooks, fsmonitor, attributes file,
-# transport or index write; revisions only as full object ids, plus refs/heads/main.
+# transport or index write; revisions only as full object ids, plus refs/remotes/origin/main (GitHub's main as the
+# operator last fetched it; release.py says why never the local main).
 RELEASE_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
                       "-c", "core.attributesFile=/dev/null", "--no-optional-locks")
 # The whole GIT_* part of every release git child's environment, exactly (release_argv_ok): no user or system config,
@@ -276,6 +277,7 @@ RELEASE_FILTER_QUERY = ("config", "--includes", "--null", "--get-regexp", r"^fil
 # filter would run there): release.py refuses any gitlink in the index first, by this read-only index listing,
 # and its status never enters a submodule (--ignore-submodules=dirty) (release_gitlink).
 RELEASE_INDEX_QUERY = ("ls-files", "--stage", "-z")
+RELEASE_MAIN_REF = "refs/remotes/origin/main"     # the one ref release resolves (release.MAIN_REF), in full
 RELEASE_STATUS = ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty")
 _OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -1109,7 +1111,8 @@ def release_argv_ok(argv, env, repo, research, app_root):
     --untracked-files=all --ignore-submodules=dirty: it never enters a submodule); RELEASE_FILTER_QUERY (config
     --includes --null --get-regexp ^filter\\., read only); RELEASE_INDEX_QUERY (ls-files --stage -z, read only,
     never --recurse-submodules);
-    rev-parse --verify --quiet <id>^{commit} | refs/heads/main^{commit} | <id>^{tree}, <id> a full object id;
+    rev-parse --verify --quiet <id>^{commit} | refs/remotes/origin/main^{commit} | <id>^{tree}, <id> a full object
+    id;
     merge-base --is-ancestor <id> <id>; archive --format=tar <id>. Every subcommand is local (no fetch, no
     remote archive). The environment must be explicit, and its GIT_* variables exactly RELEASE_GIT_ENV: no user or
     system git config, no replace refs or grafts, nothing else. repo must not lie in the deploy clone or the app
@@ -1130,7 +1133,7 @@ def release_argv_ok(argv, env, repo, research, app_root):
         return True
     if len(rest) == 4 and rest[:3] == ["rev-parse", "--verify", "--quiet"]:
         revision = rest[3]
-        if revision == "refs/heads/main^{commit}":
+        if revision == RELEASE_MAIN_REF + "^{commit}":
             return True
         for peel in ("^{tree}", "^{commit}"):
             if revision.endswith(peel):
