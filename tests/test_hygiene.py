@@ -966,7 +966,8 @@ class EncodedDataTests(_RepoCase):
     def test_data_after_a_real_hash_or_with_one_odd_byte_is_still_caught(self):
         # Round-4 finishing review: the magic and zlib tests looked only at a run's first byte, and one NUL or 0xFF
         # byte made a run binary, which skipped the text test. So data after one real hash line, as a commit message
-        # cites a commit, and text holding one such byte, passed in the layouts of a list of hashes.
+        # cites a commit, and text holding one such byte, passed in the layouts of a list of hashes. Its recheck:
+        # UTF-16 text, read with each NUL as a line end, put each character on a line of its own, and passed.
         member = bz2.compress(_stream_text().encode())
         record = _j('{"op":"mcm","id":"', MARKET_2015, '"}').encode()
         text = _stream_text(lines=2).encode()
@@ -987,9 +988,11 @@ class EncodedDataTests(_RepoCase):
             "text with a NUL, bare 64": lines(b"\0" + text, 64, "{}\n", first=False),
             "text with a 0xFF byte, quoted 40": lines(b"\xff" + text, 40, '"{}"\n', first=False),
             "a table with a NUL, - 40": lines(b"\0" + table, 40, "- {}\n", first=False),
+            "UTF-16LE text, bare 64": lines(text.decode().encode("utf-16-le"), 64, "{}\n", first=False),
+            "UTF-16 text with a BOM after a hash, - 40": lines(text.decode().encode("utf-16"), 40, "- {}\n"),
         }
         self.plant_shapes(shapes)
-        for name in ("bz2 after a hash, - 40", "text with a NUL, bare 64"):
+        for name in ("bz2 after a hash, - 40", "text with a NUL, bare 64", "UTF-16LE text, bare 64"):
             with self.subTest(shape=name, mode="--message"):
                 self.write(".git/MSG", "synthetic subject\n\nThe fixes:\n" + shapes[name])
                 rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))

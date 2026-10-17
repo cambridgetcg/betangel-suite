@@ -531,9 +531,10 @@ def _plain_findings(lines) -> list:
 # to it (round-4 recheck: lists of full hashes were binary). The first applies where any of its
 # lines starts, not only at its first byte, and also looks for an image or document signature
 # (PNG, JPEG, GIF, WebP, ISO media, TIFF, PDF); the third reads its bytes with each NUL as a line
-# end and any other byte that is not UTF-8 replaced (round-4 finishing review: with one real hash
-# line first, as a commit message cites a commit, or with one NUL or 0xFF byte, data passed, and
-# so did images and PDFs). A run of more than ENCODED_MAX_HASH_LINES such lines is not a list of
+# end and any other byte that is not UTF-8 replaced, and, if they hold a NUL, again with the NULs
+# removed, as UTF-16 text needs (round-4 finishing review: with one real hash line first, as a
+# commit message cites a commit, or with one NUL or 0xFF byte, data passed, and so did images and
+# PDFs; its recheck: UTF-16 text passed, one character a line). A run of more than ENCODED_MAX_HASH_LINES such lines is not a list of
 # hashes but binary data, so what the gap below can carry stays under 2 KiB.
 # Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
 # patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
@@ -842,7 +843,7 @@ def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
     starts: for a list of hashes (a hex run of at most ENCODED_MAX_HASH_LINES lines, each one whole 40- or 64-digit
     token), where each line's bytes start. Such a run is never binary data, so a magic, an image or document
     signature, or a zlib stream counts at the start of any of its lines, and its text is read with NULs as line ends
-    and other bytes that are not UTF-8 replaced.
+    and other bytes that are not UTF-8 replaced, and again with the NULs removed (UTF-16 text).
     """
     view = memoryview(blob)
     for start in starts or (0,):
@@ -854,13 +855,18 @@ def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
     if b"\0" in blob or not _is_utf8(blob):
         if starts is None:
             return len(blob) >= ENCODED_MIN_BINARY
-        text = blob.replace(b"\0", b"\n").decode("utf-8", "replace")
+        texts = [blob.replace(b"\0", b"\n").decode("utf-8", "replace")]
+        if b"\0" in blob:  # UTF-16 text: the other byte of each ASCII character is a NUL
+            texts.append(blob.replace(b"\0", b"").decode("utf-8", "replace"))
     elif len(blob) < ENCODED_MIN_TEXT:
         return False
     else:
-        text = blob.decode("utf-8")
-    lines = list(_lines(text))
-    return bool(_plain_findings(lines)) or (depth < ENCODED_MAX_DEPTH and bool(_encoded_blob_lines(lines, depth + 1)))
+        texts = [blob.decode("utf-8")]
+    for text in texts:
+        lines = list(_lines(text))
+        if _plain_findings(lines) or (depth < ENCODED_MAX_DEPTH and _encoded_blob_lines(lines, depth + 1)):
+            return True
+    return False
 
 
 def _encoded_blob_lines(lines, depth: int = 0) -> list:
