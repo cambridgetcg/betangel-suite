@@ -1476,8 +1476,8 @@ class RootPlacementTests(unittest.TestCase):
     The other spellings (firmlink, /.vol, another case) defeat a text check, so the identity walk must see them.
     """
 
-    def placement(self, home, *, agreed, mode="engine", writes=()):
-        result = run_python(PLACEMENT % {"agreed": agreed, "mode": mode, "writes": list(writes)}, home)
+    def placement(self, home, *, agreed, mode="engine", writes=(), env=None):
+        result = run_python(PLACEMENT % {"agreed": agreed, "mode": mode, "writes": list(writes)}, home, env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout.strip().splitlines()[-1])
 
@@ -1602,6 +1602,8 @@ class RootPlacementTests(unittest.TestCase):
         os.rename(os.path.join(home, ".local", "state"), lab)
         os.symlink(os.path.join(vault, "data"), roots.data_home(home))
         before = sorted(os.listdir(os.path.join(lab, "betangel-suite")))
+        share_tmp = os.path.join(roots.share_dir(home), "tmp")      # a TMPDIR vendor may use, outside the vault
+        os.makedirs(share_tmp)
         self.addCleanup(os.chmod, vault, 0o700)
         for name, target in spellings(lab).items():
             os.symlink(target, os.path.join(home, ".local", "state"))
@@ -1610,12 +1612,19 @@ class RootPlacementTests(unittest.TestCase):
                 for agreed, mode in ((True, "test"), (True, "vendor"), (False, "engine"), (True, "engine")):
                     with self.subTest(spelling=name, agreed=agreed, mode=mode):
                         results = self.placement(home, agreed=agreed, mode=mode)
-                        # The engine with the suite root agreed may be refused first for its suite root, which
-                        # cannot be lstat()ed at realpath(data home)/suite.noindex.
-                        codes = {"root_overlaps_data_home"} | ({"suite_root_misplaced"} if agreed and mode == "engine"
-                                                               else set())
+                        # TMPDIR, in the state root, cannot be looked at either, so arm() may refuse it first
+                        # (tmpdir_mismatch); the engine with the suite root agreed may be refused first for its
+                        # suite root, which cannot be lstat()ed at realpath(data home)/suite.noindex.
+                        codes = {"root_overlaps_data_home", "tmpdir_mismatch"}
+                        if agreed and mode == "engine":
+                            codes.add("suite_root_misplaced")
                         self.assertIn(results.get("arm"), codes)
                         self.assertEqual(list(results), ["arm"])
+                with self.subTest(spelling=name, mode="vendor", tmpdir="share"):
+                    # With TMPDIR in the share root, only the state root's placement is left to refuse.
+                    results = self.placement(home, agreed=True, mode="vendor",
+                                             env=child_env(home, TMPDIR=share_tmp, SQLITE_TMPDIR=share_tmp))
+                    self.assertEqual(results, {"arm": "root_overlaps_data_home"})
                 for agreed in (False, True):
                     with self.subTest(spelling=name, check_placement=True, agreed=agreed):
                         with mock.patch.object(roots, "STATE_ROOT_AGREED", agreed):
@@ -1634,7 +1643,9 @@ class RootPlacementTests(unittest.TestCase):
         os.symlink(FIRMLINK + os.path.realpath(locked) + "/lab-state", os.path.join(home, ".local", "state"))
         os.chmod(locked, 0)
         self.addCleanup(os.chmod, locked, 0o700)
-        self.assertEqual(self.placement(home, agreed=True, mode="test"), {"arm": "root_overlaps_data_home"})
+        self.assertEqual(self.placement(home, agreed=True, mode="vendor",
+                                        env=child_env(home, TMPDIR=share_tmp, SQLITE_TMPDIR=share_tmp)),
+                         {"arm": "root_overlaps_data_home"})
 
     def test_no_link_or_rename_takes_the_place_of_a_root_or_tmpdir(self):
         # The guard allowed os.symlink(historic-pro, suite.noindex): a write in the roots, as text, that steers the
@@ -1677,6 +1688,88 @@ results["tmp_is_dir"] = os.path.isdir(tmp) and not os.path.islink(tmp)
             self.assertEqual(results[name], "ok", name)
         self.assertEqual((results["suite_is_link"], results["tmp_is_dir"]), (False, True))
         self.assertEqual(os.listdir(historic), [])
+
+    def test_no_directory_between_a_root_and_tmpdir_moves_away(self):
+        # The guard-paths review: arm() accepts a TMPDIR anywhere in a write root, not only <root>/tmp, but only
+        # TMPDIR itself was a slot. Renaming a directory between the root and TMPDIR moved TMPDIR away (as renaming
+        # run/ moved the lock, 6aeb1d5), and a link put in its place made TMPDIR resolve outside the roots, where
+        # SQLite would put its temporary files if a PRAGMA set temp_store back to FILE.
+        home = make_home(self)
+        state = roots.state_dir(home)
+        tmp = os.path.join(state, "nest", "deeper", "tmp")
+        os.makedirs(tmp)
+        os.makedirs(os.path.join(state, "nest", "beside"))
+        os.makedirs(os.path.join(home, "outside"))
+        results = armed_attempts(self, home, mode="test", env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp), body="""
+state, tmp, outside = roots.state_dir(), os.environ["TMPDIR"], os.path.join(os.environ["HOME"], "outside")
+for label, path in (("nest", os.path.join(state, "nest")), ("nest_other_case", os.path.join(state, "NEST")),
+                    ("deeper", os.path.join(state, "nest", "deeper")), ("tmpdir", tmp)):
+    attempt("rename_" + label, lambda: os.rename(path, path + "-moved"))
+    attempt("link_onto_" + label, lambda: os.symlink(outside, path))
+attempt("rename_beside", lambda: os.rename(os.path.join(state, "nest", "beside"), os.path.join(state, "beside")))
+attempt("mkdir_in_tmpdir", lambda: os.mkdir(os.path.join(tmp, "sub")))
+results["tmpdir_in_place"] = os.path.realpath(tmp) == os.path.join(os.path.realpath(state), "nest", "deeper", "tmp")
+""")
+        expected = {"arm": "ok", "rename_beside": "ok", "mkdir_in_tmpdir": "ok", "tmpdir_in_place": True}
+        for label in ("nest", "nest_other_case", "deeper", "tmpdir"):
+            expected.update({"rename_" + label: "root_replace_refused", "link_onto_" + label: "root_replace_refused"})
+        self.assertEqual(results, expected)
+        self.assertEqual(os.listdir(os.path.join(home, "outside")), [])
+
+    def test_a_tmpdir_with_a_link_below_its_root_is_refused(self):
+        # The guard-paths review: TMPDIR a link in the state root to <state>/real-tmp was accepted (I-2 allowed links
+        # that resolve inside the root), but only where it resolved was a slot: the link could be removed and one to
+        # outside the roots put in its place. A link to a deeper directory, or a link on a directory between the
+        # root and TMPDIR, left a directory no slot held on the way (lab-Claude's variants). arm() now refuses a link
+        # from the root down to TMPDIR (tmpdir_mismatch), as cli.main's ensure_dir already did for every command but
+        # stop and vendor. A link above the root stays allowed (the control at the end).
+        def layout(home, name):
+            """TMPDIR, and the name below the state root whose replacement would move it."""
+            state, tmp = roots.state_dir(home), roots.tmp_dir("test", home)
+            os.rmdir(tmp)
+            if name in ("link", "relative_link"):
+                os.mkdir(os.path.join(state, "real-tmp"))
+                os.symlink(os.path.join(state, "real-tmp") if name == "link" else "real-tmp", tmp)
+                return tmp, tmp
+            if name == "link_to_deeper":
+                os.makedirs(os.path.join(state, "x", "real-tmp"))
+                os.symlink(os.path.join(state, "x", "real-tmp"), tmp)
+                return tmp, os.path.join(state, "x")
+            if name == "link_between":
+                os.makedirs(os.path.join(state, "b", "tmp"))
+                os.symlink(os.path.join(state, "b"), os.path.join(state, "a"))
+                return os.path.join(state, "a", "tmp"), os.path.join(state, "a")
+            os.symlink(os.path.join(state, "missing"), tmp)                       # dangling
+            return tmp, tmp
+
+        for mode in ("test", "engine", "vendor"):
+            for name in ("link", "relative_link", "link_to_deeper", "link_between", "dangling"):
+                home = make_home(self)
+                os.makedirs(os.path.join(home, "outside"))
+                tmp, swap = layout(home, name)
+                results = armed_attempts(self, home, mode=mode, env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp),
+                                         body="""
+swap, outside = %r, os.path.join(os.environ["HOME"], "outside")
+attempt("move_away", lambda: os.remove(swap) if os.path.islink(swap) else os.rename(swap, swap + "-moved"))
+attempt("link_in_place", lambda: os.symlink(outside, swap))
+results["tmpdir_in_state"] = roots.within(os.path.realpath(os.environ["TMPDIR"]),
+                                          os.path.realpath(roots.state_dir()))
+""" % swap)
+                with self.subTest(mode=mode, layout=name):
+                    self.assertEqual(results, {"arm": "tmpdir_mismatch"})
+        # The control: the state root itself a link (another volume, say), with a real tmp/ in it.
+        home = make_home(self)
+        state = roots.state_dir(home)
+        elsewhere = os.path.join(home, "elsewhere", "betangel-suite")
+        os.makedirs(os.path.dirname(elsewhere))
+        os.rename(state, elsewhere)
+        os.symlink(elsewhere, state)
+        results = armed_attempts(self, home, mode="test", body="""
+tmp = os.environ["TMPDIR"]
+attempt("write_in_tmpdir", lambda: open(os.path.join(tmp, "x"), "w").close())
+attempt("rename_tmpdir", lambda: os.rename(tmp, tmp + "-moved"))
+""")
+        self.assertEqual(results, {"arm": "ok", "write_in_tmpdir": "ok", "rename_tmpdir": "root_replace_refused"})
 
     def test_the_realdata_lock_is_never_removed_moved_or_replaced(self):
         # runmarker.py: the suite makes run/realdata.lock once and never unlinks it, since a holder of the old file

@@ -17,7 +17,8 @@ What the hook refuses, in every mode and phase:
        BETFAIR* or BETANGEL_BETFAIR_* variable (arm() refuses if one is set), or changing TMPDIR or
        SQLITE_TMPDIR (arm() refuses unless both are the same absolute text with no "." or ".." component, so
        it differs from its normalised text at most by a redundant or final "/", and that normalised text lies
-       inside a write root and, with its links resolved, inside that root's real path);
+       inside a write root with no link from that root down to it, so that, with its links resolved, it lies
+       inside that root's real path where its text says);
   I-3  socket connect, sendto and sendmsg, and every name or address lookup;
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
@@ -56,9 +57,10 @@ What the hook refuses, in every mode and phase:
        the file system puts in, around or onto ~/betangel-data (roots.check_placement, stat calls only):
        root_overlaps_data_home, or suite_root_misplaced for an engine suite root that is not a real
        directory, or missing, at exactly realpath(~/betangel-data)/suite.noindex. And the hook refuses a
-       symlink, hard link or rename that puts a name where a root or TMPDIR really is, or moves one away
-       (root_replace_refused): os.symlink(<a data root>, suite.noindex) would otherwise pass as a write in
-       the roots and steer the next process. Links elsewhere in the roots stay allowed. The same goes for
+       symlink, hard link or rename that puts a name where a root, TMPDIR or a directory between TMPDIR and its
+       root really is, or moves one away (root_replace_refused): os.symlink(<a data root>, suite.noindex) would
+       otherwise pass as a write in the roots and steer the next process. Links elsewhere in the roots stay
+       allowed. The same goes for
        run/realdata.lock, which may not be removed either, and for its directory run/ (run_lock_protected):
        the suite makes the lock once and never unlinks it, since a holder of the old file and Nuance's wrapper
        locking a new one would not exclude each other (runmarker.py). Renaming run/ would move the lock with it
@@ -237,6 +239,16 @@ class _State:
         # holds for the life of the process. The realdata lock and its run/ are added below.
         self.slots = dict.fromkeys((real.casefold() for real in self.real_roots + (
             (os.path.realpath(tmp_root),) if tmp_root else ())), "root_replace_refused")
+        # And every directory between TMPDIR and its root: renaming one moves TMPDIR with it, as renaming run/ moves
+        # the lock, and a link put in its place would take TMPDIR out of the roots (the guard-paths review). arm()
+        # refuses a link among them (_tmp_root_ok), so each is where its text says, below the root's real path.
+        for root, real_root in zip(self.roots, self.real_roots):
+            if tmp_root and roots.within(tmp_root, root):
+                current = real_root
+                for part in os.path.relpath(tmp_root, root).split(os.sep):
+                    if part != os.curdir:
+                        current = os.path.join(current, part)
+                        self.slots[current.casefold()] = "root_replace_refused"
         self.agreed = roots.STATE_ROOT_AGREED
         self.data_home = roots.data_home(home).casefold()
         self.run_dir = roots.run_dir(home)
@@ -357,21 +369,25 @@ def _stray(key):
 
 
 def _tmp_root_ok(state, tmp):
-    """TMPDIR has no "." or ".." component, and lies in a write root as text and, links resolved, in its real path.
+    """TMPDIR has no "." or ".." component, and lies in a write root as text, with no link from that root down to
+    it, and so, links resolved, in the root's real path.
 
     Python's tempfile uses the normalised text (abspath), but SQLite reads SQLITE_TMPDIR from C as given. The OS
     resolves "link/.." through the link and cannot resolve "missing/.." or "file/.." at all (SQLite then falls
     back to /var/tmp or /tmp), while normpath and the non-strict realpath fold all three away. So no "." or ".."
     component is accepted: TMPDIR may differ from its normalised text only by a redundant or final "/", and
-    realpath of both (which must agree) must lie inside the matching root's real path. Whether the directory
-    exists is not checked here: cli.main creates it (0700) before every handler but vendor's, which makes no
-    temporary files.
+    realpath of both (which must agree) must lie inside the matching root's real path. No name between the root
+    and TMPDIR may be a link either (_no_link_below; links above the root stay allowed): the slots keep each of
+    those directories where it is named, and a link would leave where it resolves to free to be moved, or put
+    TMPDIR behind a name no slot holds (the guard-paths review). cli.main's ensure_dir already refused a linked
+    TMPDIR for every command but stop and vendor. Whether the directory exists is not checked here: cli.main
+    creates it (0700) before every handler but those two, which make no temporary files.
     """
     if any(part in (os.curdir, os.pardir) for part in tmp.split(os.sep)):
         return False
     real = os.path.realpath(tmp)
     return real == os.path.realpath(state.tmp_root) and any(
-        roots.within(state.tmp_root, root) and roots.within(real, real_root)
+        roots.within(state.tmp_root, root) and roots.within(real, real_root) and _no_link_below(root, state.tmp_root)
         for root, real_root in zip(state.roots, state.real_roots))
 
 
