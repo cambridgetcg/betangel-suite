@@ -1,4 +1,4 @@
-"""The betangel-research pin: deps-clone lookup, per-file hashes, sys.path append, origin check (DESIGN.md 3.5).
+"""The betangel-research pin: deps-clone lookup, per-file hashes, the closure finder, origin check (DESIGN.md 3.5).
 
 pin/betangel-research.json names one upstream commit and the sha256 of every file the engine loads from
 it: the 25 modules of the verified import closure (section 4.1) and the experiment contract that holds the
@@ -10,12 +10,14 @@ file opened below the deps directory with no symlink on the way, O_NONBLOCK, and
 file with exactly one link), refuses pin_mismatch on any difference, refuses a deps tree holding bytecode caches (Python would load a
 stale .pyc beside a matching .py) or anything Python would import in preference to a pinned .py (an
 extension module such as paper.cpython-313-darwin.so, a .pyc, or a package directory named like a pinned
-module), refuses a deps directory or any sys.path entry that lies in ~/betangel-research (the moving
-deploy clone) by name in any case or by identity, and only then APPENDS the deps directory to sys.path,
-so the standard library can never be shadowed. It also puts _ClosureFinder first on sys.meta_path: from then on
-the import system loads a betangel_research module only if it is one of the 25 of the closure, only from its
-pinned file in the deps directory, and only from bytes that still match the pin (read_pinned), never from a
-bytecode cache; any other betangel_research name is refused (upstream_import_refused), however it is imported.
+module), and refuses a deps directory or any sys.path entry that lies in ~/betangel-research (the moving
+deploy clone) by name in any case or by identity. It never puts the deps directory on sys.path (Nuance's re-review of
+#2, F1): there, every other top-level name in the deps tree (scripts/, or a module planted there) and the standard
+library's probes for modules that macOS lacks (nt, _winapi, org) loaded unhashed code after seal(). Instead it puts
+_ClosureFinder first on sys.meta_path: from then on the import system loads a betangel_research module only if it is
+one of the 25 of the closure, only from its pinned file in the deps directory, and only from bytes that still match
+the pin (read_pinned), never from a bytecode cache; any other betangel_research name is refused
+(upstream_import_refused), however it is imported.
 assert_origins() then checks that every loaded betangel_research module came from that directory.
 
 Standard library only.
@@ -171,7 +173,10 @@ def _refuse_shadows(deps, package):
 
 
 def activate(*, home_dir=None, pin_path=PIN_FILE):
-    """Verify the deps clone and append it to sys.path; return its path. Idempotent."""
+    """Verify the deps clone and put the closure finder first on sys.meta_path; return the deps path. Idempotent.
+
+    The deps directory is not put on sys.path (Nuance's re-review of #2, F1): the finder gives each of the 25 closure
+    modules its spec by name, and nothing else is ever imported from there."""
     global _ACTIVE, _HASHES
     guard.require_armed()
     if _ACTIVE is not None:
@@ -184,7 +189,6 @@ def activate(*, home_dir=None, pin_path=PIN_FILE):
         raise SuiteError("research_clone_on_path")      # an ancestor links there: before any file is read
     verify(pin, deps)
     refuse_research_on_path(home_dir)
-    sys.path.append(deps)
     _HASHES = dict(pin["files"])
     _ACTIVE = deps
     sys.meta_path.insert(0, _ClosureFinder(deps))
@@ -211,8 +215,10 @@ class _PinnedLoader(importlib.machinery.SourceFileLoader):
 class _ClosureFinder:
     """The first sys.meta_path entry once activate() has run (Nuance's PR #2 review, item 7).
 
-    The deps directory is on sys.path, so without this `import betangel_research.betfair.risk` after seal() would
-    load an unhashed module from the deps clone. An "import" audit hook would not do: importlib.import_module raises
+    It is the only way betangel_research is found: the deps directory is not on sys.path (Nuance's re-review of #2,
+    F1). The package it loads still has the deps directory's betangel_research/ as its __path__, so without this
+    finder `import betangel_research.betfair.risk` after seal() would load an unhashed module from the deps clone, as
+    it did before the finder existed (item 7). An "import" audit hook would not do: importlib.import_module raises
     no import event for a pure-Python module. Every import of a module not yet loaded asks the meta_path finders,
     whatever spelling made it (import statement, __import__, import_module, find_spec), so here:
     - a name outside betangel_research is left to the other finders (None);
