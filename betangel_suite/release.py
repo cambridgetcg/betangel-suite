@@ -1,37 +1,42 @@
-"""Release copies (DESIGN.md 3.4, 8.6; invariant I-18): `bin/suite release <tag>` and the RELEASE.json check.
+"""Release copies (DESIGN.md 3.4, 8.6; invariant I-18): `bin/suite release <commit>` and the RELEASE.json check.
 
 Every command Yu runs uses a release copy, ~/.local/share/betangel-suite/app/current/bin/suite: a git archive
-of a reviewed tag on the local main branch, read-only, with a RELEASE.json that names the tag, the commit,
-the git tree and the sha256 of every file.
+of a reviewed commit on the local main branch, read-only, with a RELEASE.json that names the commit, the git tree
+and the sha256 of every file. The commit is named by its full object id, the merge commit's SHA (Nuance's PR #1
+review: "`release` takes the merge SHA"), never by a tag or branch name, which a process of this user could move,
+and never as the checkout's HEAD: what is released is that commit's tree, whatever the checkout holds. The copy is
+app/<sha12>, the first SHA12 hex digits of the id (lab-Claude's naming, DESIGN.md 3.7).
 
-make(tag), the release command (guard mode "release"), in this order:
+make(commit), the release command (guard mode "release"), in this order:
 
-  1. refuse a tag that is not a plain name (release_tag_invalid), a checkout that is a release copy or has no
-     .git (release_not_a_checkout), an app/current that is not a symlink (release_current_invalid), an
-     existing app/<tag> (release_exists) or a left-over app/.<tag>.partial (partial_exists);
+  1. refuse a commit that is not a full object id in lowercase hex, 40 or 64 digits (release_commit_invalid), a
+     checkout that is a release copy or has no .git (release_not_a_checkout), an app/current that is not a
+     symlink (release_current_invalid), an existing app/<sha12> (release_exists) or a left-over
+     app/.<sha12>.partial (partial_exists);
   2. git, only through the guard's release argvs (guard.release_argv_ok) on this checkout: a filter driver
      defined in the repository's own config (release_git_filter: git status and git archive would run its
      commands outside the guard; checked first, by a read-only config query); a gitlink in the index
      (release_gitlink: git status would enter that repository and run its own filters; checked next, by a
      read-only index listing, and status itself never enters a submodule); a dirty tree,
-     tracked or untracked (release_dirty_tree); an unknown tag, looked up as refs/tags/<tag> only
-     (release_tag_unknown); no local main branch (release_main_missing); a tag commit that main does not
-     contain (release_not_on_main). Nothing is fetched;
-  3. git archive of the tag's commit (by object id, so a moved tag cannot change what is copied) into
-     app/.<tag>.partial, regular files and directories only; then guard.seal(): no subprocess from here on;
+     tracked or untracked (release_dirty_tree); an id that names no commit here, the id of an annotated tag
+     or of a tree included: <id>^{commit} must give the id itself (release_commit_unknown); no local main branch
+     (release_main_missing); a commit that main does not contain (release_not_on_main). Nothing is fetched;
+  3. git archive of that commit into app/.<sha12>.partial, regular files and directories only; then
+     guard.seal(): no subprocess from here on;
   4. the git tree id is recomputed from the copied bytes and must equal the commit's tree
-     (release_tree_mismatch): what is copied is exactly the tagged tree, whatever .gitattributes say;
+     (release_tree_mismatch): what is copied is exactly the commit's tree, whatever .gitattributes say;
   5. RELEASE.json is written, everything is made read-only (files 0400 or 0500, directories 0500), the run
-     marker is checked again, the copy is renamed to app/<tag> and verified as a launch would verify it;
+     marker is checked again, the copy is renamed to app/<sha12> and verified as a launch would verify it;
   6. app/current is switched atomically (a new relative symlink renamed over the old one).
 
 A failure before the switch removes the partial or new copy. Output is one line of counts.
 
 check_launch(root), called by bin/_launch.py before any command runs: a launcher root below the app root must
-be app/<tag> and must match its RELEASE.json exactly: every listed file present with its sha256 and
-executable bit, nothing else (no extra file, directory or symlink), nothing writable, everything owned by
-this user, and the tree id recomputed from the bytes equal to the recorded tree. Any mismatch refuses with a
-release_* code. A root anywhere else is a working checkout and keeps the synthetic-only behaviour.
+be app/<sha12> of the commit its RELEASE.json names, and must match that RELEASE.json exactly: every listed file
+present with its sha256 and executable bit, nothing else (no extra file, directory or symlink), nothing
+writable, everything owned by this user, and the tree id recomputed from the bytes equal to the recorded tree.
+Any mismatch refuses with a release_* code. A root anywhere else is a working checkout and keeps the
+synthetic-only behaviour.
 
 status() tells engine code which of the two it runs (for session.json later). It enables nothing: in Phase 0
 the engine refuses every data root either way (synthetic_only).
@@ -52,11 +57,12 @@ import sys
 from . import guard, roots
 from .errors import SuiteError
 
-FORMAT = 1
+FORMAT = 2                           # 1 named a tag (Phase 0c's first build); 2 names the commit only
 MANIFEST = "RELEASE.json"
 CURRENT = "current"
 MAIN_REF = "refs/heads/main"
-MANIFEST_KEYS = frozenset({"format", "tag", "commit", "tree", "files", "executables"})
+SHA12 = 12                           # app/<the commit id's first SHA12 hex digits>
+MANIFEST_KEYS = frozenset({"format", "commit", "tree", "files", "executables"})
 MAX_FILES = 20000
 MAX_BYTES = 64 << 20                 # all files of one copy together
 MAX_MANIFEST_BYTES = 8 << 20
@@ -66,27 +72,31 @@ REPO_ROOT = guard.REPO_ROOT
 _OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
-Status = collections.namedtuple("Status", "kind tag commit tree")
-CHECKOUT = Status("checkout", None, None, None)
+Status = collections.namedtuple("Status", "kind commit tree")
+CHECKOUT = Status("checkout", None, None)
 _STATUS = None
 
 
-# --- tags and paths ------------------------------------------------------------------------------
+# --- commits and paths ---------------------------------------------------------------------------
 
-def tag_ok(tag):
-    """A plain tag name: guard.RELEASE_TAG_RE, no "..", no ".lock" or "." ending, and never "current"."""
-    return (isinstance(tag, str) and bool(guard.RELEASE_TAG_RE.fullmatch(tag)) and ".." not in tag
-            and not tag.endswith((".", ".lock")) and tag.casefold() != CURRENT)
+def commit_ok(commit):
+    """A full object id in lowercase hex: 40 digits (SHA-1) or 64 (SHA-256); never a name, an abbreviation or HEAD."""
+    return isinstance(commit, str) and bool(_OBJECT_ID_RE.fullmatch(commit))
+
+
+def copy_name(commit):
+    """The release copy's directory name under app/: the commit id's first SHA12 hex digits."""
+    return commit[:SHA12]
 
 
 def parse_args(args):
-    """{"tag": tag} for `release <tag>`."""
+    """{"commit": commit} for `release <commit>`."""
     args = list(args)
     if len(args) != 1:
         raise SuiteError("bad_arguments")
-    if not tag_ok(args[0]):
-        raise SuiteError("release_tag_invalid")
-    return {"tag": args[0]}
+    if not commit_ok(args[0]):
+        raise SuiteError("release_commit_invalid")
+    return {"commit": args[0]}
 
 
 def relpath_ok(relpath):
@@ -113,7 +123,7 @@ def check_launch(root, home_dir=None):
 
 
 def status(home_dir=None):
-    """The Status of the code this process runs: kind "release" (with tag, commit, tree) or "checkout".
+    """The Status of the code this process runs: kind "release" (with its commit and tree) or "checkout".
 
     Computed once per process: bin/_launch.py does it (check_launch) before any command runs.
     """
@@ -140,9 +150,9 @@ def status_of(root, home_dir=None):
             return CHECKOUT
         path, depth = parent, depth + 1
     if depth != 1:
-        raise SuiteError("release_layout_invalid")     # only app/<tag> itself is a release copy
+        raise SuiteError("release_layout_invalid")     # only app/<sha12> itself is a release copy
     manifest = verify_copy(real)
-    return Status("release", manifest["tag"], manifest["commit"], manifest["tree"])
+    return Status("release", manifest["commit"], manifest["tree"])
 
 
 def _file_id(path):
@@ -198,9 +208,8 @@ def _manifest_ok(manifest, name):
         return False
     commit, tree, files, executables = (manifest["commit"], manifest["tree"], manifest["files"],
                                         manifest["executables"])
-    return (type(manifest["format"]) is int and manifest["format"] == FORMAT and manifest["tag"] == name
-            and tag_ok(name) and isinstance(commit, str) and isinstance(tree, str)
-            and bool(_OBJECT_ID_RE.fullmatch(commit)) and bool(_OBJECT_ID_RE.fullmatch(tree))
+    return (type(manifest["format"]) is int and manifest["format"] == FORMAT and commit_ok(commit)
+            and name == copy_name(commit) and isinstance(tree, str) and bool(_OBJECT_ID_RE.fullmatch(tree))
             and len(commit) == len(tree) and isinstance(files, dict) and 0 < len(files) <= MAX_FILES
             and all(relpath_ok(path) and path != MANIFEST and isinstance(value, str) and _SHA256_RE.fullmatch(value)
                     for path, value in files.items())
@@ -314,24 +323,25 @@ def _algorithm(object_id):
 # --- the release command -------------------------------------------------------------------------
 
 def main(options):
-    """cli handler: release options["tag"]; returns 0 or raises SuiteError."""
-    return make(options["tag"])
+    """cli handler: release options["commit"]; returns 0 or raises SuiteError."""
+    return make(options["commit"])
 
 
-def make(tag, home_dir=None, *, out=None):
-    """bin/suite release <tag> (module docstring); prints one line of counts."""
+def make(commit, home_dir=None, *, out=None):
+    """bin/suite release <commit> (module docstring); prints one line of counts."""
     guard.require_mode("release")
     out = sys.stdout if out is None else out
-    if not tag_ok(tag):
-        raise SuiteError("release_tag_invalid")
+    if not commit_ok(commit):
+        raise SuiteError("release_commit_invalid")
+    name = copy_name(commit)
     home = roots.home() if home_dir is None else os.path.normpath(home_dir)
     repo = REPO_ROOT                                    # exactly the -C directory guard.release_argv_ok allows
     app = roots.app_dir(home)
     if (roots.within(os.path.realpath(repo), os.path.realpath(app))
             or not os.path.lexists(os.path.join(repo, ".git"))):
         raise SuiteError("release_not_a_checkout")
-    target = os.path.join(app, tag)
-    partial = os.path.join(app, "." + tag + ".partial")
+    target = os.path.join(app, name)
+    partial = os.path.join(app, "." + name + ".partial")
     current = os.path.join(app, CURRENT)
     staged_link = os.path.join(app, ".current.partial")
     _check_current(current)
@@ -347,9 +357,8 @@ def make(tag, home_dir=None, *, out=None):
         raise SuiteError("release_gitlink")
     if git.output(*guard.RELEASE_STATUS) != b"":
         raise SuiteError("release_dirty_tree")
-    commit = git.object_id("refs/tags/%s^{commit}" % tag)
-    if commit is None:
-        raise SuiteError("release_tag_unknown")
+    if git.object_id(commit + "^{commit}") != commit:
+        raise SuiteError("release_commit_unknown")     # no such object, or a tag or tree: not this commit itself
     main_commit = git.object_id(MAIN_REF + "^{commit}")
     if main_commit is None:
         raise SuiteError("release_main_missing")
@@ -366,7 +375,7 @@ def make(tag, home_dir=None, *, out=None):
     try:
         count, total = git.archive(commit, partial)
         guard.seal()                                    # no subprocess from here on
-        manifest = _manifest(partial, tag, commit, tree)
+        manifest = _manifest(partial, commit, tree)
         _write_new(os.path.join(partial, MANIFEST), _manifest_bytes(manifest), FILE_MODE)
         _make_read_only(partial, set(manifest["executables"]))
         _require_no_run_marker()
@@ -382,7 +391,7 @@ def make(tag, home_dir=None, *, out=None):
             if not os.path.islink(staged_link):
                 raise SuiteError("release_current_invalid")
             os.remove(staged_link)
-        os.symlink(tag, staged_link)                    # relative: app/current -> <tag>
+        os.symlink(name, staged_link)                   # relative: app/current -> <sha12>
         os.rename(staged_link, current)                 # atomic replacement of the old link
         switched = True
     finally:
@@ -551,7 +560,7 @@ def _write_new(path, source, mode):
         os.close(fd)
 
 
-def _manifest(root, tag, commit, tree):
+def _manifest(root, commit, tree):
     """RELEASE.json for the unpacked copy at root, after checking its bytes against the commit's tree."""
     entries = walk(root)
     files = {path for path, (kind, _mode) in entries.items() if kind == "file"}
@@ -561,8 +570,7 @@ def _manifest(root, tag, commit, tree):
     hashes, blobs, executables = hash_files(root, files, algorithm)
     if tree_id(blobs, executables, algorithm) != tree:
         raise SuiteError("release_tree_mismatch")
-    return {"format": FORMAT, "tag": tag, "commit": commit, "tree": tree, "files": hashes,
-            "executables": sorted(executables)}
+    return {"format": FORMAT, "commit": commit, "tree": tree, "files": hashes, "executables": sorted(executables)}
 
 
 def _manifest_bytes(manifest):

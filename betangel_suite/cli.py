@@ -29,9 +29,9 @@ writes only the release copy (guard mode release) and never needs upstream. Outp
     uisnap [--seed N] [--out DIR]
                        PNG snapshots of the UI on a synthetic-only engine (betangel_suite/uisnap.py; guard mode
                        uisnap); prints codes, counts and the PNG paths, never a bootstrap code
-    release <tag>      install a read-only release copy of a tag on the local main branch under
-                       ~/.local/share/betangel-suite/app/<tag> and switch app/current (betangel_suite/release.py;
-                       guard mode release; I-18); prints counts only
+    release <commit>   install a read-only release copy of a commit on the local main branch, named by its full
+                       object id (the merge SHA), under ~/.local/share/betangel-suite/app/<sha12> and switch
+                       app/current (betangel_suite/release.py; guard mode release; I-18); prints counts only
     test [--py311] [--heavy] [-v] [-k PATTERN] [-j N]
                        the unittest suite (DESIGN.md 11): the fast tier, plus the heavy tier with --heavy; the test
                        modules run in N worker interpreters (default TEST_JOBS, -j 1 none), whole modules each.

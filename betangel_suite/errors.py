@@ -74,8 +74,8 @@ CODES = frozenset({
     "research_clone_on_path", "upstream_imported_early", "upstream_origin_mismatch", "upstream_import_refused",
     "commit_not_present", "commit_not_on_main", "partial_exists", "git_failed", "deps_link_present",
     # release copies (I-18): bin/suite release, and the RELEASE.json check at every launch from a copy
-    "release_tag_invalid", "release_not_a_checkout", "release_current_invalid", "release_exists",
-    "release_dirty_tree", "release_tag_unknown", "release_main_missing", "release_not_on_main",
+    "release_commit_invalid", "release_not_a_checkout", "release_current_invalid", "release_exists",
+    "release_dirty_tree", "release_commit_unknown", "release_main_missing", "release_not_on_main",
     "release_archive_invalid", "release_tree_mismatch", "release_layout_invalid", "release_manifest_invalid",
     "release_writable", "release_file_missing", "release_file_extra", "release_file_modified",
     "release_git_filter", "release_gitlink",

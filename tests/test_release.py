@@ -2,9 +2,11 @@
 
 No real release is ever made. Everything runs in a temporary git repository under TMPDIR, built from this
 checkout's launcher, package and pin with the runner's local git (guard.runner_git_ok: init, add, commit,
-rev-parse), and in temporary HOMEs; nothing here touches the real ~/.local/share/betangel-suite. The runner's
-git has no tag subcommand, so tags are written as git refs: v1 an annotated tag object, v2 and side
-lightweight. side names a commit that main does not contain (main is pointed back at the first commit).
+rev-parse), and in temporary HOMEs; nothing here touches the real ~/.local/share/betangel-suite. A release names
+its commit by full object id (Nuance's PR #1 review: "`release` takes the merge SHA"). The class repository has c1
+and, after it on main, c3, which is also the checkout's HEAD; c2 (side) is a commit main does not contain (main is
+pointed back at c1 before c3 is made). v1 is an annotated tag of c1, a loose tag object written by hand (the
+runner's git has no tag subcommand), whose own id names no commit.
 
 bin/suite release runs as this interpreter on the temporary repository's bin/_launch.py, so the child's guard
 (mode release) holds that repository as its own checkout. Launches from a copy go through the copy's own
@@ -143,7 +145,7 @@ class RunnerMarkerTests(unittest.TestCase):
                 stand_in_marker(self, present)
                 home = new_home(base, code)
                 before = tree_listing(home)
-                for args in (("serve", "--port", "0"), ("release", "-not-a-tag"), ()):
+                for args in (("serve", "--port", "0"), ("release", "-not-a-commit"), ()):
                     with self.assertRaises(SuiteError) as caught:
                         launch(home, ROOT, *args)
                     self.assertEqual(caught.exception.code, code, args)
@@ -175,7 +177,7 @@ def writable(*directories):
 
 
 class ReleaseTestCase(unittest.TestCase):
-    """One repository and one release of v1 for the whole class; each test uses its own HOME."""
+    """One repository and one release of c1 (while HEAD is c3) for the whole class; each test uses its own HOME."""
 
     @classmethod
     def setUpClass(cls):
@@ -186,29 +188,33 @@ class ReleaseTestCase(unittest.TestCase):
         cls.c1 = cls.repo.commit("first")
         cls.tree1 = cls.repo.git("rev-parse", "--verify", "-q", cls.c1 + "^{tree}")
         cls.files1 = cls.repo.files()
-        cls.repo.annotated_tag("v1", cls.c1)
-        cls.repo.write_ref("refs/tags/v2", cls.c1)
+        cls.tag1 = cls.repo.annotated_tag("v1", cls.c1)    # a tag object: its id is no commit
         with open(os.path.join(cls.repo.path, "side.txt"), "w", encoding="ascii") as handle:
             handle.write("synthetic side branch\n")
         cls.c2 = cls.repo.commit("side")
-        cls.repo.write_ref("refs/tags/side", cls.c2)
         cls.repo.write_ref("refs/heads/main", cls.c1)       # main no longer contains c2
         os.remove(os.path.join(cls.repo.path, "side.txt"))
-        cls.repo.git("add", "-A")                            # the index matches c1 again: a clean tree
+        cls.repo.git("add", "-A")                            # the index matches c1 again
+        with open(os.path.join(cls.repo.path, "later.txt"), "w", encoding="ascii") as handle:
+            handle.write("synthetic later commit\n")
+        cls.c3 = cls.repo.commit("later")                    # main and HEAD: c1, then c3; a clean tree
+        cls.tree3 = cls.repo.git("rev-parse", "--verify", "-q", cls.c3 + "^{tree}")
+        cls.name1, cls.name3 = cls.c1[:12], cls.c3[:12]
         cls.home = new_home(cls.base, "home")
         cls.app = roots.app_dir(cls.home)
-        cls.copy = os.path.join(cls.app, "v1")
-        cls.result = launch(cls.home, cls.repo.path, "release", "v1")
+        cls.copy = os.path.join(cls.app, cls.name1)
+        cls.result = launch(cls.home, cls.repo.path, "release", cls.c1)
 
-    def release(self, home, tag):
-        return launch(home, self.repo.path, "release", tag)
+    def release(self, home, commit):
+        return launch(home, self.repo.path, "release", commit)
 
     def fresh_home(self):
         base = tempfile.mkdtemp(prefix="h-", dir=self.base)
         return new_home(base, "home")
 
-    def place_copy(self, home, name="v1", *, current=True):
+    def place_copy(self, home, name=None, *, current=True):
         """A copy of the class's release under home's app root (modes preserved), and app/current to it."""
+        name = self.name1 if name is None else name
         app = roots.app_dir(home)
         os.makedirs(app, mode=0o700, exist_ok=True)
         target = os.path.join(app, name)
@@ -223,12 +229,15 @@ class ReleaseTestCase(unittest.TestCase):
 
 class ReleaseCommandTests(ReleaseTestCase):
 
-    def test_tags_are_set_up_as_intended(self):
+    def test_commits_are_set_up_as_intended(self):
         self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "refs/tags/v1^{commit}"), self.c1)
-        self.assertNotEqual(self.repo.git("rev-parse", "--verify", "-q", "refs/tags/v1"), self.c1)   # annotated
-        self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "refs/heads/main"), self.c1)
+        self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "refs/tags/v1"), self.tag1)     # annotated
+        self.assertNotEqual(self.tag1, self.c1)
+        self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "refs/heads/main"), self.c3)
+        self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "HEAD"), self.c3)
+        self.assertNotEqual(self.name1, self.name3)
 
-    def test_release_installs_a_read_only_copy_of_the_tag(self):
+    def test_release_installs_a_read_only_copy_of_the_commit_not_the_checkouts_head(self):
         code, out, err = self.result
         self.assertEqual((code, err), (0, ""), err)
         self.assertRegex(out, RELEASED_RE)
@@ -236,14 +245,15 @@ class ReleaseCommandTests(ReleaseTestCase):
         self.assertEqual(files, len(self.files1))
         self.assertEqual(size, sum(os.path.getsize(os.path.join(self.repo.path, p)) for p in self.files1))
         self.assertNotIn(self.c1, out)
-        self.assertEqual(sorted(os.listdir(self.app)), ["current", "v1"])
-        self.assertEqual(os.readlink(os.path.join(self.app, "current")), "v1")
+        self.assertEqual(sorted(os.listdir(self.app)), sorted(["current", self.name1]))
+        self.assertEqual(os.readlink(os.path.join(self.app, "current")), self.name1)
         with open(os.path.join(self.copy, "RELEASE.json"), encoding="ascii") as handle:
             manifest = json.load(handle)
         self.assertEqual(manifest, {
-            "format": 1, "tag": "v1", "commit": self.c1, "tree": self.tree1,
+            "format": 2, "commit": self.c1, "tree": self.tree1,
             "files": {path: digest for path, (digest, _x) in self.files1.items()},
             "executables": sorted(path for path, (_d, executable) in self.files1.items() if executable)})
+        self.assertNotIn("later.txt", manifest["files"])     # c1's tree, although HEAD and the checkout hold c3
         self.assertIn("bin/suite", manifest["executables"])
         self.assertFalse(os.path.lexists(os.path.join(self.copy, ".git")))
         for relative, mode in modes_under(self.copy).items():
@@ -261,7 +271,7 @@ class ReleaseCommandTests(ReleaseTestCase):
                                            child_env(self.home), self.home)
         self.assertEqual((returncode, out, err), (0, "not_running\n", ""))
         status = release.status_of(os.path.join(self.app, "current"), self.home)
-        self.assertEqual(status, release.Status("release", "v1", self.c1, self.tree1))
+        self.assertEqual(status, release.Status("release", self.c1, self.tree1))
         self.assertEqual(release.status_of(ROOT, self.home), release.CHECKOUT)
         self.assertEqual(release.status(), release.status_of(ROOT))     # this runner's own code, as launched
         with self.assertRaises(SuiteError) as caught:
@@ -277,7 +287,7 @@ class ReleaseCommandTests(ReleaseTestCase):
         if not os.path.exists(spell(target)) or not os.path.samefile(spell(target), target):
             self.skipTest("this volume has no such spelling of the temporary HOME")
         self.assertNotEqual(spell(target), target)
-        self.assertEqual(release.status_of(spell(target), home), release.Status("release", "v1", self.c1, self.tree1))
+        self.assertEqual(release.status_of(spell(target), home), release.Status("release", self.c1, self.tree1))
         with self.assertRaises(SuiteError) as caught:
             release.status_of(spell(app), home)
         self.assertEqual(caught.exception.code, "release_layout_invalid")
@@ -291,7 +301,7 @@ class ReleaseCommandTests(ReleaseTestCase):
 
     def test_a_case_variant_spelling_of_a_copy_is_still_verified(self):
         # realpath keeps the case as given, so status_of compares (st_dev, st_ino), never the spelling.
-        self.check_spelling(lambda path: "/APP".join(path.rsplit("/app", 1)))       # .../APP/v1 and .../APP
+        self.check_spelling(lambda path: "/APP".join(path.rsplit("/app", 1)))       # .../APP/<sha12> and .../APP
 
     def test_the_data_volume_firmlink_spelling_of_a_copy_is_still_verified(self):
         # On macOS /Users is also /System/Volumes/Data/Users, an alias realpath does not resolve.
@@ -328,16 +338,18 @@ class ReleaseCommandTests(ReleaseTestCase):
 
     def test_release_from_a_release_copy_is_refused(self):
         before = tree_listing(self.app)
-        self.assertRefused(launch(self.home, self.copy, "release", "v2"), "release_not_a_checkout")
+        self.assertRefused(launch(self.home, self.copy, "release", self.c3), "release_not_a_checkout")
         self.assertEqual(tree_listing(self.app), before)
 
-    def test_unknown_and_unreachable_tags_are_refused(self):
+    def test_unknown_unreachable_and_named_commits_are_refused(self):
         home = self.fresh_home()
         before = tree_listing(home)
-        self.assertRefused(self.release(home, "v9"), "release_tag_unknown")
-        self.assertRefused(self.release(home, "main"), "release_tag_unknown")     # a branch is not a tag
-        self.assertRefused(self.release(home, "side"), "release_not_on_main")
-        self.assertRefused(self.release(home, "../v1"), "release_tag_invalid")
+        for unknown in ("f" * 40, self.tag1, self.tree1, "e" * 64):   # nothing; a tag's id; a tree's; SHA-256 here
+            self.assertRefused(self.release(home, unknown), "release_commit_unknown")
+        self.assertRefused(self.release(home, self.c2), "release_not_on_main")
+        for name in ("v1", "main", "HEAD", "refs/heads/main", self.name1, self.c1.upper(), self.c1 + "^{commit}",
+                     "../" + self.c1, self.c3[:-1]):
+            self.assertRefused(self.release(home, name), "release_commit_invalid")
         self.assertEqual(launch(home, self.repo.path, "release"), (2, "", "refused:bad_arguments\n"))
         self.assertEqual(tree_listing(home), before)
 
@@ -350,13 +362,13 @@ class ReleaseCommandTests(ReleaseTestCase):
         self.addCleanup(self._restore, tracked, original)
         with open(tracked, "ab") as handle:
             handle.write(b"\nsynthetic edit\n")
-        self.assertRefused(self.release(home, "v1"), "release_dirty_tree")
+        self.assertRefused(self.release(home, self.c1), "release_dirty_tree")
         self._restore(tracked, original)
         untracked = os.path.join(self.repo.path, "bin", "untracked.txt")
         self.addCleanup(lambda: os.path.lexists(untracked) and os.remove(untracked))
         with open(untracked, "w", encoding="ascii") as handle:
             handle.write("synthetic\n")
-        self.assertRefused(self.release(home, "v1"), "release_dirty_tree")
+        self.assertRefused(self.release(home, self.c1), "release_dirty_tree")
         self.assertEqual(tree_listing(home), before)
 
     @staticmethod
@@ -367,28 +379,29 @@ class ReleaseCommandTests(ReleaseTestCase):
     def test_a_second_release_switches_current_and_an_existing_one_is_refused(self):
         home = self.fresh_home()
         app = roots.app_dir(home)
-        self.assertEqual(self.release(home, "v1")[0], 0)
-        os.symlink("v1", os.path.join(app, ".current.partial"))      # left by an interrupted release
-        os.mkdir(os.path.join(app, ".v2.partial"))
-        self.assertRefused(self.release(home, "v2"), "partial_exists")
-        os.rmdir(os.path.join(app, ".v2.partial"))
-        code, out, err = self.release(home, "v2")
+        self.assertEqual(self.release(home, self.c1)[0], 0)
+        os.symlink(self.name1, os.path.join(app, ".current.partial"))      # left by an interrupted release
+        os.mkdir(os.path.join(app, "." + self.name3 + ".partial"))
+        self.assertRefused(self.release(home, self.c3), "partial_exists")
+        os.rmdir(os.path.join(app, "." + self.name3 + ".partial"))
+        code, out, err = self.release(home, self.c3)
         self.assertEqual((code, err), (0, ""), err)
         self.assertRegex(out, RELEASED_RE)
-        self.assertEqual(os.readlink(os.path.join(app, "current")), "v2")
-        self.assertEqual(sorted(os.listdir(app)), ["current", "v1", "v2"])
+        self.assertEqual(os.readlink(os.path.join(app, "current")), self.name3)
+        self.assertEqual(sorted(os.listdir(app)), sorted(["current", self.name1, self.name3]))
         before = tree_listing(app)
-        self.assertRefused(self.release(home, "v1"), "release_exists")
+        self.assertRefused(self.release(home, self.c1), "release_exists")
         self.assertEqual(tree_listing(app), before)
-        for tag in ("v1", "v2"):
-            manifest = release.verify_copy(os.path.join(app, tag))
-            self.assertEqual((manifest["tag"], manifest["commit"], manifest["tree"]), (tag, self.c1, self.tree1))
+        for commit, tree in ((self.c1, self.tree1), (self.c3, self.tree3)):
+            manifest = release.verify_copy(os.path.join(app, commit[:12]))
+            self.assertEqual((manifest["commit"], manifest["tree"]), (commit, tree))
+            self.assertEqual("later.txt" in manifest["files"], commit == self.c3)
 
     def test_current_must_be_a_symlink(self):
         home = self.fresh_home()
         os.makedirs(os.path.join(roots.app_dir(home), "current"))
         before = tree_listing(home)
-        self.assertRefused(self.release(home, "v1"), "release_current_invalid")
+        self.assertRefused(self.release(home, self.c1), "release_current_invalid")
         self.assertEqual(tree_listing(home), before)
 
     def test_the_run_marker_refuses_a_release(self):
@@ -397,7 +410,7 @@ class ReleaseCommandTests(ReleaseTestCase):
         os.makedirs(os.path.dirname(marker))
         open(marker, "w").close()
         before = tree_listing(home)
-        self.assertRefused(self.release(home, "v1"), "run_marker_present")
+        self.assertRefused(self.release(home, self.c1), "run_marker_present")
         self.assertEqual(tree_listing(home), before)
 
     def test_the_run_marker_is_checked_again_just_before_the_copy_goes_live(self):
@@ -409,9 +422,9 @@ class ReleaseCommandTests(ReleaseTestCase):
         os.makedirs(os.path.dirname(marker))
         open(marker, "w").close()
         code = ("import sys\nsys.path.append(%r)\nfrom betangel_suite import errors, guard\nguard.arm('release')\n"
-                "errors.install_excepthooks()\nfrom betangel_suite import release\ntry:\n    release.make('v1')\n"
+                "errors.install_excepthooks()\nfrom betangel_suite import release\ntry:\n    release.make(%r)\n"
                 "except errors.SuiteError as exc:\n    sys.stderr.write(errors.describe(exc) + '\\n')\n    sys.exit(2)\n"
-                % self.repo.path)
+                % (self.repo.path, self.c1))
         result = subprocess.run([PYTHON, "-I", "-S", "-B", "-c", code], env=child_env(home), cwd=home,
                                 capture_output=True, text=True, timeout=120)
         self.assertEqual((result.returncode, result.stdout, result.stderr), (2, "", "refused:run_marker_present\n"))
@@ -440,23 +453,23 @@ class ReleaseCommandTests(ReleaseTestCase):
         for label, extra in (("direct", driver), ("included", "[include]\n\tpath = %s\n" % included)):
             with open(config, "wb") as handle:
                 handle.write(original + extra.encode("ascii"))
-            self.assertRefused(self.release(home, "v1"), "release_git_filter")
+            self.assertRefused(self.release(home, self.c1), "release_git_filter")
         self.assertEqual(os.listdir(marks), [], "no filter command ran")
         self.assertEqual(tree_listing(home), before)
 
     def test_the_share_dir_must_exist(self):
         home = self.fresh_home()
         rmtree(roots.share_dir(home))
-        self.assertRefused(self.release(home, "v1"), "root_parent_missing")
+        self.assertRefused(self.release(home, self.c1), "root_parent_missing")
         self.assertFalse(os.path.lexists(roots.share_dir(home)))
 
 
 class VerifyCopyTests(ReleaseTestCase):
     """Every way a copy can differ from its RELEASE.json, checked in this process on fresh copies."""
 
-    def fresh(self, name="v1"):
+    def fresh(self, name=None):
         base = tempfile.mkdtemp(prefix="c-", dir=self.base)
-        target = os.path.join(base, name)
+        target = os.path.join(base, self.name1 if name is None else name)
         shutil.copytree(self.copy, target)
         return target
 
@@ -546,7 +559,9 @@ class VerifyCopyTests(ReleaseTestCase):
                 change(root, path)
             self.assertEqual(self.code_of(root), "release_manifest_invalid", name)
         edits = {
-            "format": lambda m: m.__setitem__("format", 2),
+            "format": lambda m: m.__setitem__("format", 1),
+            "tag_key": lambda m: m.__setitem__("tag", "v1"),           # format 1's key
+            "other_commit": lambda m: m.__setitem__("commit", "0" * 40),
             "format_bool": lambda m: m.__setitem__("format", True),
             "extra_key": lambda m: m.__setitem__("note", "x"),
             "short_commit": lambda m: m.__setitem__("commit", m["commit"][:12]),
@@ -562,9 +577,9 @@ class VerifyCopyTests(ReleaseTestCase):
             self.edit_manifest(root, change)
             self.assertEqual(self.code_of(root), "release_manifest_invalid", name)
 
-    def test_the_copy_directory_must_be_named_after_its_tag(self):
-        self.assertEqual(self.code_of(self.fresh("v2")), "release_manifest_invalid")
-        self.assertEqual(self.code_of(self.fresh("current")), "release_manifest_invalid")
+    def test_the_copy_directory_must_be_named_after_its_commit(self):
+        for name in ("v1", "current", self.name3, self.c1[:11], self.c1[:13], self.c1, self.name1.upper()):
+            self.assertEqual(self.code_of(self.fresh(name)), "release_manifest_invalid", name)
 
 
 class NestedRepositoryTests(unittest.TestCase):
@@ -574,12 +589,12 @@ class NestedRepositoryTests(unittest.TestCase):
     fixture's is shared, and the runner's git cannot remove a gitlink again."""
 
     def make_repo(self):
+        """(base, repo, its first commit)."""
         base = tempfile.mkdtemp(prefix="rel-")
         self.addCleanup(rmtree, base)
         repo = Repo(os.path.join(base, "repo"))
         copy_sources(repo.path)
-        repo.annotated_tag("v1", repo.commit("first"))
-        return base, repo
+        return base, repo, repo.commit("first")
 
     @staticmethod
     def make_nested(repo):
@@ -603,54 +618,57 @@ class NestedRepositoryTests(unittest.TestCase):
         later = os.stat(sample).st_mtime + 3600
         os.utime(sample, (later, later))
 
-    def check(self, base, repo, code):
+    def check(self, base, repo, commit, code):
         home = new_home(base, "home")
         before = tree_listing(home)
-        self.assertEqual(launch(home, repo.path, "release", "v1"), (2, "", "refused:%s\n" % code))
+        self.assertEqual(launch(home, repo.path, "release", commit), (2, "", "refused:%s\n" % code))
         self.assertEqual(tree_listing(home), before)
 
     def test_a_gitlink_is_refused_before_git_status_can_enter_it(self):
         for committed in (False, True):
-            base, repo = self.make_repo()
+            base, repo, commit = self.make_repo()
             nested = self.make_nested(repo)
             repo.git("add", "nested")                   # an embedded repository is added as a gitlink
             if committed:
                 repo.git("commit", "-q", "-m", "gitlink")
             marks = tempfile.mkdtemp(prefix="marks-", dir=base)
             self.plant_filter(nested, marks)
-            self.check(base, repo, "release_gitlink")
+            self.check(base, repo, commit, "release_gitlink")
             self.assertEqual(os.listdir(marks), [], "no filter command ran (committed=%s)" % committed)
 
     def test_status_still_sees_an_untracked_nested_repository_and_a_removed_gitlink(self):
         # git status never enters a submodule (--ignore-submodules=dirty), but still reports what the parent
         # records: an untracked repository, and a gitlink in HEAD whose removal is staged (=all would hide that).
-        base, repo = self.make_repo()
+        base, repo, commit = self.make_repo()
         marks = tempfile.mkdtemp(prefix="marks-", dir=base)
         self.plant_filter(self.make_nested(repo), marks)
-        self.check(base, repo, "release_dirty_tree")
+        self.check(base, repo, commit, "release_dirty_tree")
         self.assertEqual(os.listdir(marks), [])
-        base, repo = self.make_repo()
+        base, repo, commit = self.make_repo()
         nested = self.make_nested(repo)
         repo.git("add", "nested")
         repo.git("commit", "-q", "-m", "gitlink")
         rmtree(nested.path)
         repo.git("add", "-A")                           # stages the gitlink's removal: the index has none now
-        self.check(base, repo, "release_dirty_tree")
+        self.check(base, repo, commit, "release_dirty_tree")
 
 
-class TagAndTreeTests(unittest.TestCase):
+class CommitAndTreeTests(unittest.TestCase):
 
-    def test_tag_names(self):
-        for tag in ("v1", "v0.1.0", "phase0-c", "2026.10.15", "V_1", "a" * 64):
-            self.assertTrue(release.tag_ok(tag), tag)
-            self.assertEqual(release.parse_args([tag]), {"tag": tag})
-        for tag in ("", "-v", ".v1", "v1.", "v1.lock", "a..b", "../v1", "v1/x", "v 1", "current", "Current", "v1^",
-                    "v1~1", "v1:x", "v1@{0}", "v1*", "a" * 65, "v1\n", "é1"):
-            self.assertFalse(release.tag_ok(tag), tag)
+    def test_commit_names(self):
+        for commit in ("0123456789abcdef" * 2 + "01234567", "f" * 40, "0" * 64, "a1" * 32):
+            self.assertTrue(release.commit_ok(commit), commit)
+            self.assertEqual(release.parse_args([commit]), {"commit": commit})
+            self.assertEqual(release.copy_name(commit), commit[:12])
+        for commit in ("", "v1", "main", "HEAD", "current", "refs/heads/main", "f" * 12, "f" * 39, "f" * 41, "f" * 63,
+                       "f" * 65, "F" * 40, "g" * 40, "f" * 40 + "\n", " " + "f" * 40, "f" * 40 + "^{commit}",
+                       "f" * 38 + "~1", "../" + "f" * 40, "é" * 40):
+            self.assertFalse(release.commit_ok(commit), repr(commit))
             with self.assertRaises(SuiteError) as caught:
-                release.parse_args([tag])
-            self.assertEqual(caught.exception.code, "release_tag_invalid", tag)
-        for args in ([], ["v1", "v2"], ["v1", "--force"]):
+                release.parse_args([commit])
+            self.assertEqual(caught.exception.code, "release_commit_invalid", repr(commit))
+        self.assertFalse(release.commit_ok(None))
+        for args in ([], ["f" * 40, "e" * 40], ["f" * 40, "--force"]):
             with self.assertRaises(SuiteError) as caught:
                 release.parse_args(args)
             self.assertEqual(caught.exception.code, "bad_arguments", args)

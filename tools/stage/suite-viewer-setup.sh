@@ -289,7 +289,7 @@ check_key_is_new() {
 
 check_release() {
     if [ ! -f "$APP_SUITE_HERE" ] || [ ! -x "$APP_SUITE_HERE" ]; then
-        fail release_missing "no release copy at ~/.local/share/betangel-suite/app/current/bin/suite: install a release first (Yu runs bin/suite release <tag> in the clean main checkout, /Users/user/betangel-suite)"
+        fail release_missing "no release copy at ~/.local/share/betangel-suite/app/current/bin/suite: install a release first (Yu runs bin/suite release <merge-sha> in the clean main checkout, /Users/user/betangel-suite)"
     fi
 }
 

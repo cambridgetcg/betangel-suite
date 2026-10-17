@@ -115,9 +115,10 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           share dir itself; nowhere else in the share dir (its app/ belongs to release).
   release (bin/suite release, betangel_suite/release.py; I-18) before seal(), only git with RELEASE_GIT_PREFIX
           and -C this checkout's own root (never the deploy clone or a release copy): the filter-driver
-          config query, the index listing, status (never entering a submodule), rev-parse of
-          refs/tags/<tag>^{commit}, refs/heads/main^{commit} or <id>^{tree}, merge-base --is-ancestor and
-          archive --format=tar <id>, with no user or system git config (release_argv_ok); after, none. Its
+          config query, the index listing, status (never entering a submodule), rev-parse of <id>^{commit},
+          refs/heads/main^{commit} or <id>^{tree}, merge-base --is-ancestor and archive --format=tar <id>, with
+          no user or system git config (release_argv_ok); after, none. A release names its commit by full
+          object id, never a tag or other name (release.py). Its
           writes may also go under ~/.local/share/betangel-suite/app (the release copies) and nowhere else
           in the share dir.
   uisnap  (bin/suite uisnap, DESIGN.md 11) before seal(), exactly one argv: the Command Line Tools' swiftc with
@@ -208,7 +209,7 @@ UISNAP_ENV_KEYS = frozenset({"HOME", "LANG", "TMPDIR", "PATH", FORBID_NETWORK_EN
 MAX_BINARY_BYTES = 256 << 20                         # the registered uisnap binary is hashed at every spawn
 _UISNAP_DIR_RE = re.compile(r"[0-9a-f]{64}")
 # bin/suite release (release_argv_ok): local git on this checkout only, no hooks, fsmonitor, attributes file,
-# transport or index write; tag names as release.tag_ok narrows them further.
+# transport or index write; revisions only as full object ids, plus refs/heads/main.
 RELEASE_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
                       "-c", "core.attributesFile=/dev/null", "--no-optional-locks")
 RELEASE_GIT_ENV_EXTRA = frozenset({"GIT_TERMINAL_PROMPT"})
@@ -220,7 +221,6 @@ RELEASE_FILTER_QUERY = ("config", "--includes", "--null", "--get-regexp", r"^fil
 # and its status never enters a submodule (--ignore-submodules=dirty) (release_gitlink).
 RELEASE_INDEX_QUERY = ("ls-files", "--stage", "-z")
 RELEASE_STATUS = ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty")
-RELEASE_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 _NETWORK = {
@@ -1010,7 +1010,7 @@ def release_argv_ok(argv, env, repo, research, app_root):
     --untracked-files=all --ignore-submodules=dirty: it never enters a submodule); RELEASE_FILTER_QUERY (config
     --includes --null --get-regexp ^filter\\., read only); RELEASE_INDEX_QUERY (ls-files --stage -z, read only,
     never --recurse-submodules);
-    rev-parse --verify --quiet refs/tags/<tag>^{commit} | refs/heads/main^{commit} | <id>^{tree};
+    rev-parse --verify --quiet <id>^{commit} | refs/heads/main^{commit} | <id>^{tree}, <id> a full object id;
     merge-base --is-ancestor <id> <id>; archive --format=tar <id>. Every subcommand is local (no fetch, no
     remote archive). The environment must be explicit, with no user or system git config and no other GIT_*
     variable. repo must not lie in the deploy clone or the app root (a release copy is never a source).
@@ -1034,11 +1034,9 @@ def release_argv_ok(argv, env, repo, research, app_root):
         revision = rest[3]
         if revision == "refs/heads/main^{commit}":
             return True
-        if revision.endswith("^{tree}"):
-            return bool(_OBJECT_ID_RE.fullmatch(revision[:-len("^{tree}")]))
-        if revision.startswith("refs/tags/") and revision.endswith("^{commit}"):
-            tag = revision[len("refs/tags/"):-len("^{commit}")]
-            return bool(RELEASE_TAG_RE.fullmatch(tag)) and ".." not in tag
+        for peel in ("^{tree}", "^{commit}"):
+            if revision.endswith(peel):
+                return bool(_OBJECT_ID_RE.fullmatch(revision[:-len(peel)]))
         return False
     if len(rest) == 4 and rest[:2] == ["merge-base", "--is-ancestor"]:
         return all(_OBJECT_ID_RE.fullmatch(item) for item in rest[2:])

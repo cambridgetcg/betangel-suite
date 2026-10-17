@@ -1,8 +1,8 @@
 """Phase 0c end to end through bin/suite from a release copy (DESIGN.md 8.6 items 1 and 2, 11; I-16, I-18, I-19).
 
-A temporary git repository holds this checkout's launcher, package, pin and UI. `bin/suite release v1` (this
+A temporary git repository holds this checkout's launcher, package, pin and UI. `bin/suite release <commit>` (this
 interpreter on that repository's bin/_launch.py, so the child's guard, mode release, holds the repository as its
-own checkout) installs app/v1 and app/current in a short temporary HOME, as Yu's release would. Everything then
+own checkout) installs app/<sha12> and app/current in a short temporary HOME, as Yu's release would. Everything then
 runs through that copy's own bin/suite, started by an unguarded relay (the runner's guard starts only this
 checkout's launcher), in a fake SSH environment: SSH_CONNECTION is set to TEST-NET addresses and no sshd is
 involved. Engines bind 127.0.0.1 on ephemeral ports (ssh-session --port 0).
@@ -61,7 +61,7 @@ def copy_sources(dest):
 
 
 class ReleaseViewingTests(unittest.TestCase):
-    """One repository for the class; each test releases v1 into its own short HOME."""
+    """One repository for the class; each test releases its commit into its own short HOME."""
 
     @classmethod
     def setUpClass(cls):
@@ -70,18 +70,17 @@ class ReleaseViewingTests(unittest.TestCase):
         cls.repo = Repo(os.path.join(cls.base, "repo"))
         copy_sources(cls.repo.path)
         cls.commit = cls.repo.commit("synthetic release")
-        cls.repo.write_ref("refs/tags/v1", cls.commit)
 
     def released_home(self, config=None):
-        """A short HOME (deps copy included) with app/v1 released from the class's repository; (home, copy)."""
+        """A short HOME (deps copy included) with app/<sha12> released from the class's repository; (home, copy)."""
         home = support.short_home(self)
         if config is not None:
             with open(roots.config_path(home), "w", encoding="ascii") as handle:
                 json.dump(config, handle)
-        code, out, err = launch(home, self.repo.path, "release", "v1")
+        code, out, err = launch(home, self.repo.path, "release", self.commit)
         self.assertEqual((code, err), (0, ""), err)
         self.assertRegex(out, r"\Areleased files=[0-9]+ bytes=[0-9]+ current=switched\n\Z")
-        return home, os.path.join(roots.app_dir(home), "v1")     # removed with home (tests.rmtree)
+        return home, os.path.join(roots.app_dir(home), self.commit[:12])     # removed with home (tests.rmtree)
 
     def session(self, home, name, *, stdout_pipe=False):
         """The copy's bin/suite ssh-session --port 0 (through app/current), in the fake SSH environment."""
