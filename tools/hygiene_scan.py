@@ -515,9 +515,14 @@ def _plain_findings(lines) -> list:
 # letter, and a dec run to be neither sorted nor ASCII with control characters (other than tab,
 # LF and CR), as encoded data is; names, paths, hashes, decimal numbers, price ladders and lists
 # of small counts are not.
+# A hex run whose every line gave one whole token of exactly 40 or 64 digits is a list of commit
+# or file hashes, one per line (bare, quoted or after a marker), so the second test never applies
+# to it; the first and the third still do (round-4 recheck: lists of full hashes were binary).
 # Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
 # patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
 # characters (groups of 8, or a list whose first piece is that short), and lists split by commas.
+# Not flagged (known gap): binary data with no magic and no zlib stream, hex-encoded in whole
+# lines of exactly 40 or 64 digits, as a list of hashes is.
 
 ENCODED_MIN_MAGIC = 24
 ENCODED_MIN_BINARY = 96
@@ -582,9 +587,10 @@ def _unescape(body: str) -> bytes:
 
 
 def _segments(kind: str, line: str, short: bool = False) -> list:
-    """[(start, end, payload, ends_line, pure)] for one kind of token on one line.
+    """[(start, end, payload, ends_line, pure, digest)] for one kind of token on one line.
 
     payload is the token text (b64), its hex digits (hex) or the bytes it stands for (esc, dec).
+    digest: the token is one whole run of exactly 40 or 64 hex digits, the shape of a commit or file hash.
     short: also tokens below the minimum length (the last line of a wrapped dump).
     """
     if kind == "hex":
@@ -592,10 +598,10 @@ def _segments(kind: str, line: str, short: bool = False) -> list:
         if dump:  # od: an octal offset, then 16-bit words in octal, low byte first (before xxd: its digits are hex too)
             words = [int(word, 8) for word in dump.group("oct").split()]
             return [(dump.start("oct"), dump.end("oct"), "".join(f"{w & 0xFF:02x}{w >> 8:02x}" for w in words),
-                     True, True)]
+                     True, True, False)]
         dump = _HEX_DUMP[short].fullmatch(line)
         if dump:  # xxd or hexdump -C: the offset and the character column are not data
-            return [(dump.start("hex"), dump.end("hex"), _HEX_DROP.sub("", dump.group("hex")), True, True)]
+            return [(dump.start("hex"), dump.end("hex"), _HEX_DROP.sub("", dump.group("hex")), True, True, False)]
         matches = list(_HEX_TOKEN[short].finditer(line))
     elif kind == "b64":
         matches = list(_B64_TOKEN[short].finditer(line))
@@ -608,8 +614,10 @@ def _segments(kind: str, line: str, short: bool = False) -> list:
     segments = []
     for m in matches:
         token = m.group()
+        digest = False
         if kind == "hex":
             payload = _HEX_DROP.sub("", token)
+            digest = len(token) in (40, 64) and len(payload) == len(token)
             ends = (_ENDS_LINE_0X if token[:2] in ("0x", "0X") else _ENDS_LINE).fullmatch(line, m.end())
         elif kind == "dec":
             payload = bytes(int(number) for number in _DEC_NUMBER.findall(token))
@@ -618,12 +626,15 @@ def _segments(kind: str, line: str, short: bool = False) -> list:
             payload = token if kind == "b64" else _unescape(token[1:-1])
             ends = (_ENDS_LINE if kind == "b64" else _ENDS_LINE_ESC).fullmatch(line, m.end())
         pure = bool(ends) and len(matches) == 1 and bool(_PURE_BEFORE[kind].fullmatch(line, 0, m.start()))
-        segments.append((m.start(), m.end(), payload, bool(ends), pure))
+        segments.append((m.start(), m.end(), payload, bool(ends), pure, digest))
     return segments
 
 
 def _runs(kind: str, lines) -> list:
-    """[(first line number, [payload, ...])]: the tokens of one kind, joined across lines as above."""
+    """[(first line number, [payload, ...], digests)]: the tokens of one kind, joined across lines as above.
+
+    digests: every line of the run gave one whole 40- or 64-digit hex token (a list of hashes, one per line).
+    """
     runs = []
     current = None
     for number, line in lines:
@@ -631,24 +642,26 @@ def _runs(kind: str, lines) -> list:
         if current is not None:
             if len(segments) == 1 and segments[0][4]:
                 current[1].append(segments[0][2])
+                current[2].append(segments[0][5])
                 continue
             if not segments:
                 tail = _segments(kind, line, short=True)
                 if len(tail) == 1 and tail[0][4]:  # a short last line ends the run
                     current[1].append(tail[0][2])
+                    current[2].append(tail[0][5])
             runs.append(current)
             current = None
-        for _start, _end, payload, _ends, _pure in segments[:-1]:
-            runs.append((number, [payload]))
+        for segment in segments[:-1]:
+            runs.append((number, [segment[2]], [segment[5]]))
         if segments:
             last = segments[-1]
             if last[3]:
-                current = (number, [last[2]])
+                current = (number, [last[2]], [last[5]])
             else:
-                runs.append((number, [last[2]]))
+                runs.append((number, [last[2]], [last[5]]))
     if current is not None:
         runs.append(current)
-    return runs
+    return [(number, payloads, all(digests)) for number, payloads, digests in runs]
 
 
 def _decode_run(kind: str, payloads: list):
@@ -752,14 +765,14 @@ def _without_prefixes(lines):
     return out if any(line for _number, line in out) else None
 
 
-def _blob_flagged(blob: bytes, mixed: bool, depth: int) -> bool:
-    """Whether one decoded run is flagged (the three tests above)."""
+def _blob_flagged(blob: bytes, mixed: bool, depth: int, digests: bool = False) -> bool:
+    """Whether one decoded run is flagged (the three tests above). digests: a list of hashes is never binary data."""
     if len(blob) >= ENCODED_MIN_MAGIC and (_blob_magic(blob) or _zlib_stream(blob)):
         return True
     if not mixed:
         return False
     if b"\0" in blob or not _is_utf8(blob):
-        return len(blob) >= ENCODED_MIN_BINARY
+        return len(blob) >= ENCODED_MIN_BINARY and not digests
     if len(blob) < ENCODED_MIN_TEXT:
         return False
     lines = list(_lines(blob.decode("utf-8")))
@@ -775,9 +788,9 @@ def _encoded_blob_lines(lines, depth: int = 0) -> list:
     flagged = set()
     for view in views:
         for kind in ("b64", "hex", "esc", "dec"):
-            for number, payloads in _runs(kind, view):
+            for number, payloads, digests in _runs(kind, view):
                 blob, mixed = _decode_run(kind, payloads)
-                if blob is not None and _blob_flagged(blob, mixed, depth):
+                if blob is not None and _blob_flagged(blob, mixed, depth, digests):
                     flagged.add(number)
         flagged.update(number for number, blob in _git_binary_hunks(view) if _blob_flagged(blob, True, depth))
     return sorted(flagged)

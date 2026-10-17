@@ -888,6 +888,58 @@ class EncodedDataTests(_RepoCase):
         self.add(*files)
         self.assert_clean()
 
+    def test_lists_of_full_hashes_stay_clean(self):
+        # Round-4 recheck: read without its markers, a bulleted or commented list of full commit or file hashes was
+        # one hex run of 96+ bytes, flagged as binary, in a file and in a commit message. A run whose every line is
+        # one whole 40- or 64-digit token is a list of hashes: only a magic, a zlib stream or flagged text counts.
+        sha1 = [hashlib.sha1(f"synthetic {i}".encode()).hexdigest() for i in range(8)]
+        sha256 = [hashlib.sha256(f"synthetic {i}".encode()).hexdigest() for i in range(4)]
+        lists = {
+            "- sha1 x8": "".join(f"- {h}\n" for h in sha1),
+            "# sha1 x8": "".join(f"# {h}\n" for h in sha1),
+            "- sha256 x4": "".join(f"- {h}\n" for h in sha256),
+            "* sha1 and words x6": "".join(f"* {h} synthetic subject words\n" for h in sha1[:6]),
+            "- `sha1` x8": "".join(f"- `{h}`\n" for h in sha1),
+            "bare sha256 x4": "".join(f"{h}\n" for h in sha256),
+            "indented, both lengths": "".join(f"  - {h}\n" for h in sha1[:3] + sha256[:3]),
+        }
+        for name, text in lists.items():
+            with self.subTest(shape=name):
+                self.setUp()
+                self.write("docs/commits.md", "The fixes:\n" + text)
+                self.add("docs/commits.md")
+                self.assert_clean()
+                self.write(".git/MSG", "synthetic subject\n\nThe fixes:\n" + text
+                           + "\nCo-Authored-By: Synthetic Tester <tester@example.invalid>\n")
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual((rc, out.strip()), (0, "hygiene_scan: OK 1 message(s) scanned [message]"))
+
+    def test_data_in_whole_hash_lines_is_still_caught(self):
+        # The same shape holding an archive, a zlib stream or flagged text, padded with spaces so every line is one
+        # whole 40- or 64-digit token, as in a list of hashes.
+        member = bz2.compress(_stream_text().encode())
+        record = _j('{"op":"mcm","id":"', MARKET_2015, '"}').encode()
+
+        def lines(data: bytes, width: int, fmt: str) -> str:
+            return _wrap((data + b" " * (-len(data) % (width // 2))).hex(), width, fmt)
+
+        shapes = {
+            "bz2, - 40": lines(member, 40, "- {}\n"),
+            "bz2, # 64": lines(member, 64, "# {}\n"),
+            "bz2, bare 64": lines(member, 64, "{}\n"),
+            "zlib, - 40": lines(zlib.compress(record), 40, "- {}\n"),
+            "gzip, * 64": lines(gzip.compress(record), 64, "* {}\n"),
+            "text, - 40": lines(_stream_text(lines=2).encode(), 40, "- {}\n"),
+        }
+        self.plant_shapes(shapes)
+        for name in ("bz2, - 40", "text, - 40"):
+            with self.subTest(shape=name, mode="--message"):
+                self.write(".git/MSG", "synthetic subject\n\nThe fixes:\n" + shapes[name])
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.codes(out), {"encoded_blob"})
+                self.assertNotIn(MARKET_2015, out)
+
 
 class FilterAttributeTests(_RepoCase):
     """A clean filter changes what git stores, so the staged scan never sees the file itself (Nuance's #2
