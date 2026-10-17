@@ -22,7 +22,7 @@ import unittest
 
 from betangel_suite import cli, config, roots, runmarker
 from betangel_suite.errors import SuiteError
-from tests import ARM_ENGINE, PYTHON, child_env, make_home, run_python, run_suite, start_suite, tree_listing
+from tests import ARM_ENGINE, PYTHON, ROOT, child_env, make_home, run_python, run_suite, start_suite, tree_listing
 
 PROBE_SENTINEL = "mid-run-marker-probe"     # made only in a temporary HOME, by MidRunTests
 
@@ -197,6 +197,27 @@ class StartTimeTests(unittest.TestCase):
         os.chmod(os.path.dirname(path), 0o700)
         self.assertEqual(self.suite(home, "vendor"), (2, "refused:bad_arguments\n"))   # no marker: it starts
         self.assertFalse(os.path.lexists(runmarker.lock_path(home)))       # vendor never takes the realdata lock
+
+    def test_the_vendor_tool_run_directly_refuses_marker_or_not(self):
+        # Astra's review of #1, item 5: run directly, tools/vendor_research.py armed the guard and ran main() without
+        # the launcher's run-marker check (bin/_launch.py). bin/suite vendor is its only entry now: run directly, it
+        # refuses at once (launcher_required), with the marker or without it, before it arms the guard, runs git or
+        # makes anything.
+        home = make_home(self)
+        path = marker(home)
+        argv = [PYTHON, "-I", "-S", "-B", os.path.join(ROOT, "tools", "vendor_research.py"), "f" * 40,
+                "--pin-file", os.path.join(home, "pin.json")]
+        for present in (False, True):
+            if present:
+                os.makedirs(os.path.dirname(path))
+                open(path, "w").close()
+            before = tree_listing(home)
+            with self.subTest(marker=present):
+                result = subprocess.run(argv, env=child_env(home), cwd=home, capture_output=True, text=True,
+                                        timeout=60)
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (2, "", "refused:launcher_required\n"))
+                self.assertEqual(tree_listing(home), before)
 
 
 

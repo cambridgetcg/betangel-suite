@@ -2,7 +2,9 @@
 
     bin/suite vendor <full-sha> [--bump] [--pin-file PATH]
 
-Run by hand by lab-Claude, never automatically. Steps:
+Run by hand by lab-Claude, never automatically, and only through bin/suite vendor, whose launcher checks the
+interpreter, the environment and TMPDIR and refuses while the run marker exists (bin/_launch.py). Run directly, this
+file refuses at once (launcher_required; Astra's review of #1, item 5). Steps:
 
   1. git -C ~/betangel-research cat-file -e <sha>^{commit}: a read-only object lookup in the deploy
      clone. If the commit is not there yet, stop (commit_not_present): wait for the Air's fast-forward.
@@ -16,9 +18,10 @@ Run by hand by lab-Claude, never automatically. Steps:
      the moving clone.
   4. sha256 of every pinned file (betangel_suite.pin.PINNED_FILES): written to pin/betangel-research.json
      with --bump (a pin bump, reviewed as a PR), otherwise checked against it (a fresh machine).
-  5. Rename the directory into place and chmod -R a-w it, after a pre-pass over the whole tree (also run
-     before step 4): a real directory outside the deploy clone, holding only directories, symlinks and
-     regular files with one link (deps_link_present), so no chmod can reach a clone file through a link.
+  5. Rename the directory into place, then chmod -R a-w it. A pre-pass over the whole tree runs before step 4
+     and again after the rename, before the first chmod: a real directory outside the deploy clone, holding only
+     directories, symlinks and regular files with one link (deps_link_present), so no chmod can reach a clone file
+     through a link.
 
 Every git call has protocol.allow=never (only the local file transport is allowed), no hooks, no user
 or system git config and no per-user attributes file, ignores replace refs and grafts (so merge-base judges
@@ -28,8 +31,11 @@ after them) and writes only under ~/.local/share/betangel-suite, this checkout's
 Nothing is ever written into ~/betangel-research: before any git call or mkdir, and again just before the
 clone, vendor refuses (research_clone_on_path) a deps root, pin directory or checkout that lies in the clone
 by name or by identity (roots.lies_in), and the guard refuses a partial clone path that does. A failure
-after the clone leaves the .partial directory for inspection; remove it by hand before running again
-(partial_exists).
+after the clone and before the rename leaves the .partial directory for inspection; remove it by hand before running
+again (partial_exists). A refusal after the rename (by the second pre-pass) leaves the renamed directory as it is,
+still writable (Nuance's re-review of #2, F10): a re-run checks it again and refuses the same way, and activate()
+reads only the pinned files, each refused unless it is a regular file with one link (pin_mismatch). Remove that
+directory by hand too.
 Output is codes and counts only. Standard library only; never imports betangel_research.
 """
 
@@ -209,13 +215,10 @@ def _make_read_only(tree, research, error):
 
 
 if __name__ == "__main__":
+    # bin/suite vendor is the only entry (Astra's review of #1, item 5). Run directly, this file armed the guard and ran
+    # main() without the launcher's checks, the run marker's among them, so it could vendor during a run. It refuses now,
+    # before it arms the guard, runs git or makes anything.
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from betangel_suite import errors, guard
-    try:
-        guard.arm("vendor")
-        errors.install_excepthooks()
-        os.umask(0o077)
-        sys.exit(main(sys.argv[1:]))
-    except errors.SuiteError as exc:
-        sys.stderr.write(errors.describe(exc) + "\n")
-        sys.exit(2)
+    from betangel_suite import errors
+    sys.stderr.write(errors.describe(errors.SuiteError("launcher_required")) + "\n")
+    sys.exit(2)
