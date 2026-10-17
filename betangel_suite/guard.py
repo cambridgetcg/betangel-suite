@@ -59,7 +59,10 @@ What the hook refuses, in every mode and phase:
        chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. The write roots are the state
        root in every mode; the suite root only in engine mode, and only while roots.STATE_ROOT_AGREED is
        True; and in vendor mode also the share directory and this checkout's pin/. So the test runner
-       never writes under ~/betangel-data, whatever the flag says: its tests use temporary HOMEs. While
+       itself never writes under ~/betangel-data, whatever the flag says. Its children are another matter
+       (Nuance's re-review of #2, F2): a launcher child arms its own guard from the HOME it is given, so the
+       runner checks that HOME when it starts one (runner_argv_ok), and an interpreter child that does not
+       import betangel_suite is unguarded, so keeping it in its temporary HOME is conduct. While
        the flag is False a write under ~/betangel-data is refused as state_root_not_agreed, judged on the
        path text alone. A relative path in a write open is refused too: the open event does not say which dir_fd it
        is relative to (the other events do, and a dir_fd is resolved with F_GETPATH). The roots check
@@ -110,8 +113,11 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
   test    the test runner never seals. It may start /opt/homebrew/bin/python3.13 or 3.11 (or this
           interpreter) with -I -S -B, /bin/sh on this checkout's bin/suite, and /usr/bin/git only as
           git -C <dir under TMPDIR> [-c <test identity key>=...] <local subcommand> with relative operands,
-          no user or system git config and no other GIT_* variable (runner_git_ok). Tests of the engine
-          policy run in fresh engine-mode subprocesses, because a hook cannot be taken back.
+          no user or system git config and no other GIT_* variable (runner_git_ok). A launcher child
+          (bin/suite, or an interpreter running _launch.py) needs an explicit environment whose HOME, roots
+          under it and TMPDIR stay out of, and do not contain, the runner's data home, judged by realpath and
+          (st_dev, st_ino) (_launcher_env_ok). Tests of the engine policy run in fresh engine-mode
+          subprocesses, because a hook cannot be taken back.
 
 Every child must keep BETANGEL_BETFAIR_FORBID_NETWORK=1 and carry no stray BETFAIR variable.
 
@@ -147,6 +153,7 @@ ALLOWED_VERSIONS = ((3, 11), (3, 13))                # I-14; bin/_launch.py hold
 MODES = ("engine", "test", "vendor")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LAUNCHER = os.path.join(REPO_ROOT, "bin", "suite")
+LAUNCH_SCRIPT_NAME = "_launch.py"                   # bin/_launch.py, which bin/suite runs
 GIT = "/usr/bin/git"
 OPEN = "/usr/bin/open"
 SEARCH_DIRS = ("/usr/bin", "/bin")                   # where a bare program name may be found
@@ -767,7 +774,7 @@ def _check_spawn(state, event, args):
         if event != "subprocess.Popen" or not all(entry in SEARCH_DIRS for entry in search.split(os.pathsep)):
             raise GuardRefusal("subprocess_refused")
     if state.mode == "test":
-        if runner_argv_ok(argv, names, state.interpreters, LAUNCHER, state.tmp_root):
+        if runner_argv_ok(argv, names, state.interpreters, LAUNCHER, state.tmp_root, state.home):
             return
     elif not state.sealed:
         if state.mode == "engine" and engine_argv_ok(argv, state.roots, state.ports):
@@ -835,13 +842,52 @@ def vendor_argv_ok(argv, env, research, deps_root, home):
     return False
 
 
-def runner_argv_ok(argv, env, interpreters, launcher, tmp_root):
-    """What the test runner may start: isolated interpreters, this checkout's launcher, and local git."""
+def runner_argv_ok(argv, env, interpreters, launcher, tmp_root, home):
+    """What the test runner may start: isolated interpreters, this checkout's launcher, and local git.
+
+    A launcher child, /bin/sh on bin/suite or an interpreter running a script named _launch.py (bin/_launch.py, as
+    tests/test_launcher.py starts it), arms its own guard from the HOME it is given, so its environment must pass
+    _launcher_env_ok against home, the runner's own HOME (Nuance's re-review of #2, F2). Other interpreter children
+    may inherit this process's environment (env None): a nested test child does, and one that does not import
+    betangel_suite is unguarded anyway (the limits in this module's docstring).
+    """
     if argv[0] in interpreters:
-        return argv[1:4] == ["-I", "-S", "-B"]
+        if argv[1:4] != ["-I", "-S", "-B"]:
+            return False
+        return not (len(argv) > 4 and os.path.basename(argv[4]) == LAUNCH_SCRIPT_NAME) or _launcher_env_ok(env, home)
     if argv[0] == "/bin/sh":
-        return len(argv) >= 2 and argv[1] == launcher
+        return len(argv) >= 2 and argv[1] == launcher and _launcher_env_ok(env, home)
     return argv[0] == GIT and runner_git_ok(argv, env, tmp_root)
+
+
+def _launcher_env_ok(env, home):
+    """A test-runner launcher child's environment (Nuance's re-review of #2, F2): explicit, with an absolute HOME none
+    of whose roots, nor its TMPDIR or SQLITE_TMPDIR, equals, lies in or contains the runner's data home.
+
+    env None would hand the child this process's HOME, the real one under `bin/suite test`, and an engine-mode child
+    armed with it writes the real suite root; a child whose HOME lies in the data home puts its own state root there.
+    The child's guard cannot see either: it judges its roots against its own HOME's data home. So the runner judges
+    them against its own: HOME itself, HOME/betangel-data, the state and share roots under HOME, and TMPDIR, each by
+    text, realpath and (st_dev, st_ino) (roots.overlaps_data_home, stat calls only), so a firmlink, another case,
+    "..", "//" or a link on any of them (HOME/betangel-data or HOME/.local linked into the data home, say) gives the
+    same answer as the plain spelling. False when that cannot be judged.
+    """
+    if env is None:
+        return False
+    child = env.get("HOME", "")
+    if not isinstance(child, str) or not os.path.isabs(child) or "\0" in child:
+        return False
+    paths = [child, roots.data_home(child), roots.state_dir(child), roots.share_dir(child)]
+    for key in ("TMPDIR", "SQLITE_TMPDIR"):
+        value = env.get(key)
+        if value is not None:
+            if not isinstance(value, str) or not os.path.isabs(value) or "\0" in value:
+                return False
+            paths.append(value)
+    try:
+        return not any(roots.overlaps_data_home(path, home) for path in paths)
+    except SuiteError:
+        return False
 
 
 def runner_git_ok(argv, env, tmp_root):

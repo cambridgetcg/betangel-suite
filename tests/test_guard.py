@@ -1030,14 +1030,26 @@ results["partial_made"] = os.path.lexists(partial)
 
     def test_test_runner_argv_shapes(self):
         interpreters = frozenset(guard.TEST_INTERPRETERS)
+        launch_env = dict(self.GIT_ENV, HOME=self.TMP + "/home-x/home")     # a temporary HOME, as tests give one
 
-        def ok(argv):
-            return guard.runner_argv_ok(argv, self.GIT_ENV, interpreters, guard.LAUNCHER, self.TMP)
+        def ok(argv, env=self.GIT_ENV):
+            return guard.runner_argv_ok(argv, env, interpreters, guard.LAUNCHER, self.TMP, "/h")
 
         self.assertTrue(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", "-c", "pass"]))
+        self.assertTrue(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", "-c", "pass"], None))
         self.assertFalse(ok(["/opt/homebrew/bin/python3.13", "-c", "pass"]))
         self.assertFalse(ok(["/opt/homebrew/bin/python3", "-I", "-S", "-B", "-c", "pass"]))
-        self.assertTrue(ok(["/bin/sh", guard.LAUNCHER, "selfcheck"]))
+        self.assertTrue(ok(["/bin/sh", guard.LAUNCHER, "selfcheck"], launch_env))
+        self.assertTrue(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", ROOT + "/bin/_launch.py", "selfcheck"],
+                           launch_env))
+        # A launcher child needs an explicit environment whose HOME keeps it out of the runner's data home (Nuance's
+        # re-review of #2, F2; the hook-level cases are in test_launcher_children_keep_out_of_the_runners_data_home).
+        for env in (None, self.GIT_ENV, dict(launch_env, HOME="relative"), dict(launch_env, HOME="/h"),
+                    dict(launch_env, HOME="/h/betangel-data/x"), dict(launch_env, HOME="/"),
+                    dict(launch_env, TMPDIR="/h/betangel-data/tmp")):
+            self.assertFalse(ok(["/bin/sh", guard.LAUNCHER, "selfcheck"], env), env)
+            self.assertFalse(ok(["/opt/homebrew/bin/python3.13", "-I", "-S", "-B", "bin/_launch.py", "selfcheck"], env),
+                             env)
         self.assertFalse(ok(["/bin/sh", "-c", "true"]))
         self.assertTrue(ok(["/usr/bin/git", "-C", self.REPO, "rev-parse", "HEAD"]))
         self.assertFalse(ok(["/usr/bin/git", "status"]))
@@ -1087,6 +1099,58 @@ results["partial_made"] = os.path.lexists(partial)
         with self.assertRaises(guard.GuardRefusal):     # the switch, but the user's git config
             subprocess.run([guard.GIT, "-C", home, "init", "-q"], env=child_env(home), capture_output=True, timeout=30)
         self.assertFalse(os.path.lexists(os.path.join(home, ".git")))
+
+    def test_launcher_children_keep_out_of_the_runners_data_home(self):
+        # Nuance's re-review of #2, F2: a child of the test runner started with env=None inherits the runner's HOME,
+        # the real one under bin/suite test, and an engine-mode child armed with it wrote suite.noindex. The child's
+        # own guard judges its roots against its own HOME, so the runner judges a launcher child's HOME, the roots
+        # under it and its TMPDIR against the runner's data home, by realpath and identity. Here a test-mode child
+        # with a temporary HOME plays the runner; every target is synthetic and inside the temporary tree.
+        runner = make_home(self)
+        data = roots.data_home(runner)
+        os.makedirs(os.path.join(data, "historic-pro"), mode=0o700)
+        os.makedirs(os.path.join(data, "lab-state", "state", "betangel-suite", "tmp"), mode=0o700)
+        inside = os.path.join(data, "inside")
+        os.makedirs(inside, mode=0o700)
+        control = make_home(self)
+        linked_data, linked_local = make_home(self), make_home(self)
+        os.symlink(data, roots.data_home(linked_data))                              # its betangel-data is the runner's
+        rmtree(os.path.join(linked_local, ".local"))
+        os.symlink(os.path.join(data, "lab-state"), os.path.join(linked_local, ".local"))  # its roots in the data home
+        alias = os.path.join(os.path.dirname(control), "alias")
+        os.symlink(runner, alias)
+        before = sorted(os.listdir(data))
+        homes = dict(("spelt_" + name, spelling) for name, spelling in spellings(runner).items())
+        homes.update(dotdot=os.path.join(runner, ".local", os.pardir), alias=alias, inside=inside, data_home=data,
+                     linked_data=linked_data, linked_local=linked_local)
+        envs = {name: child_env(spelled, TMPDIR=roots.tmp_dir("test", control),
+                                SQLITE_TMPDIR=roots.tmp_dir("test", control)) for name, spelled in homes.items()}
+        envs.update(tmpdir_in_data=child_env(control, TMPDIR=inside, SQLITE_TMPDIR=inside),
+                    no_home=child_env(control, HOME=None), relative_home=child_env(control, HOME="home"))
+        results = checks(self, runner, mode="test", setup="import subprocess, sys\n", body="""
+envs = %r
+script = os.path.join(os.path.dirname(guard.LAUNCHER), "_launch.py")
+def launch(argv, env):
+    result = subprocess.run(argv + ["no-such-command"], env=env, capture_output=True, text=True, timeout=60)
+    results["stderr"].add(result.stderr)
+results["stderr"] = set()
+for name, env in sorted(envs.items()):
+    attempt("sh:" + name, lambda: launch(["/bin/sh", guard.LAUNCHER], env))
+    attempt("py:" + name, lambda: launch([sys.executable, "-I", "-S", "-B", script], env))
+attempt("sh:inherited", lambda: launch(["/bin/sh", guard.LAUNCHER], None))
+attempt("py:inherited", lambda: launch([sys.executable, "-I", "-S", "-B", script], None))
+attempt("interpreter_inherits", lambda: subprocess.run([sys.executable, "-I", "-S", "-B", "-c", "pass"], check=True,
+                                                       timeout=60))
+results["stderr"] = sorted(results["stderr"])
+""" % dict(envs, control=child_env(control)))
+        expected = {"interpreter_inherits": "ok", "sh:control": "ok", "py:control": "ok",
+                    "stderr": ["refused:unknown_command\n"]}
+        for name in list(envs) + ["inherited"]:
+            expected.update({"sh:" + name: "subprocess_refused", "py:" + name: "subprocess_refused"})
+        self.assertEqual(results, expected)
+        self.assertEqual(sorted(os.listdir(data)), before)
+        self.assertEqual(sorted(os.listdir(os.path.join(data, "historic-pro"))), [])
+        self.assertFalse(os.path.lexists(roots.data_home(control)))
 
     def test_vendor_mode_refuses_other_git_commands(self):
         home = make_home(self)
