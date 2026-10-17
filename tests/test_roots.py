@@ -133,6 +133,39 @@ class WriterTests(unittest.TestCase):
         roots.ensure_dir(os.path.join(self.state, "x"), home_dir=self.home)
         self.assertEqual(mode(self.state), 0o700)
 
+    def test_a_directory_another_process_makes_meanwhile_is_judged_as_existing(self):
+        # Two commands started together in a new HOME both make the suite root's tmp/. The directory can appear after
+        # _make_dir's lstat and before its prospective path guard (which then said path_denied:already_exists: the
+        # flaky SignalTests run, round 4b), or after that guard and before mkdir. Either way it is now judged as an
+        # existing entry: kept and tightened to 0700 when it is a real directory, refused when it is a link.
+        real_guard = roots._path_guard
+        elsewhere = os.path.join(self.home, "elsewhere")
+        os.makedirs(elsewhere)
+
+        def other_process(target, when, make):
+            def guard(path, *, prospective):
+                if prospective and path == target and when == "before_guard":
+                    make(path)
+                real_guard(path, prospective=prospective)
+                if prospective and path == target and when == "before_mkdir":
+                    make(path)
+            return mock.patch.object(roots, "_path_guard", guard)
+
+        def make_directory(path):
+            os.mkdir(path)
+            os.chmod(path, 0o755)
+
+        for when in ("before_guard", "before_mkdir"):
+            with self.subTest(when):
+                target = os.path.join(self.state, when, "tmp")
+                with other_process(target, when, make_directory):
+                    self.assertEqual(roots.ensure_dir(target, home_dir=self.home), target)
+                self.assertEqual(mode(target), 0o700)
+                link = os.path.join(self.state, when, "linked")
+                with other_process(link, when, lambda path: os.symlink(elsewhere, path)):
+                    self.refused("symlink_refused", roots.ensure_dir, link)
+                self.assertEqual(os.listdir(elsewhere), [])
+
     def test_outside_the_roots(self):
         self.refused("write_outside_roots", roots.write_new, os.path.join(self.home, "x"), b"x")
         self.refused("write_outside_roots", roots.ensure_dir, os.path.join(self.home, ".local", "share", "x"))

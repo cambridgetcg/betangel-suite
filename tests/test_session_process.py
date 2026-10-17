@@ -173,6 +173,15 @@ class PipeChild:
         self._buffer = b""
         case.addCleanup(self.kill)
 
+    def wait_path(self, path, timeout=30.0):
+        """wait_path(path), but a child that exits first fails at once, with its exit status and redacted stderr."""
+        deadline = time.monotonic() + timeout
+        while not os.path.lexists(path):
+            if self.process.poll() is not None or time.monotonic() > deadline:
+                raise AssertionError("not created: %s (exit=%r stderr=%r)" % (
+                    os.path.basename(path), self.process.poll(), shape(self.stderr())[-300:]))
+            time.sleep(0.02)
+
     def press_enter(self):
         self.process.stdin.write(b"\n")
         self.process.stdin.flush()
@@ -390,7 +399,7 @@ class SignalTests(unittest.TestCase):
         hosting = PipeChild(self, home, SESSION % 1.5, name="ssh-host")
         attached = PipeChild(self, home, SESSION_ON_GO % {"name": "attach"}, name="ssh-attach")
         (port, _code), = hosting.wait_urls(1)                  # its signal handlers are installed by now
-        wait_path(os.path.join(roots.state_dir(home), "attach-ready"))
+        attached.wait_path(os.path.join(roots.state_dir(home), "attach-ready"))
         hosting.process.send_signal(signal.SIGHUP)             # the viewer left: pause, keep the session
         write_private(os.path.join(home, "attach-go"), "")      # a takeover within the 1.5 s grace
         (attached_port, _code), = attached.wait_urls(1)
