@@ -139,8 +139,8 @@ RULES = {
     "market_id": "Betfair market-id shape (1.1 or 1.2 then 8-9 digits); reserved 1.999 never matches",
     "event_id": "8-digit event or selection id shape outside the reserved 9xxxxxxx namespace",
     "member_path": "historical-data member path with a non-reserved event id",
-    "runner_table": "three or more rows of a capitalised name (after up to two number cells) and price columns, "
-                    "in any table rendering (|, box drawing, HTML cells, LaTeX &)",
+    "runner_table": "three or more rows of a capitalised name (after up to three number, time or date cells) and price "
+                    "columns, in any table rendering (|, box drawing, HTML cells, LaTeX &)",
     "runner_record": "runner-name field holding a non-synthetic name",
     "stream_record": "exchange-stream runner change (ladder, traded or ltp values) with a non-reserved runner id",
     "data_path_text": "text naming a member or archive path under betangel-data",
@@ -582,7 +582,9 @@ def _plain_findings(lines) -> list:
 # is not a list and is not counted: alone it is too short for the second test either way.
 # Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
 # patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
-# characters (groups of 8, or a list whose first piece is that short), and lists split by commas.
+# characters (groups of 8, or a list whose first piece is that short), and lists split by commas;
+# \xNN and octal escapes outside a quoted literal (printf's unquoted argument), and literals of
+# three or fewer octal escapes and no \xNN each, as base64 in short pieces is.
 # Not flagged (known gaps): in lists of hashes (up to 64 whole lines of exactly 40 or 64 digits in
 # one file or message, outside a decoded run), binary data with no signature above and no zlib
 # stream at the start of a line (raw deflate, a compressed file without its header, encrypted
