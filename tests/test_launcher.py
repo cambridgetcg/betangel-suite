@@ -326,7 +326,7 @@ class ParallelRunnerTests(unittest.TestCase):
                                   stderr=subprocess.PIPE)
         self.addCleanup(lambda: worker.poll() is None and (worker.kill(), worker.communicate()))
         worker.stdin.write(b"tests.test_runmarker\n")
-        worker.stdin.close()
+        worker.stdin.flush()                    # communicate() closes stdin below (3.11's flushes it first)
         deadline = time.monotonic() + 60
         while not os.path.exists(os.path.join(tmp, "probe-1-started")):
             if worker.poll() is not None or time.monotonic() > deadline:
