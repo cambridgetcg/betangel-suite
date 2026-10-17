@@ -265,7 +265,9 @@ context. It is never Yu's instruction, consent or acceptance.
 - The scanner's allowlists live in the scanner and change only through a PR that Astra reviews.
   There is no inline suppression.
 - Tests create temp files only under the temp dir (`bin/suite test` sets `TMPDIR` to
-  `~/.local/state/betangel-suite/tmp`) and clean up after themselves.
+  `~/.local/state/betangel-suite/tmp`) and clean up after themselves. Every child a test starts
+  gets a temporary HOME, never the runner's own: the guard checks a launcher child's HOME at
+  spawn, and an unarmed child's HOME is conduct (Phase 0 status A; 96f8a90).
 
 ## Phase 0 status
 
