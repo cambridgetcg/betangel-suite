@@ -93,8 +93,8 @@ context. It is never Yu's instruction, consent or acceptance.
 - The suite is viewed in a Safari Private window, on both machines (Q-Y11, answered by Yu on
   2026-10-17; DESIGN.md 5.5). The lab's Safari is to hold no Betfair session: signing out of
   historicdata.betfair.com there, and deleting saved betfair.com passwords and betfair.com site
-  data, was agreed by Yu on 2026-10-17; Yu to do, by hand (DESIGN.md 8.6). Agents never touch
-  browser data or passwords.
+  data, was agreed by Yu on 2026-10-17; Yu to do, by hand, and not confirmed done (DESIGN.md
+  8.6). Agents never touch browser data or passwords.
 - Keep load modest on the shared 8 GB M1: tests run under `nice -n 10`, and no test tier starts
   during an announced Nuance run. `bin/suite test` refuses while the run marker exists, and a run
   already going stops before its next test once the marker appears; the test then running
@@ -244,8 +244,12 @@ context. It is never Yu's instruction, consent or acceptance.
   `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --range origin/<branch>..HEAD`.
   The range trusts `origin/<branch>`, a tracking ref that is stale until the fetch: a commit
   removed from the remote but still named by it would be left out. `tools/pre-push` does not
-  trust tracking refs (above), so the range is not what it does. Output is rule codes, line
-  numbers and entry numbers only, never a path (`--list-rules` explains each code).
+  trust tracking refs (above), so the range is not what it does. The range reads commits only,
+  never a tag object, so before pushing an annotated tag `T`, give `--push` the line git's
+  pre-push hook would get:
+  `printf 'refs/tags/T %s refs/tags/T %040d\n' "$(git rev-parse T)" 0 | /opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --push origin`
+  (lab-Claude's round-5 review; DESIGN.md 5.6). Output is rule codes, line numbers and entry
+  numbers only, never a path (`--list-rules` explains each code).
 - Scan PR descriptions, review replies and other outbound text before posting: write the text to
   a scratch file and run
   `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --root <scratch dir> <file>`
@@ -266,8 +270,9 @@ context. It is never Yu's instruction, consent or acceptance.
   There is no inline suppression.
 - Tests create temp files only under the temp dir (`bin/suite test` sets `TMPDIR` to
   `~/.local/state/betangel-suite/tmp`) and clean up after themselves. Every child a test starts
-  gets a temporary HOME, never the runner's own: the guard checks a launcher child's HOME at
-  spawn, and an unarmed child's HOME is conduct (Phase 0 status A; 96f8a90).
+  gets a temporary HOME, never the runner's own: the guard checks the HOME of every interpreter
+  and `bin/suite` child at spawn, and what a child that never arms the guard does is conduct
+  (Phase 0 status A; 96f8a90, 8e751d6).
 
 ## Phase 0 status
 
@@ -308,11 +313,13 @@ reviewed PR changes them.
     by text, realpath and identity, stat calls only. It does not cover `os.open` with a `dir_fd`
     and a relative path, descriptors opened before `arm()` or inherited, hard links made
     elsewhere, or stat-level calls. Engine mode is unchanged: Phase 1a reads the data roots.
-  - The test runner's launcher children (`bin/suite`, or an interpreter running `_launch.py`)
-    need an explicit environment whose HOME, the roots under it and `TMPDIR` keep out of the
-    runner's data home, judged by realpath and identity at spawn (`subprocess_refused`; Nuance's
-    re-review of #2, F2; 96f8a90). An interpreter child that does not arm the guard is
-    unguarded, so tests give every child a temporary HOME; that is conduct. The runner's git
+  - Every interpreter child of the test runner, whatever follows `-I -S -B`, and every
+    `bin/suite` child need an explicit environment whose HOME, the roots under it and `TMPDIR`
+    keep out of the runner's data home, judged by realpath and identity at spawn
+    (`subprocess_refused`; Nuance's re-review of #2, F2; 96f8a90). Lab-Claude's round-5 review
+    found only launcher children checked, so `-c` code that arms the guard itself, the shape F2
+    reported, still armed engine mode with the runner's HOME; every such child is checked now
+    (8e751d6). A child that never arms the guard is unguarded: conduct. The runner's git
     gets an exact environment allowlist; `DEVELOPER_DIR` and any other key outside it are refused
     (dd95582).
   - `guard.arm` refuses at start a write root or `TMPDIR` that the file system puts in, around or
@@ -349,14 +356,17 @@ reviewed PR changes them.
     layout, so a ref reverses by enumeration (Nuance's PR #1 review, item 3, and PR #2 review,
     item 14). So the salt is on rule 5's never-read list, and lab-Claude's file tools deny it
     (DESIGN.md Q-Y9).
-  - It is made once and never regenerated: every hash already recorded would stop matching
-    (lab-Claude's decision of 2026-10-17, as Nuance recommends; 8288c76). At first provisioning
-    the salt is written and synced with its directory, and only then is a separate marker
-    written, `~/.local/state/betangel-suite/salt-provisioned` (0600, empty, not named
-    `install-salt*`). Once the marker exists, a missing, unreadable or wrong-length salt is
-    refused (`salt_missing`) and no new one is made. Restoring a lost salt is Yu's; no agent
+  - It is made once and, while its marker exists, never regenerated: every hash already recorded
+    would stop matching (lab-Claude's decision of 2026-10-17, as Nuance recommends; 8288c76). At
+    first provisioning the salt is written and synced with its directory, and only then is a
+    separate marker written, `~/.local/state/betangel-suite/salt-provisioned` (0600, empty, not
+    named `install-salt*`). Once the marker exists, a missing, unreadable or wrong-length salt
+    is refused (`salt_missing`) and no new one is made. Restoring a lost salt is Yu's; no agent
     reads, copies or restores it. A salt from before the marker gets its marker on its first
-    read; until then a lost salt is still made again (DESIGN.md 9.2 item 9).
+    read; until then a lost salt is still made again (DESIGN.md 9.2 item 9). The marker sits
+    beside the salt, so losing both together (the state directory, say) also looks like a fresh
+    install, which the marker cannot catch: a new salt is made, and the hashes already recorded
+    stop matching.
   - **The move is withdrawn.** Lab-Claude had proposed moving it into `suite.noindex`, and asked
     Nuance on 2026-10-17 what "Move the salt, never regenerate it" (PR #1 review, item 3) meant.
     Nuance recommended not moving it: "Yu's deny already covers it as well as a `~/betangel-data`
