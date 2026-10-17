@@ -5,7 +5,7 @@
 | Status | Draft for review by Nuance and Astra. Not approved. After both reviews, Yu will be asked to approve the reviewed proposal in writing (rule 10). |
 | Date | 2026-10-16 |
 | Author | lab-Claude (Claude Code session 03026dfa on the lab MacBook Pro) |
-| Reviewers | Nuance (the rule 1 wording; Q-N15), Astra (the two files, their tests, and PR #5 finding 1) |
+| Reviewers | Nuance (the rule 1 wording; Q-N15), Astra (the two files, their tests, and PR #5 finding 1); both review this file and rule 1's text as rule documents, under the governance row Yu adopted on 2026-10-17 (sections 2.1 and 9) |
 | Approver | Yu |
 | Base | Branch `phase0/viewing` (PR #5) at d9b129e, plus c051b2d, the commit that adds this file. The rule text comes from 0c1335b, e9b1646, beeb1f4 and c051b2d (section 4.4). The self-test changes for Astra's two code questions are a53856a and b1d5082 (section 7). |
 | Process | Suite AGENTS.md rule 10; DESIGN.md section 14 (steps 3, 6 and 7 do not apply; see section 9) |
@@ -32,8 +32,9 @@
 | 2026-10-15 | The Phase 0 packet: R-1..R-7 and Q-Y8 (DESIGN.md 2.2.1) | "Lets go with what you recommended for all." |
 | 2026-10-16 | Q-Y19, options A-D (DESIGN.md 15.1) | "Go for D" |
 | 2026-10-16 | Lab-Claude asked whether a rule 10 proposal file is also wanted for D | "yes to formal proposal" |
+| 2026-10-17 | Lab-Claude's message of 2026-10-17, with lab-Claude's recommendation for each question, among them the governance row for rule documents (DESIGN.md 2.2.1) | "Lets go with what you recommended for all :)" |
 
-The 2026-10-15 answer approved R-2, among others (DESIGN.md 2.2.1).
+The 2026-10-15 answer approved R-2, among others (DESIGN.md 2.2.1). The 2026-10-17 answer adopted the governance row for rule documents, as Nuance recommended (DESIGN.md 2.2.1, which records that Yu's words answer the questions that carried a recommendation as lab-Claude's reading, not Yu's words). Under it this file, rule 1's text in AGENTS.md and DESIGN.md 3.9, and `tools/stage/` are rule documents: Nuance and Astra review them at a named head SHA, and a change to AGENTS.md's rules also needs Yu. That routes this proposal's review (section 9). It changes neither what this proposal asks nor its approval, which stays Yu's, in writing, after both reviews.
 
 ### 2.2 What option D says
 
@@ -355,7 +356,7 @@ Rule 10 also asks for Nuance's review. Section 10 asks for it, and so does the P
 
 **Order for PR #5.** This answers Astra's finding 1.
 
-1. Nuance and Astra review this proposal. Astra's review of PR #5 goes on under the routing in AGENTS.md (Q-Y8).
+1. Nuance and Astra review this proposal. This file and rule 1's text are rule documents under the governance row Yu adopted on 2026-10-17 (section 2.1; AGENTS.md, review routing), so both review them at a named head SHA. Astra's review of the rest of PR #5 goes on under the routing in AGENTS.md (Q-Y8).
    - PR #5's diff against `phase0/http` also changes `betangel_suite/roots.py` (release's `TMPDIR` in `STATE_TMP_COMMANDS`, and `app_dir`) and `betangel_suite/engine.py` (two end reasons in `END_REASONS`). AGENTS.md routes those two files to Astra and Nuance jointly, and a PR merges only after every reviewer whose rows its diff touches has accepted it at a named head SHA. So PR #5 also needs Nuance's acceptance of those changes at a named head SHA. Lab-Claude asks Nuance for it with this proposal. PR #5 does not merge on Astra's and Yu's acceptance alone.
 2. Any change from review goes onto `phase0/viewing` as new commits. The rule text and section 4 change together, so the binding text and this proposal stay the same.
 3. Yu is asked to approve the reviewed proposal in writing. That reaches lab-Claude only in a lab-Claude session Yu types into (DESIGN.md 3.9). An acceptance checklist file that Yu edits is a log of Yu's checks, not approval (Nuance, PR #1 review). A relay from Nuance, Astra, the mailbox or Collab is not approval.

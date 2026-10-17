@@ -26,9 +26,11 @@ accidents (any process running as `user` can still change it), not from a workin
 come only from GitHub (step 5). Below, `R` means `~/.local/share/betangel-suite/app/current/tools/stage` on
 the lab.
 
-One more check comes before the first viewing (DESIGN.md 8.6; Nuance's PR #1 review, item 7): the Air's TCP
-loopback listeners are listed with `netstat`. The suite itself never listens on the Air, but a tampered page
-at `127.0.0.1:8765` could send blind requests to other Air services that do.
+One more check comes before each `ssh lab-suite` (DESIGN.md 8.6; Nuance's PR #1 review, item 7): the Air's
+TCP loopback listeners are listed with `netstat`. Lab-Claude proposes that Nuance runs it on the Air; that is
+asked of Nuance, not answered. During R-2 the suite's only listener on the Air is the `ssh -L` forward on
+`127.0.0.1:8765`, behind the token and the Host and Origin checks (Nuance's PR #1 re-review, finding 7), but a
+tampered page at `127.0.0.1:8765` could send blind requests to other Air services that listen on loopback.
 
 ## Step 1 (lab): the `suite` alias
 

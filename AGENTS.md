@@ -420,9 +420,10 @@ reviewed PR changes them.
 
   The engine still replays synthetic markets only and refuses every configured data root
   (`synthetic_only`), from a release copy too. There is no data-root reading and no paper trading
-  yet. No real release copy exists yet. Making one, with `bin/suite release <merge-sha>` in the clean
-  main checkout after review and a `git fetch`, is Yu's decision (DESIGN.md Q-Y18). `catalogue`, `selfcheck`,
-  `diagnose` and `ledger-summary` are not built; they refuse with code `not_implemented` and exit 2.
+  yet. No real release copy exists yet. Making one, with `bin/suite release <merge-sha>` in the
+  clean main checkout after review and a `git fetch`, is Yu's decision (DESIGN.md Q-Y18).
+  `catalogue`, `selfcheck`, `diagnose` and `ledger-summary` are not built; they refuse with code
+  `not_implemented` and exit 2.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE` (Q-N3: agreed by Nuance in
   Nuance's PR #4 review; Nuance's PR #2 review makes the marker half conditional again, on
   Nuance's item 6; Nuance's re-review of #2 agrees it as built at 823c194, pending F4 and F5,
@@ -453,9 +454,10 @@ reviewed PR changes them.
     4b, and holds it until it exits, attached or hosting. Since e9729a6 (round 4b) an attached
     `ssh-session` checks the marker before every poll and leaves (`ended reason=run_marker`, exit
     2) once the poll under way has finished: about 25 s at worst, so it lets the lock go within
-    the 35 s bound. A session whose engine went in that poll leaves as before (`ended
-    reason=engine_gone`, exit 0). `open`'s attach path checks the marker again after the
-    takeover's reply and hands on no URL (on phase0/http too since round 5, e9273e7).
+    the 35 s bound. A session whose engine went in that poll, or whose viewer was superseded or
+    went away, leaves as before (`ended reason=engine_gone` or `ended reason=superseded`, or
+    nothing if the viewer went away; exit 0). `open`'s attach path checks the marker again
+    after the takeover's reply and hands on no URL (on phase0/http too since round 5, e9273e7).
     Their I-17 tests came with e9729a6 (DESIGN.md 6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
     `TMPDIR` (lab-Claude's decision; DESIGN.md 6.8 gives the reasons). Nuance agreed it on four
