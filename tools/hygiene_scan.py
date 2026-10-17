@@ -1152,7 +1152,11 @@ def _staged_entries():
 # scanned; a file that one commit adds and a later one deletes passed every tree scan.
 
 _OBJECT_ID = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
-MAX_OBJECT_BYTES = 2 * MAX_FILE_BYTES  # a commit or tag object read whole: headers and message
+# A commit or tag object is read whole, headers and message, and one any larger is refused (object_oversize). The
+# reader keeps only the first bytes of a larger object, and a header that filled them (a padded author or tagger line)
+# left no blank line in what was kept, so its message read as empty and a dirty message passed (Astra's re-review of
+# #2, new finding 2).
+MAX_OBJECT_BYTES = 2 * MAX_FILE_BYTES
 # git's pre-push lines, about 8,900 ref updates. More is refused (push_input), never cut short: a cut at a line end
 # would drop every later ref, and the push would publish commits no scan saw (round-4 review).
 MAX_PUSH_INPUT = 1 << 20
@@ -1166,9 +1170,18 @@ def _message_findings(message: bytes) -> list:
 
 
 def _message_of(data: bytes) -> bytes:
-    """The message of a raw commit or tag object: everything after the first blank line."""
+    """The message of a whole raw commit or tag object: everything after the first blank line."""
     _headers, blank, message = data.partition(b"\n\n")
     return message if blank else b""
+
+
+def _read_metadata(objects, sha: str):
+    """(type, data) of a commit or tag object, read whole: refused (object_oversize) by the size git gives, before any
+    of it is parsed, when it is over MAX_OBJECT_BYTES. Never a prefix, whose message would be cut or missing."""
+    kind, size, data = objects.read(sha.encode(), MAX_OBJECT_BYTES, 0)
+    if size > MAX_OBJECT_BYTES or len(data) != size:
+        raise Refusal("object_oversize")
+    return kind, data
 
 
 def _read_message_file(path: str) -> bytes:
@@ -1235,7 +1248,7 @@ def _peel_tags(objects: _Objects, tips) -> list:
     for sha in tips:
         while sha not in seen:
             seen.add(sha)
-            kind, _size, data = objects.read(sha.encode(), MAX_OBJECT_BYTES, MAX_OBJECT_BYTES)
+            kind, data = _read_metadata(objects, sha)
             if kind != b"tag":
                 if kind != b"commit":
                     raise Refusal("push_object_not_commit")
@@ -1282,7 +1295,7 @@ def _history_entries(revisions, tips=()):
             return
         commits = _git(ROOT, "rev-list", "--reverse", "--topo-order", *revisions).decode().split()
         for sha in commits:
-            kind, _size, data = objects.read(sha.encode(), MAX_OBJECT_BYTES, MAX_OBJECT_BYTES)
+            kind, data = _read_metadata(objects, sha)
             if kind != b"commit":
                 raise Refusal("git_object")
             yield "", _message_findings(_message_of(data)), f"commit {sha} message"

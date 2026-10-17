@@ -1668,6 +1668,34 @@ class HistoryTests(_RepoCase):
                 self.assertEqual(rc, 1, out)
                 self.assertIn("market_id", self.codes(out))
 
+    def test_a_commit_or_tag_over_the_parsing_budget_is_refused(self):
+        # Astra's re-review of #2, new finding 2: a commit or tag object was read up to 1 MiB, and an author or tagger
+        # line that filled it left no blank line in what was read, so the message read as empty and passed. Such an
+        # object is refused now, by the size git gives; one just under the budget is still read whole.
+        base = self.commit("base")
+        tree = self.rev(base + "^{tree}")
+        stamp = "Synthetic Tester <tester@example.invalid> 1700000000 +0000"
+        budget = 2 * 512 * 1024                                          # the scanner's MAX_OBJECT_BYTES
+        made = {}
+        for label, pad in (("over", budget), ("under", budget // 2)):
+            person = f"Synthetic {'a' * pad} <tester@example.invalid> 1700000000 +0000"
+            commit = self.loose("commit", f"tree {tree}\nparent {base}\nauthor {person}\ncommitter {stamp}\n\n"
+                                          f"note {MARKET_2015}\n".encode())
+            tag = self.loose("tag", f"object {base}\ntype commit\ntag v-{label}\ntagger {person}\n\n"
+                                    f"tag {MARKET_2015}\n".encode())
+            made[label] = (commit, tag)
+        over_commit, over_tag = made["over"]
+        for args, stdin in ((("--range", f"{base}..{over_commit}"), b""),
+                            (("--push", "origin"), f"refs/heads/main {over_commit} refs/heads/main {base}\n".encode()),
+                            (("--push", "origin"), f"refs/tags/v-over {over_tag} refs/tags/v-over {ZERO}\n".encode())):
+            with self.subTest(args=args, budget="over"):
+                rc, out = self.scan(*args, stdin=stdin)
+                self.assertEqual((rc, out.strip()), (2, "hygiene_scan: refused:object_oversize"))
+        under_commit, under_tag = made["under"]
+        self.assert_found((("--range", f"{base}..{under_commit}"), b""),
+                          (("--push", "origin"), f"refs/heads/main {under_commit} refs/heads/main {base}\n".encode()),
+                          (("--push", "origin"), f"refs/tags/v-under {under_tag} refs/tags/v-under {ZERO}\n".encode()))
+
     def test_push_input_past_the_limit_is_refused_not_cut_short(self):
         # Round-4 review: only the first 1 MiB of git's pre-push lines was read. A cut at a line end dropped every
         # later ref, so a push of about 8,900 refs or more could publish commits that no scan saw.
