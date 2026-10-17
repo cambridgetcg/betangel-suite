@@ -16,7 +16,8 @@ Lab-Claude staged these files and never runs them. **Yu runs every step.** The l
 | `suite-alias.zsh` | lab | The `suite` alias, which points at the release copy |
 
 **Before you start.** A reviewed release must be installed on the lab. You make the first one in the clean
-main checkout: `cd /Users/user/betangel-suite && bin/suite release <tag>` creates
+main checkout: `cd /Users/user/betangel-suite && bin/suite release <merge-sha>`, with the full SHA of the
+reviewed merge commit on main (the merged PR's page shows it; a tag or short id is refused), creates
 `~/.local/share/betangel-suite/app/current/` (the `suite` alias from step 1 works only once it exists, and a
 release copy cannot make releases itself). The setup script refuses without one, because the key's forced
 command runs that copy. Use the lab files from the release copy, which is reviewed and read-only against
