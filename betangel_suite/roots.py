@@ -206,8 +206,8 @@ def check_placement(path, home_dir=None):
 def overlaps_data_home(path, home_dir=None):
     """True when path equals, lies in or contains the data home of home_dir, by text, realpath or identity, as
     check_placement judges every path outside the suite root; SuiteError(root_overlaps_data_home) when that cannot be
-    judged. Stat calls only. The guard also judges a test-runner launcher child's HOME and roots with it, against the
-    runner's own data home (guard._launcher_env_ok; Nuance's re-review of #2, F2)."""
+    judged. Stat calls only. The guard also judges each test-runner child's HOME and roots with it, against the
+    runner's own data home (guard._runner_child_env_ok; Nuance's re-review of #2, F2)."""
     return _overlaps_data_home(os.path.normpath(path), home_dir)
 
 

@@ -1972,7 +1972,10 @@ class OwnFilesTests(unittest.TestCase):
                  "tests/test_hygiene.py",
                  ".gitignore", "AGENTS.md", "docs/data-handling.md", "docs/DESIGN.md"]
         present = [n for n in names if (REPO / n).is_file()]
-        env = {"PATH": "/usr/bin:/bin", "LANG": "en_GB.UTF-8", **FORBID}
+        # The test runner starts no interpreter without a HOME of its own (guard.runner_argv_ok): a temporary one.
+        home = tempfile.mkdtemp(prefix="home-")
+        self.addCleanup(shutil.rmtree, home)
+        env = {"PATH": "/usr/bin:/bin", "LANG": "en_GB.UTF-8", "HOME": home, **FORBID}
         proc = subprocess.run(
             [sys.executable, "-I", "-S", "-B", str(SCANNER), "--root", str(REPO), *present],
             env=env, capture_output=True, timeout=120)
@@ -1982,7 +1985,8 @@ class OwnFilesTests(unittest.TestCase):
     def test_whole_checkout_passes(self):
         # I-9 for every file of this checkout, tracked or not (not ignored): the core package, bin/, pin/
         # and every test, not only the governance files above. Tree mode lists files with git ls-files. The child
-        # gets a temporary HOME, never the runner's own (Nuance's re-review of #2, F2): it is unguarded.
+        # gets a temporary HOME, never the runner's own (Nuance's re-review of #2, F2): the runner's guard refuses
+        # that, and the scanner, which never imports betangel_suite, is unguarded.
         home = tempfile.mkdtemp(prefix="home-")
         self.addCleanup(shutil.rmtree, home)
         env = {"PATH": "/usr/bin:/bin", "LANG": "en_GB.UTF-8", "HOME": home,
