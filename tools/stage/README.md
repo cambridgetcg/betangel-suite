@@ -25,6 +25,10 @@ accidents (any process running as `user` can still change it), not from a workin
 come only from GitHub (step 5). Below, `R` means `~/.local/share/betangel-suite/app/current/tools/stage` on
 the lab.
 
+One more check comes before the first viewing (DESIGN.md 8.6; Nuance's PR #1 review, item 7): the Air's TCP
+loopback listeners are listed with `netstat`. The suite itself never listens on the Air, but a tampered page
+at `127.0.0.1:8765` could send blind requests to other Air services that do.
+
 ## Step 1 (lab): the `suite` alias
 
 Add the alias line from `R/suite-alias.zsh` to `~/.zshrc`:
@@ -175,9 +179,11 @@ Edit it so lab-Claude knows about the new line. For example:
 3. In Safari, choose File > New Private Window (Shift-Cmd-N), paste the URL and press Return. Do not
    Cmd-click the URL in Terminal, because that opens a normal window.
 4. For a fresh code, for example after reloading the page, press Return in the ssh window.
-5. When you are done, close the tab and the ssh window. The engine pauses. If nothing takes the session
-   over within 10 minutes, the engine stops (the session ends as abandoned). A new `ssh lab-suite` within
-   those 10 minutes takes the session over, and the same 10 minutes apply again when you close that one.
+5. When you are done, close the tab and the ssh window. The engine pauses. Close them rather than only
+   shutting the lid: a silent disconnect (lid shut, Wi-Fi gone) pauses the engine only within about
+   3 minutes today (DESIGN.md 8.6). If nothing takes the session over within 10 minutes, the engine
+   stops (the session ends as abandoned). A new `ssh lab-suite` within those 10 minutes takes the
+   session over, and the same 10 minutes apply again when you close that one.
    A `suite open` on the lab also takes it over, but then the session is the lab screen's and never ends
    as abandoned: it ends with `suite stop` on the lab, the 4-hour maximum, or a Nuance run starting (the
    run marker). DESIGN.md 8.6 item 2 lists every way it ends.
@@ -240,4 +246,4 @@ Then, on the Air:
 | `sshd_keyword_conflict`, `sshd_include_*`, `dropin_differs` | The lab's sshd configuration is not what the script expects. Nothing was changed. Ask lab-Claude. |
 | `home_mismatch`, `run_as_root` | Run it as `user` on the lab, without sudo in front. |
 | `viewer_port_mismatch` | Printed by `ssh lab-suite`, which serves and attaches only on port 8765 (the key's `permitopen`). The lab's suite `config.json` sets another `port`, or an engine started with `--port` is running. Nothing was started or taken over. Run `suite stop` on the lab, or set the port back to 8765. |
-| `air_config_*` | Printed by the self-test on the Air, before any login: `ssh -G` shows another value for a line of the lab-suite block that it checks, another key or another forward (step 5). If the line under the code names a probe, a `Match` block changes that probe's login: add `!originalhost lab-suite` to its `Match` line. For `air_config_identityfile`, `air_config_localforward`, `air_config_remoteforward` and `air_config_dynamicforward` without a probe named, another block adds a key or a forward wherever the lab-suite block sits: remove it from that block, or keep that block off lab-suite (`Host * !lab-suite`). For the other codes, put the block at the top of `~/.ssh/config`. |
+| `air_config_*` | Printed by the self-test on the Air, before any login: `ssh -G` shows another value for a line of the lab-suite block that it checks, another key or another forward (step 5). It has two causes. **Another block adds or sets it.** If the line under the code names a probe, a `Match` block changes that probe's login: add `!originalhost lab-suite` to its `Match` line. For `air_config_identityfile`, `air_config_localforward`, `air_config_remoteforward` and `air_config_dynamicforward` without a probe named, another block adds a key or a forward wherever the lab-suite block sits: remove it from that block, or keep that block off lab-suite (`Host * !lab-suite`). For the other codes, a block above the lab-suite block sets the value first: put the lab-suite block at the top of `~/.ssh/config`. **Or the lab-suite block itself lacks a line or has a wrong one**, for example no `LocalForward`, or another `IdentityFile` or `User`: make it exactly `air-ssh-config.snippet` again. Check both: the self-test cannot tell which block it was. |

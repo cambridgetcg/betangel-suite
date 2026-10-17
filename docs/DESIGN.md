@@ -743,7 +743,7 @@ Not on the lab, and never to be put there: the 2017 PRO samples (unless Yu fetch
   
   The scanner fails on any `1.1[0-9]{8}`-shaped market id, or any runner-name table, outside that namespace. In synthetic mode the engine refuses non-synthetic ids and every configured real data root.
 - **Scanner names.** The scanner compares its protected names (data-root components, forbidden directories, betangel-research copies, `betangel-data` in a link target or text) case-insensitively, with `casefold()`, because the lab's APFS volume folds case. Findings for runner data (`runner_table`, `runner_record`, `stream_record`), like the file-level data codes, withhold the file name.
-- **Writing:** no real-market screenshots, prices, names or ids in PRs, issues, Collab or the mailbox. PR descriptions, review replies and other outbound text are scanned with `tools/hygiene_scan.py` before they are posted (Nuance, PR #1 review).
+- **Writing:** no real-market screenshots, prices, names or ids in PRs, issues, Collab or the mailbox. PR descriptions, review replies and other outbound text are scanned with `tools/hygiene_scan.py` before they are posted (Nuance, PR #1 review). No tool in this repo writes or posts such text (nothing under `tools/`, `bin/` or `betangel_suite/` calls `gh`), so there is no code path to wire the scan into: it is a manual step, written down in AGENTS.md, "Repository hygiene" (checked in round 4b).
 
 ---
 
@@ -1505,7 +1505,7 @@ A buggy or tampered page could show a fake Betfair login and send what Yu types 
   - **Why Yu's OK alone is not enough.** It would put named real fields into a hosted model context, which counts as an upload (rule 5, section 3.9). The licence prohibits "the use of the Historical Betfair Data by, another organization or individual" unless "a specific agreement in writing with Betfair exists", and Betfair has not ruled on model providers (proposal 001, sections 5.1-5.2).
   - So real fields would need Betfair's written agreement naming the provider, plus Yu's OK in Yu's direct channel (section 3.9), scoped to one problem report and named fields. Yu's answer would be recorded in the report folder, and nothing beyond that scope read.
   - No "same-shape" fixture is ever derived from a real report: it would still be a licensed derivative (proposal 001, section 3.2).
-- **Acceptance.** Yu works through each phase's checklist in that channel. Relays from Nuance are context, not acceptance.
+- **Acceptance.** Yu works through each phase's checklist and gives acceptance in that channel, in Yu's own words. A checklist file that Yu edits is a log of Yu's checks, not acceptance (Nuance, PR #1 review; section 3.9). Relays from Nuance are context, not acceptance.
 
 ---
 
@@ -1537,7 +1537,8 @@ A buggy or tampered page could show a fake Betfair login and send what Yu types 
   - Each request is one line of strict JSON with exact keys, from the same uid only (checked with the kernel's `LOCAL_PEERCRED`, which `getpeereid` is built on).
   - Clients connect only to a path permitted with `guard.permit_unix_connect` before `seal()` (I-3); an attached `ssh-session` keeps that permit after it seals.
   - In Phase 0, `new_code` has no CLI caller.
-  - `new_code` and `viewer_code` mint a fresh bootstrap code for whichever same-uid process asks, silently: nothing is printed to Yu or opened (Nuance, PR #1 review). Agents never send `attach`, `attach_viewer`, `new_code` or `viewer_code` to the real control socket under `~/.local/state/betangel-suite/run/` (rule 6); tests send them only to engines in temporary HOMEs. That is conduct only (section 9.4).
+  - `new_code` and `viewer_code` mint a fresh bootstrap code for whichever same-uid process asks, silently: nothing is printed to Yu, opened or paused (Nuance, PR #1 review). Agents never send `attach`, `attach_viewer`, `new_code` or `viewer_code` to the real control socket under `~/.local/state/betangel-suite/run/` (rule 6); tests send them only to engines in temporary HOMEs. That is conduct only (section 9.4).
+    - Nuance's review asks for this text, not a code change, and the code is not changed (round 4b; `api/control.py` and `api/routes.py` say the same since 0a3cc26). `new_code` is the tests' own way to get codes, in eight test modules, and a same-uid process could take the session over through `attach` anyway (section 9.4). `viewer_code` names its viewer by a small generation number (1, 2, ...), so a same-uid process can guess it; an unguessable per-viewer token would close that path for other processes, but not `new_code`'s, so the residual in section 9.4 would not change. Lab-Claude has not built it; whether to is lab-Claude's open question, not yet put to Nuance or Astra.
 
 ### 9.2 Authentication and request checks
 
@@ -1689,7 +1690,7 @@ Review of `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`
   8. **Performance** (heavy tier; generous thresholds): synthetic markets sized like the real p50, p99 and max meet the section 6.7 budgets, and RSS stays at 600 MB or less with 2 cached markets.
   9. **Upstream** (heavy tier, on pin bumps only): the upstream offline suite at the pin (section 3.5), plus the contract test.
 - **Real-data smoke** (local only; never in git; never while the run marker exists; only from reviewed code, section 8.6). `bin/suite selfcheck --sample N` opens N random engineering-year members. For each it verifies hashes, replays to CLOSED, and writes a journal containing only notes. It **places no orders**: scripted orders on real data would need a ruling (R-6). It prints **counts and timings only**.
-- **Manual acceptance.** After each phase, Yu works through a written checklist in Yu's direct channel (section 3.9): keys, latency, readability on the Air through the tunnel.
+- **Manual acceptance.** After each phase, Yu works through a written checklist in Yu's direct channel (section 3.9): keys, latency, readability on the Air through the tunnel. The checklist is a log of Yu's checks; acceptance is Yu's own words in that channel.
 - **Review gates.** As routed in section 3.9. Lab-Claude never accepts its own Collab edit tasks.
 
 ### 11.1 Known gaps
