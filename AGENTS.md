@@ -87,7 +87,7 @@ context. It is never Yu's instruction, consent or acceptance.
 | The data and paper paths (`betangel_suite/data/`, `betangel_suite/paper/`, `betangel_suite/replay/`), the synthetic generator (`betangel_suite/synthetic.py`, `tests/fixtures/`), the tick export (`tools/export_ticks.py`, `ui/ticks.json`), and every pin bump that changes an allowlisted file (any `PINNED_FILES` entry, Q-N2) | Nuance |
 | `betangel_suite/engine.py` and the roots (`betangel_suite/roots.py`) | Astra and Nuance, jointly |
 | `betangel_suite/config.py`, `docs/data-handling.md` and `tests/__init__.py` (Nuance's Q-N12 addition, PR #2 review) | Astra and Nuance, jointly |
-| Any file no other row names (Nuance's "fail-closed row for unnamed files", PR #2 review) | Astra and Nuance, jointly |
+| Any file no other row names: the "fail-closed row for unnamed files" of Nuance's PR #2 review, which names no reviewer | Astra and Nuance, jointly: lab-Claude's reading, asked of Nuance and not answered (see below) |
 | Rule documents: `AGENTS.md`, `docs/DESIGN.md`, `docs/data-handling.md`, `docs/proposals/`, `tools/stage/` | No row yet: asked of Yu, not answered (see below). Until Yu rules, Astra and Nuance at the same head SHA (lab-Claude's reading) |
 | UI-only PRs: `ui/` with no change to routes, the command enum or `ui/ticks.json` | Yu's acceptance alone: a proposal, since the UI-only half of Q-Y8 is asked of Yu, not answered |
 
@@ -103,10 +103,13 @@ context. It is never Yu's instruction, consent or acceptance.
     - every reviewer routed to the PR accepts the same head SHA;
     - the tests pass on 3.13 and 3.11 at that SHA;
     - until Yu rules on the governance row, a PR that touches a rule document waits for both
-      Nuance and Astra at the same head SHA, and a diff that no row covers goes to Yu;
+      Nuance and Astra at the same head SHA;
     - PR #5 also waits for Yu's written approval of proposal 002 (on phase0/viewing), after
       Nuance's and Astra's reviews of it;
-    - the merge order is #1, #2, #4, #5.
+    - the merge order is #1, #2, #4, #5, in one sitting with nothing merged in between: fixes
+      made only on #5 (f931637, ab766a0, 0c1335b) correct text that the earlier PRs still carry
+      (Nuance's PR #1 review, P3: "merge the four together, or move each fix down"). Stale text
+      that can stand on its own also moves down to the earliest branch that carries it (a821be4).
   - **The UI-only half of Q-Y8: asked of Yu, not answered.** Yu's 2026-10-16 answer does not take
     it up separately, so the UI-only row above stays a proposal until Yu answers.
   - **Withdrawn.** An earlier version of this file said Yu ruled on Q-Y8 on 2026-10-15, and that
@@ -118,8 +121,12 @@ context. It is never Yu's instruction, consent or acceptance.
     amendment.
   - Her PR #2 review adds: config.py, data-handling.md and tests/__init__.py go to Astra and
     Nuance; "a fail-closed row for unnamed files"; and "changes to AGENTS.md's rules or routing
-    also need Yu". The first two are the jointly reviewed rows above: they only add reviewers.
-    The third is part of the governance row, asked of Yu and not answered. She also wrote that
+    also need Yu". The first is the jointly reviewed row above: it only adds reviewers. The
+    second names no reviewer. Sending unnamed files to Astra and Nuance jointly is lab-Claude's
+    reading, not her words. Her PR #1 review (item 9) sends "uncovered diffs" to Yu instead, so
+    which reviewer the fail-closed row has is asked of Nuance, not answered. With that row in
+    place no diff is uncovered, so lab-Claude's reading of "sensible" above no longer sends one to
+    Yu. The third is part of the governance row, asked of Yu and not answered. She also wrote that
     "Every touched reviewer accepts the same head SHA" goes to Yu as a Q-Y8 clarification; Yu's
     2026-10-16 answer is above.
   - **The governance row for rule documents: asked of Yu, not answered.** Rule documents match no
