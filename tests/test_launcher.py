@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import types
 import unittest
 from unittest import mock
@@ -22,6 +23,7 @@ from betangel_suite.errors import SuiteError
 import tests
 from tests import (PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_relayed, run_suite, stand_in_marker,
                    tree_listing)
+from tests import test_runmarker
 
 LAUNCH_PY = os.path.join(ROOT, "bin", "_launch.py")
 SSH = "192.0.2.10 50000 192.0.2.20 22"         # TEST-NET addresses: the checks only test presence
@@ -308,6 +310,36 @@ class ParallelRunnerTests(unittest.TestCase):
         answer = json.loads(worker.stdout.decode("utf-8"))
         self.assertEqual((answer["module"], answer["run"], answer["ok"], answer["run_marker"]),
                          ("tests.test_layout", 0, False, "present"))
+
+    def test_a_worker_stops_a_module_before_its_next_test_once_the_marker_appears(self):
+        # Nuance's answers to Q-N14 in a worker: a module that is running when the marker appears starts no further
+        # test (cli.marker_stop_result, which test_worker uses), and its answer says why. The worker runs under a
+        # temporary HOME holding test_runmarker's probe sentinel, with that HOME's marker: the first probe test waits
+        # for the marker, which this test makes once the probe has started; the second must never start.
+        home = make_home(self, deps=True)
+        open(os.path.join(home, test_runmarker.PROBE_SENTINEL), "w").close()
+        marker = test_runmarker.marker(home)
+        os.makedirs(os.path.dirname(marker))
+        tmp = roots.tmp_dir("test", home)
+        argv = [PYTHON, "-I", "-S", "-B", "-c", cli._WORKER, ROOT, "fast", "1", "mid_run_probe", marker]
+        worker = subprocess.Popen(argv, env=child_env(home), cwd=home, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
+        self.addCleanup(lambda: worker.poll() is None and (worker.kill(), worker.communicate()))
+        worker.stdin.write(b"tests.test_runmarker\n")
+        worker.stdin.close()
+        deadline = time.monotonic() + 60
+        while not os.path.exists(os.path.join(tmp, "probe-1-started")):
+            if worker.poll() is not None or time.monotonic() > deadline:
+                self.fail("the first probe never started: exit=%r" % worker.poll())
+            time.sleep(0.05)
+        open(marker, "w").close()
+        out, err = worker.communicate(timeout=120)
+        self.assertEqual(worker.returncode, 0, err[-2000:])
+        answer = json.loads(out.decode("utf-8"))
+        self.assertEqual((answer["module"], answer["run"], answer["ok"], answer["run_marker"]),
+                         ("tests.test_runmarker", 1, False, "present"))
+        self.assertEqual((answer["failures"], answer["errors"]), (0, 0))
+        self.assertFalse(os.path.exists(os.path.join(tmp, "probe-2-started")))
 
     def test_modules_run_whole_in_workers_with_one_summary(self):
         modules = ["tests.test_layout", "tests.test_roots"]
