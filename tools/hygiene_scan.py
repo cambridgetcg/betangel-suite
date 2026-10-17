@@ -520,22 +520,26 @@ def _plain_findings(lines) -> list:
 #   - is 24+ bytes that start with an archive or SQLite magic (gzip needs its method byte and
 #     clear reserved flags, not just 1f 8b) or form a whole zlib stream;
 #   - is 96+ bytes holding a NUL or not UTF-8 (binary data: compressed, encrypted or packed);
-#   - is 16+ bytes of UTF-8 text that the line rules or runner_table flag, or that holds such a
-#     run itself (decoded once more: base64 of base64, hex of base64).
+#   - is 16+ bytes of text that the line rules or runner_table flag, or that holds such a run
+#     itself (decoded once more: base64 of base64, hex of base64). Bytes that hold a NUL or are
+#     not UTF-8, but are too few for the second test, are read as text with each NUL as a line
+#     end and any other byte that is not UTF-8 replaced, and, if they hold a NUL, again with the
+#     NULs removed, as UTF-16 text needs (the finishing review's recheck: a record of under 96
+#     bytes with one NUL or 0xFF byte got neither test).
 # The last two need a base64 run to mix upper case, lower case and digits, a hex run to hold a
 # letter, and a dec run to be neither sorted nor ASCII with control characters (other than tab,
 # LF and CR), as encoded data is; names, paths, hashes, decimal numbers, price ladders and lists
 # of small counts are not.
 # A hex run whose every line gave one whole token of exactly 40 or 64 digits is a list of commit
 # or file hashes, one per line (bare, quoted or after a marker), so the second test never applies
-# to it (round-4 recheck: lists of full hashes were binary). The first applies where any of its
-# lines starts, not only at its first byte, and also looks for an image or document signature
-# (PNG, JPEG, GIF, WebP, ISO media, TIFF, PDF); the third reads its bytes with each NUL as a line
-# end and any other byte that is not UTF-8 replaced, and, if they hold a NUL, again with the NULs
-# removed, as UTF-16 text needs (round-4 finishing review: with one real hash line first, as a
-# commit message cites a commit, or with one NUL or 0xFF byte, data passed, and so did images and
-# PDFs; its recheck: UTF-16 text passed, one character a line). A run of more than ENCODED_MAX_HASH_LINES such lines is not a list of
-# hashes but binary data, so what the gap below can carry stays under 2 KiB.
+# to it (round-4 recheck: lists of full hashes were binary), and the third reads it as text in
+# the same way however long it is. The first applies where any of its lines starts, not only at
+# its first byte, and also looks for an image or document signature (PNG, JPEG, GIF, WebP, ISO
+# media, TIFF, PDF) (round-4 finishing review: with one real hash line first, as a commit message
+# cites a commit, or with one NUL or 0xFF byte, data passed, and so did images and PDFs; its
+# recheck: UTF-16 text passed, one character a line). A run of more than ENCODED_MAX_HASH_LINES
+# such lines is not a list of hashes but binary data, so what the gap below can carry stays under
+# 2 KiB.
 # Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
 # patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
 # characters (groups of 8, or a list whose first piece is that short), and lists split by commas.
@@ -843,23 +847,22 @@ def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
     starts: for a list of hashes (a hex run of at most ENCODED_MAX_HASH_LINES lines, each one whole 40- or 64-digit
     token), where each line's bytes start. Such a run is never binary data, so a magic, an image or document
     signature, or a zlib stream counts at the start of any of its lines, and its text is read with NULs as line ends
-    and other bytes that are not UTF-8 replaced, and again with the NULs removed (UTF-16 text).
+    and other bytes that are not UTF-8 replaced, and again with the NULs removed (UTF-16 text). Any other run too
+    short to count as binary data is read as text in the same way.
     """
     view = memoryview(blob)
     for start in starts or (0,):
         if len(blob) - start >= ENCODED_MIN_MAGIC and (_blob_magic(blob[start:start + SNIFF_BYTES], starts is not None)
                                                         or _zlib_stream(view[start:])):
             return True
-    if not mixed:
+    if not mixed or len(blob) < ENCODED_MIN_TEXT:
         return False
     if b"\0" in blob or not _is_utf8(blob):
-        if starts is None:
-            return len(blob) >= ENCODED_MIN_BINARY
+        if starts is None and len(blob) >= ENCODED_MIN_BINARY:
+            return True
         texts = [blob.replace(b"\0", b"\n").decode("utf-8", "replace")]
         if b"\0" in blob:  # UTF-16 text: the other byte of each ASCII character is a NUL
             texts.append(blob.replace(b"\0", b"").decode("utf-8", "replace"))
-    elif len(blob) < ENCODED_MIN_TEXT:
-        return False
     else:
         texts = [blob.decode("utf-8")]
     for text in texts:

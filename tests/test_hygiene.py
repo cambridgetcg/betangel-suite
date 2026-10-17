@@ -845,6 +845,31 @@ class EncodedDataTests(_RepoCase):
             "gzip": f'x = "{base64.b64encode(gzip.compress(record)).decode()}"\n',
         })
 
+    def test_short_records_with_a_nul_or_an_odd_byte_are_read_as_text(self):
+        # The finishing review's recheck: a decoded run under 96 bytes that held a NUL or a byte that is not UTF-8 was
+        # too short to count as binary data and skipped the text test, so one record ending in a NUL (a C string, a
+        # NUL-separated record) or after a 0xFF byte passed. Such a run is now read as text, as a list of hashes is.
+        record = _j('{"op":"mcm","id":"', MARKET_2015, '","ltp":3.5}').encode()
+        nul, odd = record + bytes(1), bytes([255]) + record
+        for blob in (nul, odd, record.decode().encode("utf-16-le")):
+            self.assertLess(len(blob), 96)
+            self.assertNotIn(len(blob), (20, 32))  # not one hash line, which 287264a already reads as text
+        shapes = {
+            "hex with a NUL": f"blob: {nul.hex()}\n",
+            "hex after a 0xFF byte": f"blob: {odd.hex()}\n",
+            "base64 with a NUL": f'x = "{base64.b64encode(nul).decode()}"\n',
+            "escapes with a NUL": f'x = b"{_escaped(nul)}"\n',
+            "decimal list after a 0xFF byte": f"x = {list(odd)}\n",
+            "UTF-16LE in hex": f"blob: {record.decode().encode('utf-16-le').hex()}\n",
+        }
+        self.plant_shapes(shapes)
+        with self.subTest(shape="hex with a NUL", mode="--message"):
+            self.write(".git/MSG", "synthetic subject\n\n" + shapes["hex with a NUL"])
+            rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+            self.assertEqual(rc, 1, out)
+            self.assertEqual(self.codes(out), {"encoded_blob"})
+            self.assertNotIn(MARKET_2015, out)
+
     def test_encodings_that_tools_emit(self):
         # Round-4 review: a GIT binary patch (git diff --binary, format-patch), a decimal byte list (list(data),
         # Array.from(buf), od -An -tu1), od's own output and a PostgreSQL bytea literal all passed.
