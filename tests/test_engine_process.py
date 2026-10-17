@@ -17,7 +17,7 @@ from unittest import mock
 from betangel_suite import pin, roots, runmarker
 from betangel_suite.api import control
 from betangel_suite.errors import SuiteError
-from tests import LAUNCHER, child_env, make_home, run_suite, tree_listing
+from tests import LAUNCHER, PRELUDE, PYTHON, child_env, make_home, require_no_run_marker, run_suite, tree_listing
 from tests import test_engine
 from tests import test_http_support as support
 
@@ -66,6 +66,54 @@ def main():
     record("sealed-after-run", sealed_probe())       # the attach path returns here at once
     return status
 """
+
+
+# open as bin/_launch.py runs it: an engine-mode child that calls cli.main, so it takes run/realdata.lock and makes its
+# TMPDIR as `bin/suite open` does. /usr/bin/open is never started: server.system_opener is replaced by a recorder, and
+# a second audit hook (a hook can only add refusals) refuses any process start that names /usr/bin/open, should the
+# replacement ever be missed. The child also records "connecting" when it connects to a Unix socket, and "requests",
+# the control commands it sent.
+OPEN_CLI = PRELUDE + """
+import json, os, sys
+from betangel_suite import guard, errors
+guard.arm("engine")
+errors.install_excepthooks()
+os.umask(0o077)
+from betangel_suite import cli, roots
+from betangel_suite.api import control, server
+real_request, requests = control.request, []
+def request(command, *args, **kwargs):
+    requests.append(command)
+    record("requests", requests)
+    return real_request(command, *args, **kwargs)
+control.request = request
+def record(name, value):
+    fd = os.open(os.path.join(roots.state_dir(), name), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(fd, json.dumps(value).encode())
+    os.close(fd)
+def watch(event, args):
+    if event in ("subprocess.Popen", "os.posix_spawn", "os.exec", "os.spawn", "os.system"):
+        if "/usr/bin/open" in repr(args):
+            raise RuntimeError("usr_bin_open_refused_by_test")
+    elif event == "socket.connect" and isinstance(args[1], str):
+        record("connecting", True)
+sys.addaudithook(watch)
+server.system_opener = lambda argv: record("opened-url", {"argv": argv})
+try:
+    status = cli.main(["open", "--port", "0"])
+except errors.SuiteError as exc:
+    sys.stderr.write(errors.describe(exc) + "\\n")
+    status = 2
+sys.exit(status)
+"""
+
+
+def open_cli(case, home, name="open"):
+    """OPEN_CLI as a child of this HOME, with the TMPDIR bin/suite gives open; started after the real marker check."""
+    require_no_run_marker()
+    tmp = roots.tmp_dir("open", home)
+    return support.Child(case, home, [PYTHON, "-I", "-S", "-B", "-c", OPEN_CLI],
+                         env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp), name=name)
 
 
 def opened_path(home):
@@ -288,6 +336,89 @@ def main():
         self.assertEqual(child.stderr(), "")
         self.assertFalse(control.engine_running(home))
         self.assertFalse(os.path.lexists(support.control_path(home)))
+
+    def test_serve_and_open_refuse_at_once_while_an_engine_starts(self):
+        # DESIGN.md 8.6 item 1 (Astra's re-review of #4): with engine.lock held and no control.sock yet, serve refuses
+        # with engine_running and open with control_unavailable. Neither waits for the engine to finish starting, and
+        # neither asks again: both have refused while the engine below is still held at its gate.
+        home = support.short_home(self)
+        gate = os.path.join(home, "gate")
+        child = support.run_child(self, home, """
+import time
+from betangel_suite.api import static
+real_load = static.load
+def load(path):                             # engine.lock is held here, and control.sock is not bound yet
+    sys.stdout.write("loading\\n")
+    sys.stdout.flush()
+    deadline = time.monotonic() + 60
+    while not os.path.lexists(%r) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return real_load(path)
+static.load = load
+def main():
+    return server.run(cfg, command="serve", port=0)
+""" % gate)
+        child.wait_line(r"loading\n")
+        serving = run_suite(["serve", "--port", "0"], home)
+        self.assertEqual((serving.returncode, serving.stdout, serving.stderr), (2, "", "refused:engine_running\n"))
+        opening = open_cli(self, home)
+        self.assertEqual(opening.wait_exit(30), 2, opening.stderr())
+        self.assertEqual((opening.stdout(), opening.stderr()), ("", "refused:control_unavailable\n"))
+        self.assertEqual(read_recorded(home, "requests"), ["attach"])     # asked once
+        self.assertFalse(os.path.lexists(opened_path(home)))
+        self.assertIsNone(child.process.poll())                         # still starting: nobody waited for it
+        self.assertEqual(child.stdout(), "loading\n")
+        self.assertFalse(os.path.lexists(support.control_path(home)))
+        open(gate, "w").close()
+        child.wait_ready()
+        self.assertEqual(child.terminate(), 0, child.stderr())
+
+    def test_open_waits_only_for_the_reply_on_a_bound_control_socket(self):
+        # The engine binds control.sock a moment before it answers on it. open's one attach request, connected in that
+        # moment, waits for its reply up to control.CONNECTION_TIMEOUT_S, then refuses with control_unavailable; one
+        # that is answered in time attaches (DESIGN.md 8.6 item 1). It never asks again.
+        home = support.short_home(self)
+        gate = os.path.join(home, "gate")
+        child = support.run_child(self, home, """
+import time
+from betangel_suite.api import control
+real_start = control.ControlServer.start
+def start(self):                            # control.sock is bound and listening here, but nothing accepts yet
+    sys.stdout.write("bound\\n")
+    sys.stdout.flush()
+    deadline = time.monotonic() + 60
+    while not os.path.lexists(%r) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    real_start(self)
+control.ControlServer.start = start
+def main():
+    return server.run(cfg, command="serve", port=0)
+""" % gate)
+        child.wait_line(r"bound\n")
+        self.assertTrue(os.path.lexists(support.control_path(home)))
+        started = time.monotonic()
+        late = open_cli(self, home, name="open-late")
+        self.assertEqual(late.wait_exit(60), 2, late.stderr())
+        self.assertGreaterEqual(time.monotonic() - started, control.CONNECTION_TIMEOUT_S)
+        self.assertEqual((late.stdout(), late.stderr()), ("", "refused:control_unavailable\n"))
+        self.assertEqual(read_recorded(home, "requests"), ["attach"])     # asked once
+        for name in ("connecting", "requests"):
+            os.remove(os.path.join(roots.state_dir(home), name))
+        answered = open_cli(self, home, name="open-answered")
+        connecting = os.path.join(roots.state_dir(home), "connecting")
+        deadline = time.monotonic() + 30
+        while not os.path.lexists(connecting) and answered.process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(os.path.lexists(connecting), answered.stderr())
+        time.sleep(0.5)
+        self.assertIsNone(answered.process.poll())                      # waiting for its reply
+        open(gate, "w").close()
+        port = child.wait_ready()
+        self.assertEqual(answered.wait_exit(30), 0, answered.stderr())
+        self.assertEqual((answered.stdout(), answered.stderr()), ("attached port=%d\n" % port, ""))
+        self.assertEqual(read_recorded(home, "requests"), ["attach"])
+        self.assertRegex(read_opened(home)["argv"][1], r"\Ahttp://127\.0\.0\.1:%d/#c=[A-Za-z0-9_-]{22}\Z" % port)
+        self.assertEqual(child.terminate(), 0, child.stderr())
 
     def test_stop_is_prompt_with_an_idle_keep_alive_connection_open(self):
         home = support.short_home(self)

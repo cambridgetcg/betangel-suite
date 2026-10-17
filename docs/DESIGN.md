@@ -1302,6 +1302,11 @@ There is no auto-keypress and no timed action, because those are automation.
    - Yu runs `suite open` and opens the result in a Safari Private window.
    - The engine starts, and during its startup phase calls `/usr/bin/open` with `http://127.0.0.1:8765/#c=<bootstrap code>`. The URL is never printed.
    - If an engine is already running, `open` attaches through the control socket, gets a fresh code and opens it.
+   - **While an engine is still starting** (it holds `run/engine.lock` but does not answer on `control.sock` yet), neither `serve` nor `open` waits for it, and neither asks again. Astra's re-review of #4 accepts this "as a safe usability limitation"; only `stop` asks again until its deadline (section 6.8).
+     - `serve` refuses with `engine_running` at once.
+     - `open` sends one `attach` request. With no `control.sock` yet, or one that refuses the connection, it refuses with `control_unavailable` at once. The engine binds `control.sock` a moment before it starts answering on it: a request that connects in that moment waits for its reply, up to 5 s (`control.CONNECTION_TIMEOUT_S`), and attaches if the engine answers in time, else refuses with `control_unavailable`. Any other socket error also gives `control_unavailable`, and a reply it cannot read gives `control_failed`.
+     - The same holds for an engine that is stopping, from when it removes `control.sock` until it lets `engine.lock` go.
+     - Tested in `tests/test_engine_process.py` (`LifecycleTests`), with `open` run through `cli.main` and a recorder in place of `/usr/bin/open`.
    - The page POSTs the code to `/api/v1/bootstrap`, gets a session token, keeps it in JS memory only, and strips the fragment with `history.replaceState`.
    - Yu should sign out of historicdata.betfair.com in the lab's Safari, and delete saved betfair.com passwords and betfair.com site data there, now rather than after the downloads. The lab should hold no Betfair session (mailbox 08:57Z, B4, which asks for both; Nuance, PR #1 review). Asked of Yu on 2026-10-17, not answered (Q-Y11).
 2. **From the Air: recommended, needs Yu's approval (R-2).** A forced-command, tunnel-only SSH key, plus an sshd drop-in.
