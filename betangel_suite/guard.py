@@ -143,13 +143,13 @@ journal beside a database, and its temp files if a PRAGMA sets temp_store back),
 mode, an isolated interpreter the runner starts is unguarded unless it imports betangel_suite), a file
 descriptor or hard link made before a check, a reference to os.mkfifo or _posixsubprocess.fork_exec taken
 before arm(), subprocess's private _fork_exec or _socket.socket.listen called directly, or
-sqlite3.Connection.setlimit called on a connection directly. Also left, as same-process routes (Astra's
-re-review of #2): a fresh instance of the built-in posix module (importlib.util.module_from_spec on its
-spec), whose mkfifo and mknod are the unwrapped originals: a built-in module raises no import event, so the
-hook never sees the load; and an extension module refused above that was loaded before arm() and then taken
+sqlite3.Connection.setlimit called on a connection directly. Also left, as same-process routes: a fresh
+instance of the built-in posix module (importlib.util.module_from_spec on its spec), whose mkfifo and mknod
+are the unwrapped originals, since a built-in module raises no import event and the hook never sees the load
+(Astra's re-review of #2); and an extension module refused above that was loaded before arm() and then taken
 out of sys.modules, since CPython then serves a single-phase one (_ctypes on 3.11, _testcapi) from its
-extension cache with no import event. Refusals raise GuardRefusal, whose str() is the code only, never the
-path or address.
+extension cache with no import event (lab-Claude's probe, round 5). Refusals raise GuardRefusal, whose str()
+is the code only, never the path or address.
 Standard library only.
 """
 
