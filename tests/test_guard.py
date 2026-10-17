@@ -1826,9 +1826,11 @@ attempt("write_state", lambda: write(os.path.join(state, "ok.txt")))
                 self.assertEqual(os.listdir(roots.data_home(home)), [])
 
     def test_uisnap_and_stop_have_the_state_root_alone(self):
-        # Nuance's re-review of #2, Q2 conditions 2 and 3, and Astra's: cli.py mapped uisnap (and stop) to engine mode,
-        # which can write the suite root. Each now arms a mode of its own, with the state root as its only write root
-        # and the state root's tmp/ as its TMPDIR, and starts no child in either phase.
+        # Nuance's re-review of #2, Q2 conditions 2 and 3, and Astra's: phase0/foundation's cli.py mapped uisnap and
+        # stop to engine mode, which can write the suite root (on this branch uisnap has had a mode of its own since
+        # Phase 0c). Each arms a mode of its own, with the state root as its only write root and the state root's tmp/
+        # as its TMPDIR, and neither starts git in either phase. uisnap's swiftc and binary permits are tested in
+        # tests/test_uisnap.py.
         for mode in ("uisnap", "stop"):
             home = make_home(self)
             os.makedirs(roots.data_home(home), mode=0o700)

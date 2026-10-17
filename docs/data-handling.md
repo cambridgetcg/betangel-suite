@@ -30,12 +30,14 @@ there. A `suite.noindex` that is a link, or a state root that a link puts in `~/
 refused before anything is written (62c39c6).
 
 The test runner itself is confined: its guard mode refuses writes under `~/betangel-data`, and
-reads there too, as `vendor`'s, `uisnap`'s and `stop`'s do (0a3ed65). Every interpreter child it
-starts and every `bin/suite` child need an explicit environment whose HOME, the roots under it and
-`TMPDIR` keep out of the runner's data home, checked at spawn by realpath and identity (96f8a90,
-8e751d6; Nuance's re-review of #2, F2): a child that imports `betangel_suite` arms its own guard
-from the HOME it is given. So tests give every child a temporary HOME. What a child does with its
-environment after it starts, and a child that never imports `betangel_suite`, are conduct.
+reads there too, as `vendor`'s, `uisnap`'s, `release`'s and `stop`'s do (0a3ed65). Every
+interpreter child it starts and every `bin/suite` child need an explicit environment whose HOME,
+the roots under it and `TMPDIR` keep out of the runner's data home, checked at spawn by realpath
+and identity (96f8a90, 8e751d6; Nuance's re-review of #2, F2): a child that imports
+`betangel_suite` arms its own guard from the HOME it is given. The runner's own `-j` workers, which
+inherit its environment and arm test mode, are the one exception. So tests give every child a
+temporary HOME. What a child does with its environment after it starts, and a child that never
+imports `betangel_suite`, are conduct.
 
 The suite never writes `~/.local/state/lab-runs/`, where Nuance's run wrapper keeps its marker and
 lock, and refuses a root in, around or onto it (`root_overlaps_lab_runs`; c3b0c61).

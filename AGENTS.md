@@ -343,7 +343,9 @@ reviewed PR changes them.
     (`subprocess_refused`; Nuance's re-review of #2, F2; 96f8a90). Lab-Claude's round-5 review
     found only launcher children checked, so `-c` code that arms the guard itself, the shape F2
     reported, still armed engine mode with the runner's HOME; every such child is checked now
-    (8e751d6). A child that never arms the guard is unguarded: conduct. The runner's git
+    (8e751d6). The one exception is the runner's own `-j` worker (`guard.TEST_WORKER_CODE`),
+    which inherits the runner's environment and arms test mode. A child that never arms the
+    guard is unguarded: conduct. The runner's git
     gets an exact environment allowlist; `DEVELOPER_DIR` and any other key outside it are refused
     (dd95582).
   - `guard.arm` refuses at start a write root or `TMPDIR` that the file system puts in, around or

@@ -80,7 +80,8 @@ VIA_SSH_ENV = "SUITE_VIA_SSH"                     # set by bin/suite: "1" for ss
 # The commands that run in a guard mode of their own name (guard.MODES); every other command runs in engine mode. uisnap
 # and stop are among them so that neither is given the suite root, which only engine mode may write: uisnap renders
 # synthetic markets only, and stop only reduces activity (Nuance's re-review of #2, Q2 conditions 2 and 3; Astra's
-# re-review of #2 found uisnap mapped to engine mode here). release (phase0/viewing) writes only the release copy.
+# re-review of #2 found uisnap mapped to engine mode on phase0/foundation). release (phase0/viewing) writes only the
+# release copy.
 OWN_MODE_COMMANDS = ("test", "vendor", "uisnap", "release", "stop")
 
 

@@ -14,7 +14,8 @@ TMPDIR (guard.runner_git_ok), each child with the network switch on. Every inter
 also needs an explicit environment whose HOME keeps it out of the runner's own data home (guard.runner_argv_ok):
 a child that imports betangel_suite arms its own guard from the HOME it is given. So every test gives its children
 a temporary HOME (child_env); one that needs a HOME the runner refuses goes through an unguarded relay
-(run_relayed), and keeping such a child in its temporary HOME is conduct.
+(run_relayed), and keeping such a child in its temporary HOME is conduct. The runner's own -j workers
+(guard.TEST_WORKER_CODE) are the one exception: they inherit its environment and arm test mode here.
 Every audit-hook test runs in a fresh subprocess, because a hook cannot be removed. Each test makes its own
 temporary HOME (make_home) under TMPDIR and removes it afterwards; bin/suite test fails the run if anything
 in the real state root outside tmp/ changed (cli.state_listing).
