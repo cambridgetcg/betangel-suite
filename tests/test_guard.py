@@ -42,6 +42,17 @@ def checks(case, home, body, *, setup="", mode="engine", env=None):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
+def armed_attempts(case, home, body, *, mode, env=None):
+    """Like checks(), but arm() is an attempt too: results["arm"] is "ok" or its refusal code, and body runs only if
+    it armed. The suite root counts as agreed, as in the code."""
+    code = (ATTEMPT + "roots.STATE_ROOT_AGREED = True\nattempt('arm', lambda: guard.arm(%r))\n" % mode
+            + "if results['arm'] == 'ok':\n" + "".join("    " + line + "\n" for line in body.strip("\n").splitlines())
+            + "print(json.dumps(results))\n")
+    result = run_python(code, home, env=env)
+    case.assertEqual(result.returncode, 0, result.stderr)
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
 def parse(path):
     with open(path, encoding="utf-8") as handle:
         return ast.parse(handle.read(), path)
@@ -264,8 +275,9 @@ class NoOffSwitchTests(unittest.TestCase):
                 imported |= {alias.name for alias in node.names}
             elif isinstance(node, ast.ImportFrom):
                 imported |= {"%s%s.%s" % ("." * node.level, node.module or "", alias.name) for alias in node.names}
-        self.assertEqual(imported, {"fcntl", "os", "re", "sys", "threading", "posix", "sqlite3", "sqlite3.dbapi2",
-                                    "subprocess", "_posixsubprocess", "..roots", ".errors.SuiteError"})
+        self.assertEqual(imported, {"fcntl", "os", "re", "stat", "sys", "threading", "posix", "sqlite3",
+                                    "sqlite3.dbapi2", "subprocess", "_posixsubprocess", "..roots",
+                                    ".errors.SuiteError"})
 
     def test_config_has_no_key_about_the_guard(self):
         for key in config.DEFAULTS:
@@ -467,22 +479,28 @@ attempt("rename_run_dir", lambda: os.rename(run, run + "-moved"))
 
     def test_a_run_directory_replaced_by_a_link_moves_no_socket(self):
         # The suite cannot move run/ away itself (run_lock_protected), but another process can, while the suite runs.
-        # The bind check compares where run/ resolves with where it resolved at arm(), which the setup here models
-        # by making run/ a link before arm(): a permitted socket path in it would be created at the link's target.
+        # The bind check compares where run/ resolves with where it resolved at arm(): a permitted socket path in a
+        # run/ replaced by a link would be created at the link's target. arm() refuses a run/ that is already a link
+        # (run_lock_invalid, the guard-paths review), so here a test-mode child (the bind check is the same in every
+        # mode) starts an unguarded interpreter that moves the real run/ away and puts a link in its place.
         home = make_home(self)
-        results = checks(self, home, setup="""
-elsewhere = os.path.join(os.environ["HOME"], "elsewhere")
-os.makedirs(elsewhere, mode=0o700)
-os.symlink(elsewhere, roots.run_dir())
+        results = checks(self, home, mode="test", setup="""
+os.makedirs(os.path.join(os.environ["HOME"], "elsewhere"), mode=0o700)
+os.makedirs(roots.run_dir(), mode=0o700)
 """, body="""
-import socket, sys
+import socket, subprocess, sys
+run, elsewhere = roots.run_dir(), os.path.join(os.environ["HOME"], "elsewhere")
+replace = "import os, sys\\nos.rename(sys.argv[1], sys.argv[1] + '.moved')\\nos.symlink(sys.argv[2], sys.argv[1])\\n"
+results["replaced"] = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", replace, run, elsewhere]).returncode
+results["run_is_link"] = os.path.islink(run)
 def audit_bind(address):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sys.audit("socket.bind", sock, address)
-control = os.path.join(roots.run_dir(), "c.sock")
+control = os.path.join(run, "c.sock")
 guard.permit_unix_socket(control)
 attempt("unix_run_dir_replaced", lambda: audit_bind(control))
 """)
+        self.assertEqual((results["replaced"], results["run_is_link"]), (0, True))
         self.assertEqual(results["unix_run_dir_replaced"], "bind_refused")
 
     # Nuance's PR #2 review, item 4: CPython raises no listen event, and listen() on an unbound AF_INET socket binds
@@ -1733,6 +1751,43 @@ results["run_is_dir"] = os.path.isdir(run) and not os.path.islink(run)
             self.assertEqual((results["symlink_onto_missing_run"], results["rename_dir_onto_missing_run"]),
                              ("run_lock_protected", "run_lock_protected"), mode)
             self.assertEqual((results["mkdir_run"], results["run_is_dir"]), ("ok", True), mode)
+
+    def test_a_run_directory_or_lock_that_is_a_link_is_refused_at_arm(self):
+        # The guard-paths review: run/ made a link before arm() to <state>/run-real, which holds the lock. The slots
+        # are where run/ and the lock are named in the state root's real path, but the OS resolves the lock through
+        # the link, so in every mode the lock could be removed and run-real renamed. A link to a deeper directory
+        # of the root (whose ancestor could be renamed, and a fresh lock made at the same name), one spelt through
+        # the firmlink, and a lock that is itself a link (whose target could be removed) escaped the same way
+        # (lab-Claude's variants). arm() refuses each (run_lock_invalid), as runmarker.hold_shared already did for
+        # the real-data commands. A real run/ and lock, or none, still arm (the test above).
+        def layout(home, name):
+            state, run = roots.state_dir(home), roots.run_dir(home)
+            real = os.path.join(state, "a", "run-real") if name == "nested" else os.path.join(state, "run-real")
+            os.makedirs(real, 0o700)
+            lock = os.path.join(real, "realdata.lock")
+            open(lock, "w").close()
+            if name == "lock_is_a_link":
+                os.mkdir(run, 0o700)
+                os.symlink(lock, os.path.join(run, "realdata.lock"))
+            else:
+                os.symlink({"sibling": real, "relative": "run-real", "nested": real, "dangling": real + "-missing",
+                            "firmlink": FIRMLINK + os.path.realpath(real)}[name], run)
+            return lock, os.path.join(state, os.path.relpath(real, state).split(os.sep)[0])
+
+        names = ("sibling", "relative", "nested", "firmlink", "dangling", "lock_is_a_link")
+        for mode in ("engine", "test", "vendor"):
+            for name in names:
+                home = make_home(self)
+                lock, top = layout(home, name)              # top: the directory below the state root on its way
+                results = armed_attempts(self, home, mode=mode, body="""
+lock, top = %r, %r
+attempt("remove_lock", lambda: os.remove(os.path.join(roots.run_dir(), "realdata.lock")))
+attempt("remove_lock_itself", lambda: os.remove(lock))
+attempt("rename_its_directory", lambda: os.rename(top, top + "-moved"))
+""" % (lock, top))
+                with self.subTest(mode=mode, layout=name):
+                    self.assertEqual(results, {"arm": "run_lock_invalid"})
+                    self.assertTrue(os.path.isfile(lock))
 
     def test_the_suite_never_creates_or_removes_the_marker_or_the_wrappers_lock(self):
         # Nuance's PR #2 review, item 13: one unlink of lab-runs/ACTIVE lets require_absent pass mid-run. Only

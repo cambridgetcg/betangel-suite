@@ -63,7 +63,9 @@ What the hook refuses, in every mode and phase:
        the suite makes the lock once and never unlinks it, since a holder of the old file and Nuance's wrapper
        locking a new one would not exclude each other (runmarker.py). Renaming run/ would move the lock with it
        and split it the same way, so no name may be put where run/ is, and run/ may not be moved away, even
-       while it is missing. (os.rmdir stays allowed: it removes only an empty run/, which holds no lock.)
+       while it is missing. (os.rmdir stays allowed: it removes only an empty run/, which holds no lock.) Those
+       slots are where run/ and the lock are named, so arm() refuses a run/ or a lock that is a link, or that
+       cannot be looked at (run_lock_invalid): the lock behind it would lie where no slot is.
        chmod, chown, utime and truncate on a descriptor (fchmod and the like) are judged by the file's path
        from F_GETPATH, and refused when it has none: a read-only open is never checked, so a descriptor
        does not show that its file lies in the roots. open() of a descriptor is not judged again.
@@ -113,6 +115,7 @@ Standard library only.
 import fcntl
 import os
 import re
+import stat
 import sys
 import threading
 
@@ -276,6 +279,7 @@ def arm(mode):
         if not state.tmp_root or tmp != os.environ.get("SQLITE_TMPDIR") or not _tmp_root_ok(state, tmp):
             raise SuiteError("tmpdir_mismatch")
         _check_placement(state)
+        _check_run_dir(state)
         _refuse_loaded_modules()
         _wrap_node_calls()
         _wrap_sqlite_connect(state)
@@ -380,6 +384,42 @@ def _check_placement(state):
     """
     for path in state.roots + (state.tmp_root,):
         roots.check_placement(path, state.home)
+
+
+def _check_run_dir(state):
+    """run_lock_invalid when run/ or run/realdata.lock is a link, or cannot be looked at (the guard-paths review).
+
+    The slots keep run/ and the lock where they are named in the state root's real path (run_lock_protected), but
+    the OS locks the file those names resolve to. A link at either name, made before arm(), puts the lock where no
+    slot is: in another directory of the root, whose ancestor could then be renamed and a fresh lock made at the
+    same name; through the firmlink spelling; or behind a link whose target could be removed. Nuance's wrapper,
+    locking through the link, and the suite's next holder would then lock different files. runmarker.hold_shared
+    already refuses both for the real-data commands (symlink_refused, run_lock_invalid); arm() refuses them in every
+    mode.
+    """
+    if not _no_link_below(roots.state_dir(state.home), os.path.join(state.run_dir, roots.REALDATA_LOCK_NAME)):
+        raise SuiteError("run_lock_invalid")
+
+
+def _no_link_below(root, path):
+    """True when no name from below root down to path (by text; path lies in root) is a symlink, so the OS finds
+    path where its text says, in root's real path. A missing name ends the walk: nothing below it exists yet, and
+    the slots keep a link from being put there later. False when an lstat fails otherwise (no search permission, a
+    name too long): that cannot be judged. Links above root stay allowed (DESIGN.md 3.7)."""
+    current = root
+    for part in os.path.relpath(path, root).split(os.sep):
+        if part == os.curdir:
+            continue
+        current = os.path.join(current, part)
+        try:
+            mode = os.lstat(current).st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return True
+        except OSError:
+            return False
+        if stat.S_ISLNK(mode):
+            return False
+    return True
 
 
 def _import_refused(name):
