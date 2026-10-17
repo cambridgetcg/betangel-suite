@@ -63,13 +63,15 @@ class LifetimeTests(unittest.TestCase):
     def test_without_a_terminal_only_the_maximum_time_ends_a_session(self):
         life = self.make()
         self.assertEqual(life.check(False), (None, False))           # serve: nobody, ever, is fine
-        self.assertEqual(life.takeover(terminal=False), 1)            # open's takeover
+        viewer = life.takeover(terminal=False)                       # open's takeover
+        self.assertTrue(lifetime.viewer_ok(viewer))
+        self.assertEqual(life.counts()["generation"], 1)
         self.clock.advance(14399)
         self.assertEqual(life.check(False), (None, False))
         self.clock.advance(1)
         self.assertEqual(life.check(True), ("max_session", False))   # watched or not
         self.assertEqual(life.check(True), ("max_session", False))   # and it stays ended
-        self.assertFalse(life.heartbeat(1))
+        self.assertFalse(life.heartbeat(viewer))
 
     def test_stdin_eof_keeps_the_session_for_the_grace_then_abandons_it(self):
         life = self.make()
@@ -104,7 +106,8 @@ class LifetimeTests(unittest.TestCase):
         life.check(False)
         self.clock.advance(9)
         second = life.takeover(terminal=True)                         # a new ssh-session
-        self.assertEqual(second, first + 1)
+        self.assertNotEqual(second, first)
+        self.assertEqual(life.counts()["generation"], 2)
         self.clock.advance(5)
         self.assertEqual(life.check(False), (None, False))
         self.assertFalse(life.heartbeat(first))                       # the old viewer is superseded
@@ -135,14 +138,35 @@ class LifetimeTests(unittest.TestCase):
         self.assertEqual(life.check(False), (None, False))
         self.assertFalse(life.counts()["away"])
 
-    def test_bad_generations_are_never_current(self):
+    def test_only_the_newest_viewers_own_token_is_current(self):
         life = self.make()
+        first = life.takeover(terminal=True)
         viewer = life.takeover(terminal=True)
-        for bad in (0, -1, True, 1.0, "1", None, viewer + 1):
-            self.assertFalse(life.current(bad), bad)
-            self.assertFalse(life.heartbeat(bad), bad)
-            self.assertFalse(life.away(bad), bad)
+        for bad in (0, -1, 1, 2, True, 1.0, "1", "2", None, first, viewer.upper(), viewer[:-1], viewer + "0",
+                    " " + viewer, viewer + "\n", viewer.encode(), bytearray(viewer.encode()), [viewer], "0" * 32,
+                    "f" * 32, "\u00e9" * 32, "\udcff" * 32, "g" * 32):
+            self.assertFalse(life.current(bad), repr(bad))
+            self.assertFalse(life.heartbeat(bad), repr(bad))
+            self.assertFalse(life.away(bad), repr(bad))
         self.assertTrue(life.current(viewer))
+        self.assertFalse(life.counts()["away"])
+
+    def test_viewer_tokens_are_unguessable_and_new_at_every_takeover(self):
+        # Round 4b's question, lab-Claude's decision in round 5: the viewer was named by a generation number (1, 2,
+        # ...), which any same-uid process could guess and use to mint codes through viewer_code. Each takeover now
+        # gives the viewer 128 random bits from secrets.token_hex; the takeover count stays in counts() only.
+        life = self.make()
+        tokens = [life.takeover(terminal=bool(index % 2)) for index in range(200)]
+        self.assertEqual(len(set(tokens)), 200)
+        for token in tokens:
+            self.assertRegex(token, r"\A[0-9a-f]{32}\Z")
+            self.assertTrue(lifetime.viewer_ok(token))
+        self.assertEqual(life.counts()["generation"], 200)
+        self.assertNotIn(tokens[-1], repr(life.counts()))
+        with mock.patch.object(lifetime.secrets, "token_hex", return_value="ab" * 16) as token_hex:
+            self.assertEqual(life.takeover(terminal=True), "ab" * 16)
+        token_hex.assert_called_once_with(lifetime.VIEWER_TOKEN_BYTES)
+        self.assertEqual(lifetime.VIEWER_TOKEN_BYTES, 16)
 
 
 # --- api/sshsession.py: Terminal and Viewer -----------------------------------------------------------------
@@ -421,32 +445,55 @@ class AppTests(unittest.TestCase):
     def command(self, app, token, name, nonce, args=None):
         return app.command(token, {"nonce": nonce, "command": name, "args": {} if args is None else args})
 
-    def test_attach_viewer_takes_over_and_viewer_commands_name_their_generation(self):
+    def test_attach_viewer_takes_over_and_viewer_commands_name_their_token(self):
         app = self.make()
         old = app.auth.exchange(app.auth.issue_code())
         reply = app.control("attach_viewer", {"port": 8765})
         self.assertEqual(sorted(reply), ["code", "ok", "port", "viewer"])
-        self.assertEqual((reply["ok"], reply["port"], reply["viewer"]), (True, 8765, 1))
+        self.assertEqual((reply["ok"], reply["port"]), (True, 8765))
+        first = reply["viewer"]
+        self.assertTrue(lifetime.viewer_ok(first))
         self.assertFalse(app.auth.valid(old))                          # the old token is dead
         self.assertEqual(self.engine.pauses, ["takeover"])
-        fresh = app.control("viewer_code", {"viewer": 1})
+        fresh = app.control("viewer_code", {"viewer": first})
         self.assertTrue(fresh["ok"] and fresh["code"] != reply["code"])
         self.assertIsNotNone(app.auth.exchange(fresh["code"]))
-        self.assertEqual(app.control("viewer_heartbeat", {"viewer": 1}), {"ok": True})
-        second = app.control("attach_viewer", {"port": 0})               # 0: any port (ssh-session --port 0)
-        self.assertEqual(second["viewer"], 2)
+        self.assertEqual(app.control("viewer_heartbeat", {"viewer": first}), {"ok": True})
+        second = app.control("attach_viewer", {"port": 0})["viewer"]     # 0: any port (ssh-session --port 0)
+        self.assertTrue(lifetime.viewer_ok(second) and second != first)
         for command in ("viewer_code", "viewer_heartbeat", "viewer_away"):
-            self.assertEqual(app.control(command, {"viewer": 1}), {"ok": False, "code": "superseded"}, command)
-        self.assertEqual(app.control("viewer_away", {"viewer": 2}), {"ok": True})
+            self.assertEqual(app.control(command, {"viewer": first}), {"ok": False, "code": "superseded"}, command)
+        self.assertEqual(app.control("viewer_away", {"viewer": second}), {"ok": True})
         self.assertEqual(self.engine.pauses, ["takeover", "takeover", "not_watched"])
-        for command, args in (("viewer_code", {}), ("viewer_away", {"viewer": True}), ("stop", {"viewer": 2}),
+        for command, args in (("viewer_code", {}), ("viewer_away", {"viewer": True}), ("stop", {"viewer": second}),
+                              ("viewer_code", {"viewer": 2}), ("viewer_heartbeat", {"viewer": second.upper()}),
                               ("attach", {"x": 1}), ("kill", {}), ("attach_viewer", {}), ("attach", {"port": 8765}),
                               ("attach_viewer", {"port": True}), ("attach_viewer", {"port": 65536}),
-                              ("attach_viewer", {"viewer": 1})):
+                              ("attach_viewer", {"viewer": second})):
             self.assertEqual(app.control(command, args), {"ok": False, "code": "control_bad_request"}, command)
         attach = app.control("attach")
         self.assertEqual(sorted(attach), ["code", "ok", "port"])        # open's takeover: no viewer
-        self.assertEqual(app.control("viewer_heartbeat", {"viewer": 2}), {"ok": False, "code": "superseded"})
+        self.assertEqual(app.control("viewer_heartbeat", {"viewer": second}), {"ok": False, "code": "superseded"})
+
+    def test_a_process_never_told_the_viewer_token_mints_no_code(self):
+        # A same-uid process that guesses the viewer's name gets no code (round 4b's question; lab-Claude's decision
+        # in round 5): ints, the old generation numbers included, are refused as malformed, and a well-formed token
+        # that is not the current viewer's is superseded. new_code still mints codes for any caller (DESIGN.md 9.4).
+        app = self.make()
+        viewer = app.control("attach_viewer", {"port": 0})["viewer"]
+        issued = []
+        inner = app.auth.issue_code
+        app.auth.issue_code = lambda *args, **kwargs: issued.append(1) or inner(*args, **kwargs)
+        for guess in range(1, 6):
+            self.assertEqual(app.control("viewer_code", {"viewer": guess}),
+                             {"ok": False, "code": "control_bad_request"}, guess)
+        for guess in ("0" * 32, "1" * 32, "f" * 32, viewer[::-1] if viewer[::-1] != viewer else "e" * 32):
+            self.assertEqual(app.control("viewer_code", {"viewer": guess}), {"ok": False, "code": "superseded"}, guess)
+            self.assertEqual(app.control("viewer_heartbeat", {"viewer": guess}),
+                             {"ok": False, "code": "superseded"}, guess)
+        self.assertEqual(issued, [])
+        self.assertEqual(self.engine.pauses, ["takeover"])
+        self.assertTrue(app.control("viewer_code", {"viewer": viewer})["ok"])     # its own viewer still can
 
     def test_attach_viewer_on_another_port_is_refused_before_the_takeover(self):
         # The forced command expects 8765 (DESIGN.md 8.6 item 2); an engine started with --port N is not taken over.
@@ -456,8 +503,10 @@ class AppTests(unittest.TestCase):
         self.assertEqual(app.control("attach_viewer", {"port": 8765}), {"ok": False, "code": "viewer_port_mismatch"})
         self.assertTrue(app.auth.valid(old))                           # nothing was invalidated ...
         self.assertEqual(self.engine.pauses, [])                       # ... or paused
-        self.assertEqual(app.control("viewer_heartbeat", {"viewer": 1}), {"ok": False, "code": "superseded"})
-        self.assertEqual(app.control("attach_viewer", {"port": 8766})["viewer"], 1)     # no takeover was counted
+        self.assertEqual(app.control("viewer_heartbeat", {"viewer": "0" * 32}), {"ok": False, "code": "superseded"})
+        self.assertEqual(app.lifetime.counts()["generation"], 0)                        # no takeover was counted
+        self.assertTrue(lifetime.viewer_ok(app.control("attach_viewer", {"port": 8766})["viewer"]))
+        self.assertEqual(app.lifetime.counts()["generation"], 1)
         self.assertEqual(self.engine.pauses, ["takeover"])
 
     def test_control_link_refuses_another_port_and_prints_no_url(self):
@@ -476,8 +525,9 @@ class AppTests(unittest.TestCase):
                 viewer.attach()
             self.assertEqual(caught.exception.code, "viewer_port_mismatch")
             self.assertEqual((stdout.getvalue(), self.engine.pauses, app.auth.valid(old)), ("", [], True))
-            port, _code, generation = sshsession.ControlLink(None, 0).attach()             # --port 0: any port
-        self.assertEqual((port, generation, self.engine.pauses), (8766, 1, ["takeover"]))
+            port, _code, viewer = sshsession.ControlLink(None, 0).attach()                 # --port 0: any port
+        self.assertEqual((port, self.engine.pauses), (8766, ["takeover"]))
+        self.assertTrue(lifetime.viewer_ok(viewer))
 
     def test_an_attached_viewer_leaves_at_once_for_the_run_marker(self):
         # Session.run_attached checks the marker before every poll (DESIGN.md 6.8; round 4b). Present or unreadable,
@@ -515,8 +565,8 @@ class AppTests(unittest.TestCase):
 
     def test_the_lifetime_check_pauses_and_ends_the_session(self):
         app = self.make(grace_s=10, max_session_s=100)
-        app.control("attach_viewer", {"port": 0})
-        app.control("viewer_away", {"viewer": 1})
+        viewer = app.control("attach_viewer", {"port": 0})["viewer"]
+        app.control("viewer_away", {"viewer": viewer})
         self.assertIsNone(app.check_lifetime())
         self.clock.advance(10)
         self.assertEqual(app.check_lifetime(), "abandoned")

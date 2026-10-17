@@ -16,8 +16,9 @@ No route, command or query name holds a word of FORBIDDEN_WORDS (I-7).
 
 The control socket's closed command set (CONTROL_ARGS, each with its exact extra keys): DESIGN.md 9.1's attach,
 new_code, pause and stop, plus the ssh-session viewer's attach_viewer, viewer_code, viewer_heartbeat and
-viewer_away (Phase 0c: session lifetime, DESIGN.md 8.6 item 2 and I-19), which name the viewer generation that
-attach_viewer returned, so an ssh-session that was taken over cannot ask for codes or keep the session alive.
+viewer_away (Phase 0c: session lifetime, DESIGN.md 8.6 item 2 and I-19), which name the viewer by the token that
+attach_viewer returned (api/lifetime.py: unguessable, new at every takeover), so an ssh-session that was taken over
+cannot ask for codes or keep the session alive, and a process that was never told the token cannot either.
 attach_viewer names the port its ssh-session expects (sshsession.VIEWER_PORT for the forced command, 0 for any);
 an engine on another port answers viewer_port_mismatch before the takeover, so nothing is paused or invalidated.
 
@@ -32,6 +33,7 @@ import threading
 import time
 
 from ..errors import SuiteError
+from .lifetime import viewer_ok
 
 ROUTES = {
     ("POST", "/api/v1/bootstrap"): "bootstrap",
@@ -45,14 +47,13 @@ COMMANDS = ("open_market", "play", "pause", "set_speed", "seek", "jump", "step",
 EXPLORATION_COMMANDS = ("replace",)         # exploration mode (R-7) adds it; not accepted in Phase 0b
 QUERIES = ("session", "catalogue", "journal", "green_up_preview")
 FORBIDDEN_WORDS = ("live", "account", "funds", "login", "kill", "upload", "share")
-# The control socket: command -> the exact extra keys of its request line (viewer: an int viewer generation;
-# port: the port attach_viewer's caller expects, 0 for any).
+# The control socket: command -> the exact extra keys of its request line (viewer: the viewer token attach_viewer
+# returned, lifetime.viewer_ok; port: the port attach_viewer's caller expects, 0 for any).
 CONTROL_ARGS = {
     "attach": (), "new_code": (), "pause": (), "stop": (),
     "attach_viewer": ("port",), "viewer_code": ("viewer",), "viewer_heartbeat": ("viewer",), "viewer_away": ("viewer",),
 }
 CONTROL_COMMANDS = tuple(CONTROL_ARGS)
-VIEWER_MAX = 2 ** 31 - 1
 
 # Phase 0b and 0c: command -> exact argument schema {key: type}
 IMPLEMENTED = {
@@ -148,13 +149,9 @@ def exact_object(value, keys):
     return isinstance(value, dict) and set(value) == set(keys)
 
 
-def viewer_ok(value):
-    """A viewer generation as attach_viewer returns it: a positive int (never a bool)."""
-    return type(value) is int and 0 < value <= VIEWER_MAX
-
-
 def control_arg_ok(key, value):
-    """One extra key of a control request: viewer, a viewer generation; port, 0 (any) or a TCP port (never a bool)."""
+    """One extra key of a control request: viewer, a viewer token's shape (lifetime.viewer_ok); port, 0 (any) or a
+    TCP port (never a bool)."""
     if key == "port":
         return type(value) is int and 0 <= value <= 65535
     return viewer_ok(value)
@@ -180,7 +177,7 @@ class App:
         self.limits = RateLimiter()
         self.nonces = NonceCache()
         self._watch_lock = threading.Lock()
-        self._takeover_lock = threading.Lock()   # a code and its viewer generation are issued together
+        self._takeover_lock = threading.Lock()   # a code and its viewer token are issued together
         self.stopping = threading.Event()
         self.stop_reason = None
 
@@ -203,10 +200,10 @@ class App:
         if command == "attach_viewer" and args["port"] not in (0, self.port):
             return {"ok": False, "code": "viewer_port_mismatch"}     # before the takeover: nothing changes
         if command in ("attach", "attach_viewer"):
-            port, code, generation = self.takeover(terminal=command == "attach_viewer")
+            port, code, viewer = self.takeover(terminal=command == "attach_viewer")
             reply = {"ok": True, "port": port, "code": code}
             if command == "attach_viewer":
-                reply["viewer"] = generation
+                reply["viewer"] = viewer
             return reply
         if command == "new_code":           # silent: no takeover, nothing printed (control.py; DESIGN.md 9.1)
             return {"ok": True, "port": self.port, "code": self.auth.issue_code()}
@@ -228,28 +225,29 @@ class App:
     # --- takeovers and the ssh-session viewer (DESIGN.md 8.6 item 2, I-19) ---------------------------
 
     def takeover(self, *, terminal):
-        """(port, fresh code, viewer generation): pause, invalidate every earlier code and token, start a new viewer.
+        """(port, fresh code, viewer token): pause, invalidate every earlier code and token, start a new viewer.
 
         open's attach is a takeover without a terminal; ssh-session's (attach_viewer, or its own start) has one.
         """
         with self._takeover_lock:
             code = self.auth.issue_code(takeover=True)
-            generation = self.lifetime.takeover(terminal=terminal)
+            viewer = self.lifetime.takeover(terminal=terminal)
         self.watching_changed()
         self.engine.pause_external("takeover")
-        return self.port, code, generation
+        return self.port, code, viewer
 
-    def viewer_code(self, generation):
-        """A fresh single-use code for the current terminal viewer (Enter in ssh-session), else None."""
+    def viewer_code(self, viewer):
+        """A fresh single-use code for the current terminal viewer (Enter in ssh-session), named by its token,
+        else None."""
         with self._takeover_lock:                # never a code for a viewer a concurrent takeover replaced
-            return self.auth.issue_code() if self.lifetime.current(generation) else None
+            return self.auth.issue_code() if self.lifetime.current(viewer) else None
 
-    def viewer_heartbeat(self, generation):
-        return self.lifetime.heartbeat(generation)
+    def viewer_heartbeat(self, viewer):
+        return self.lifetime.heartbeat(viewer)
 
-    def viewer_away(self, generation):
+    def viewer_away(self, viewer):
         """stdin EOF or a failed write: pause, and keep the session for the grace period."""
-        if not self.lifetime.away(generation):
+        if not self.lifetime.away(viewer):
             return False
         self.engine.pause_external("not_watched")
         return True

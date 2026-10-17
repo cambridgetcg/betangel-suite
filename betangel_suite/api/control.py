@@ -14,16 +14,19 @@ keys}, at most MAX_LINE bytes, and gets one line back:
     pause             pause the clock, {"ok": true}
     stop              end the engine, {"ok": true}
     attach_viewer     {"port": p}: ssh-session's takeover (as attach), which also starts a terminal viewer:
-                      {"ok": true, "port": n, "code": c, "viewer": g}; viewer_port_mismatch, before any
+                      {"ok": true, "port": n, "code": c, "viewer": v}; viewer_port_mismatch, before any
                       takeover, when p is neither 0 (any) nor this engine's port
-    viewer_code       {"viewer": g}: a fresh code for that viewer (Enter), {"ok": true, "port": n, "code": c}
-    viewer_heartbeat  {"viewer": g}: the viewer is there (every 15 s), {"ok": true}
-    viewer_away       {"viewer": g}: stdin EOF or a failed write; pause, keep the session for the grace period
+    viewer_code       {"viewer": v}: a fresh code for that viewer (Enter), {"ok": true, "port": n, "code": c}
+    viewer_heartbeat  {"viewer": v}: the viewer is there (every 15 s), {"ok": true}
+    viewer_away       {"viewer": v}: stdin EOF or a failed write; pause, keep the session for the grace period
 
-The viewer commands answer {"ok": false, "code": "superseded"} once a later takeover has replaced viewer g
-(api/lifetime.py). Only open and ssh-session ask for a code, and they hand it to /usr/bin/open, the caller's
-stdout (open --print-url) or the viewer's terminal; this module never prints or logs one. new_code and
-viewer_code mint a code for whichever same-uid process asks, silently: nothing is printed to Yu, opened or paused
+v is the viewer's token, 32 hex digits from secrets.token_hex, new at every takeover and told only to the caller
+of attach_viewer (api/lifetime.py; until round 5 it was a guessable generation number, 1, 2, ...). The viewer
+commands answer {"ok": false, "code": "superseded"} for any other value, once a later takeover has replaced
+viewer v or when v was never issued. Only open and ssh-session ask for a code, and they hand it to /usr/bin/open,
+the caller's stdout (open --print-url) or the viewer's terminal; this module never prints or logs a code or a
+viewer token. new_code mints a code for whichever same-uid process asks, silently: nothing is printed to Yu,
+opened or paused, and viewer_code does the same for whichever process holds the current viewer's token
 (lab-Claude's description; Nuance's PR #1 review says "`new_code`/`viewer_code` mint silent tokens"). Only
 conduct keeps agents from sending them to the real socket (DESIGN.md 3.9 rule 6, 9.1, 9.4): a same-uid process
 could take the session over through attach anyway. The client side

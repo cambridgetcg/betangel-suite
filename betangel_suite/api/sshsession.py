@@ -51,7 +51,7 @@ import time
 from .. import guard, runmarker
 from ..errors import SuiteError
 from . import auth as auth_module
-from . import control
+from . import control, lifetime
 
 VIEWER_PORT = 8765                  # the viewer key's permitopen and the Air's LocalForward (DESIGN.md 8.6)
 HEARTBEAT_S = 15.0
@@ -156,12 +156,12 @@ class Viewer:
         self._clock = clock
         self._heartbeat_s = heartbeat_s
         self.state = ACTIVE
-        self.generation = None
+        self.token = None                        # the viewer token attach returned; kept in memory, never printed
         self._started = self._next = None
 
     def attach(self):
         """Take the session over and print its URL; SuiteError when the engine refuses or cannot be reached."""
-        port, code, self.generation = self._link.attach()
+        port, code, self.token = self._link.attach()
         self._started = self._clock()
         self._next = self._started + self._heartbeat_s
         if not self._terminal.write(url_line(port, code)):
@@ -176,7 +176,7 @@ class Viewer:
         if gone or self._terminal.failed:
             return self._go_away()
         if presses:
-            reply = self._link.code(self.generation)
+            reply = self._link.code(self.token)
             if not self._answer(reply):
                 return self.state
             if not self._terminal.write(url_line(*reply)):
@@ -186,7 +186,7 @@ class Viewer:
             self._next = now + self._heartbeat_s
             if not self._terminal.write(heartbeat_line(now - self._started)):
                 return self._go_away()
-            self._answer(self._link.heartbeat(self.generation))
+            self._answer(self._link.heartbeat(self.token))
         return self.state
 
     def _answer(self, reply):
@@ -199,8 +199,8 @@ class Viewer:
 
     def _go_away(self):
         self.state = AWAY
-        if self.generation is not None:
-            self._link.away(self.generation)     # superseded or gone: nothing more to do either way
+        if self.token is not None:
+            self._link.away(self.token)          # superseded or gone: nothing more to do either way
         return self.state
 
 
@@ -213,19 +213,19 @@ class LocalLink:
     def attach(self):
         return self._app.takeover(terminal=True)
 
-    def code(self, generation):
+    def code(self, viewer):
         if self._app.stopping.is_set():
             return None
-        code = self._app.viewer_code(generation)
+        code = self._app.viewer_code(viewer)
         return SUPERSEDED if code is None else (self._app.port, code)
 
-    def heartbeat(self, generation):
+    def heartbeat(self, viewer):
         if self._app.stopping.is_set():
             return None
-        return True if self._app.viewer_heartbeat(generation) else SUPERSEDED
+        return True if self._app.viewer_heartbeat(viewer) else SUPERSEDED
 
-    def away(self, generation):
-        return True if self._app.viewer_away(generation) else SUPERSEDED
+    def away(self, viewer):
+        return True if self._app.viewer_away(viewer) else SUPERSEDED
 
 
 class ControlLink:
@@ -243,29 +243,29 @@ class ControlLink:
         if reply.get("code") == "viewer_port_mismatch":
             raise SuiteError("viewer_port_mismatch")    # refused before the takeover: the session is as it was
         port, code, viewer = reply.get("port"), reply.get("code"), reply.get("viewer")
-        if not reply.get("ok") or not _port_ok(port) or not _code_ok(code) or not _viewer_ok(viewer):
+        if not reply.get("ok") or not _port_ok(port) or not _code_ok(code) or not lifetime.viewer_ok(viewer):
             raise SuiteError("control_failed")
         return port, code, viewer
 
-    def code(self, generation):
-        reply = self._ask("viewer_code", generation)
+    def code(self, viewer):
+        reply = self._ask("viewer_code", viewer)
         if reply is None or reply == SUPERSEDED:
             return reply
         port, code = reply.get("port"), reply.get("code")
         return (port, code) if _port_ok(port) and _code_ok(code) else None
 
-    def heartbeat(self, generation):
-        reply = self._ask("viewer_heartbeat", generation)
+    def heartbeat(self, viewer):
+        reply = self._ask("viewer_heartbeat", viewer)
         return True if isinstance(reply, dict) else reply
 
-    def away(self, generation):
-        reply = self._ask("viewer_away", generation)
+    def away(self, viewer):
+        reply = self._ask("viewer_away", viewer)
         return True if isinstance(reply, dict) else reply
 
-    def _ask(self, command, generation):
+    def _ask(self, command, viewer):
         """The ok reply dict, SUPERSEDED, or None when the engine has gone (or answers nonsense)."""
         try:
-            reply = control.request(command, self._home, args={"viewer": generation})
+            reply = control.request(command, self._home, args={"viewer": viewer})
         except SuiteError as exc:
             if exc.code not in ("control_unavailable", "control_failed"):
                 raise
@@ -283,10 +283,6 @@ def _port_ok(port):
 
 def _code_ok(code):
     return isinstance(code, str) and bool(auth_module.CODE_RE.fullmatch(code))
-
-
-def _viewer_ok(viewer):
-    return type(viewer) is int and viewer > 0
 
 
 class Session:

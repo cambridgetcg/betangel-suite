@@ -3,8 +3,14 @@
 One Lifetime per engine. It knows two things the clock alone does not: who took the session over last (a
 terminal viewer, that is ssh-session, or a page opened by open), and how long the session has run.
 
-- A takeover (open, ssh-session, or a control attach) starts a new viewer generation. Only the newest
-  generation may ask for codes, report heartbeats or report itself away; an older one is superseded.
+- A takeover (open, ssh-session, or a control attach) starts a new viewer, named by a fresh viewer token:
+  secrets.token_hex(VIEWER_TOKEN_BYTES), 128 random bits, told only to the caller that took the session over
+  (ssh-session keeps it in memory and never prints it). Only the newest viewer's token may ask for codes, report
+  heartbeats or report itself away; an older one is superseded. Until round 5 the viewer was named by a small
+  generation number (1, 2, ...), which any process of this user could guess and then mint codes with
+  (viewer_code) without being told; a token it was never told it cannot guess (lab-Claude's decision in round 5,
+  on round 4b's question). The control socket's new_code still mints codes for any same-uid caller (DESIGN.md
+  9.4).
 - A terminal viewer reports a heartbeat every 15 s (sshsession.HEARTBEAT_S). It goes away when it reports
   stdin EOF or a failed write (away()), or when no heartbeat arrived for viewer_timeout_s (a viewer that died
   without saying so). The engine pauses then (check() asks for it once), and the session is kept.
@@ -17,14 +23,25 @@ terminal viewer, that is ssh-session, or a page opened by open), and how long th
   not.
 
 The clock is injectable (seconds, monotonic), so tests drive grace and maximum time without waiting. Nothing
-here prints, logs or holds a code or a token. Standard library only.
+here prints or logs a code, a session token or a viewer token; it holds only the newest viewer's token, which it
+compares in constant time (hmac.compare_digest). Standard library only.
 """
 
+import hmac
+import re
+import secrets
 import threading
 import time
 
 VIEWER_TIMEOUT_S = 60.0             # four missed 15 s heartbeats
+VIEWER_TOKEN_BYTES = 16             # a viewer token: secrets.token_hex, 32 lowercase hex digits
+VIEWER_RE = re.compile(r"[0-9a-f]{%d}" % (2 * VIEWER_TOKEN_BYTES))
 ENDS = ("abandoned", "max_session")
+
+
+def viewer_ok(value):
+    """A viewer token's shape, as takeover() makes it: a str of 32 lowercase hex digits (never an int or bytes)."""
+    return type(value) is str and bool(VIEWER_RE.fullmatch(value))
 
 
 class Lifetime:
@@ -39,7 +56,8 @@ class Lifetime:
         self._clock = clock
         self._lock = threading.Lock()
         self._started = clock()
-        self._generation = 0
+        self._generation = 0            # takeovers so far (counts only; never a viewer's name)
+        self._viewer = None             # the newest viewer's token
         self._terminal = False          # the newest viewer is a terminal (ssh-session)
         self._seen = None               # its last heartbeat (clock seconds)
         self._away = False
@@ -49,40 +67,42 @@ class Lifetime:
     # --- viewers ------------------------------------------------------------------------------------
 
     def takeover(self, *, terminal):
-        """A new viewer took the session over; returns its generation (1, 2, ...). Any grace is cancelled."""
+        """A new viewer took the session over; returns its token, fresh from secrets.token_hex. Any grace is
+        cancelled, and every earlier viewer's token is superseded."""
         with self._lock:
             self._generation += 1
+            self._viewer = secrets.token_hex(VIEWER_TOKEN_BYTES)
             self._terminal = bool(terminal)
             self._seen = self._clock()
             self._away = False
             self._unwatched_since = None
-            return self._generation
+            return self._viewer
 
-    def current(self, generation):
-        """True when generation is the newest viewer and a terminal (it may ask for a fresh code)."""
+    def current(self, viewer):
+        """True when viewer is the newest viewer's token and a terminal's (it may ask for a fresh code)."""
         with self._lock:
-            return self._is_current(generation)
+            return self._is_current(viewer)
 
-    def heartbeat(self, generation):
+    def heartbeat(self, viewer):
         """The terminal viewer is there; False when it has been superseded."""
         with self._lock:
-            if not self._is_current(generation):
+            if not self._is_current(viewer):
                 return False
             self._seen = self._clock()
             self._away = False                  # a late heartbeat after a timeout: it is evidently there
             self._unwatched_since = None
             return True
 
-    def away(self, generation):
+    def away(self, viewer):
         """The terminal viewer saw stdin EOF or a failed write; False when it has been superseded."""
         with self._lock:
-            if not self._is_current(generation):
+            if not self._is_current(viewer):
                 return False
             self._away = True
             return True
 
-    def _is_current(self, generation):
-        return (type(generation) is int and generation > 0 and generation == self._generation
+    def _is_current(self, viewer):
+        return (viewer_ok(viewer) and self._viewer is not None and hmac.compare_digest(viewer, self._viewer)
                 and self._terminal and self._ended is None)
 
     # --- the engine's periodic check ----------------------------------------------------------------

@@ -9,7 +9,7 @@ bootstrap codes and session tokens, the NDJSON frame stream, the static UI and t
     static.py   the UI files, mapped from ui/manifest.json by exact name
     control.py  run/control.sock: attach, new_code, pause and stop, and the ssh-session viewer's commands, for
                 same-uid peers; the stop command
-    lifetime.py pause unless watched (Phase 0c): viewer generations, the grace and the maximum session time
+    lifetime.py pause unless watched (Phase 0c): viewer tokens, the grace and the maximum session time
     sshsession.py  bin/suite ssh-session (Phase 0c): the viewer's terminal, in the engine's process or attached
 
 Importing betangel_suite.api imports nothing else; cli.py imports these modules only inside the serve,

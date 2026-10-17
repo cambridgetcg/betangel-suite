@@ -185,8 +185,8 @@ for name, data in (("unknown", b'{"command": "kill"}\\n'), ("extra", b'{"command
                    ("array", b'["stop"]\\n'), ("nan", b'{"command": NaN}\\n'),
                    ("too_long", b'{"command": "' + b"x" * 2000 + b'"}\\n'), ("no_newline", b'{"command": "stop"}'),
                    ("viewer_missing", b'{"command": "viewer_heartbeat"}\\n'),
-                   ("viewer_on_stop", b'{"command": "stop", "viewer": 1}\\n'),
-                   ("viewer_attach_args", b'{"command": "attach_viewer", "viewer": 1}\\n'),
+                   ("viewer_on_stop", b'{"command": "stop", "viewer": "' + b"7" * 32 + b'"}\\n'),
+                   ("viewer_attach_args", b'{"command": "attach_viewer", "viewer": "' + b"7" * 32 + b'"}\\n'),
                    ("port_missing", b'{"command": "attach_viewer"}\\n'),
                    ("port_on_attach", b'{"command": "attach", "port": 8765}\\n'),
                    ("port_bool", b'{"command": "attach_viewer", "port": true}\\n'),
@@ -198,16 +198,23 @@ for name, data in (("unknown", b'{"command": "kill"}\\n'), ("extra", b'{"command
                    ("viewer_text", b'{"command": "viewer_code", "viewer": "1"}\\n'),
                    ("viewer_float", b'{"command": "viewer_code", "viewer": 1.0}\\n'),
                    ("viewer_huge", b'{"command": "viewer_code", "viewer": 2147483648}\\n'),
-                   ("viewer_extra", b'{"command": "viewer_code", "viewer": 1, "x": 1}\\n')):
+                   # the viewer is named by its token (32 lowercase hex digits), never by a generation number
+                   ("viewer_int", b'{"command": "viewer_code", "viewer": 1}\\n'),
+                   ("viewer_upper", b'{"command": "viewer_code", "viewer": "' + b"A" * 32 + b'"}\\n'),
+                   ("viewer_short", b'{"command": "viewer_code", "viewer": "' + b"a" * 31 + b'"}\\n'),
+                   ("viewer_long", b'{"command": "viewer_code", "viewer": "' + b"a" * 33 + b'"}\\n'),
+                   ("viewer_non_hex", b'{"command": "viewer_code", "viewer": "' + b"g" * 32 + b'"}\\n'),
+                   ("viewer_extra", b'{"command": "viewer_code", "viewer": "' + b"7" * 32 + b'", "x": 1}\\n')):
     results[name] = talk(data) if name != "no_newline" else None
 for command in ("attach_viewer",):
     results[command] = talk(json.dumps({"command": command, "port": 8765}).encode() + b"\\n")
 for command in ("viewer_code", "viewer_heartbeat", "viewer_away"):
-    results[command] = talk(json.dumps({"command": command, "viewer": 7}).encode() + b"\\n")
+    results[command] = talk(json.dumps({"command": command, "viewer": "7" * 32}).encode() + b"\\n")
 from betangel_suite.errors import SuiteError
 for name, call in (("client_unknown", lambda: control.request("kill")),
                    ("client_missing_viewer", lambda: control.request("viewer_code")),
                    ("client_bool_viewer", lambda: control.request("viewer_code", args={"viewer": True})),
+                   ("client_int_viewer", lambda: control.request("viewer_code", args={"viewer": 3})),
                    ("client_missing_port", lambda: control.request("attach_viewer")),
                    ("client_bool_port", lambda: control.request("attach_viewer", args={"port": False}))):
     try:
@@ -215,7 +222,7 @@ for name, call in (("client_unknown", lambda: control.request("kill")),
         results[name] = "sent"
     except SuiteError as exc:
         results[name] = str(exc)
-results["client_viewer"] = control.request("viewer_heartbeat", args={"viewer": 3})
+results["client_viewer"] = control.request("viewer_heartbeat", args={"viewer": "3" * 32})
 results["client_any_port"] = control.request("attach_viewer", args={"port": 0})
 results["calls"] = calls
 server.close()
@@ -228,18 +235,21 @@ results["removed"] = not os.path.lexists(path)
         self.assertEqual((results["pause"], results["stop"]), ({"ok": True}, {"ok": True}))
         for name in ("unknown", "extra", "duplicate", "not_json", "array", "nan", "too_long", "viewer_missing",
                      "viewer_on_stop", "viewer_attach_args", "viewer_zero", "viewer_bool", "viewer_text",
-                     "viewer_float", "viewer_huge", "viewer_extra", "port_missing", "port_on_attach", "port_bool",
+                     "viewer_float", "viewer_huge", "viewer_int", "viewer_upper", "viewer_short", "viewer_long",
+                     "viewer_non_hex", "viewer_extra", "port_missing", "port_on_attach", "port_bool",
                      "port_negative", "port_huge", "port_text"):
             self.assertEqual(results[name], {"ok": False, "code": "control_bad_request"}, name)
         for name in ("attach_viewer", "viewer_code", "viewer_heartbeat", "viewer_away", "client_viewer",
                      "client_any_port"):
             self.assertEqual(results[name], {"ok": True}, name)
-        for name in ("client_unknown", "client_missing_viewer", "client_bool_viewer", "client_missing_port",
-                     "client_bool_port"):
+        for name in ("client_unknown", "client_missing_viewer", "client_bool_viewer", "client_int_viewer",
+                     "client_missing_port", "client_bool_port"):
             self.assertEqual(results[name], "control_bad_request", name)       # refused before anything is sent
         self.assertEqual(results["calls"], ["attach", "new_code", "pause", "stop", ["attach_viewer", {"port": 8765}],
-                                            ["viewer_code", {"viewer": 7}], ["viewer_heartbeat", {"viewer": 7}],
-                                            ["viewer_away", {"viewer": 7}], ["viewer_heartbeat", {"viewer": 3}],
+                                            ["viewer_code", {"viewer": "7" * 32}],
+                                            ["viewer_heartbeat", {"viewer": "7" * 32}],
+                                            ["viewer_away", {"viewer": "7" * 32}],
+                                            ["viewer_heartbeat", {"viewer": "3" * 32}],
                                             ["attach_viewer", {"port": 0}]])
         self.assertTrue(results["removed"])
 
@@ -250,9 +260,9 @@ results["removed"] = not os.path.lexists(path)
         results = checks(self, home, setup="", body=SERVER + """
 server = control.ControlServer(path, handler)
 server.start()
-results["before_seal"] = control.request("viewer_heartbeat", args={"viewer": 3})
+results["before_seal"] = control.request("viewer_heartbeat", args={"viewer": "3" * 32})
 guard.seal()
-results["after_seal"] = control.request("viewer_away", args={"viewer": 3})
+results["after_seal"] = control.request("viewer_away", args={"viewer": "3" * 32})
 server.close()
 """)
         self.assertEqual((results["before_seal"], results["after_seal"]), ({"ok": True}, {"ok": True}))
