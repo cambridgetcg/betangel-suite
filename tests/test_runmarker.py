@@ -541,6 +541,20 @@ sys.exit(run(["diagnose"]))
         self.assertEqual(self.finish(self.holder(body)), (2, "", "refused:run_lock_not_held\n"))
         self.assertEqual(os.listdir(roots.data_home(self.home)), [])
 
+    def test_a_state_root_it_cannot_write_refuses(self):
+        # The round-4 reviewer's state_not_writable probe: run/ cannot be made, so the lock cannot be opened. That
+        # was an uncaught PermissionError (exit 1), not a refusal.
+        state = roots.state_dir(self.home)
+        os.chmod(state, 0o500)
+        self.addCleanup(os.chmod, state, 0o700)
+        body = r"""
+cli._HANDLERS["diagnose"] = lambda args: 0
+sys.exit(run(["diagnose"]))
+"""
+        self.assertEqual(self.finish(self.holder(body)), (2, "", "refused:run_lock_invalid\n"))
+        self.assertFalse(os.path.lexists(roots.run_dir(self.home)))
+        self.assertEqual(os.listdir(roots.data_home(self.home)), [])
+
     def test_only_a_real_private_lock_file_is_held(self):
         state = roots.state_dir(self.home)
         cases = []

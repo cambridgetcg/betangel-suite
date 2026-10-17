@@ -117,15 +117,18 @@ def hold_shared(marker, lock):
     run/ (through the writer helper) and the lock file (0600) if they are missing. SuiteError, with the lock let go
     again, when:
       - run_lock_busy: the lock is not granted at once (Nuance's wrapper holds LOCK_EX);
-      - run_lock_invalid: the file cannot be opened or locked; it is not a regular file owned by this user with one
-        link and no group or other write bit; or it is no longer the file at lock once locked (replaced meanwhile);
-        or this process already holds a lock;
+      - run_lock_invalid: the file cannot be opened or locked, or run/ cannot be made (a state root this user cannot
+        write); it is not a regular file owned by this user with one link and no group or other write bit; or it is
+        no longer the file at lock once locked (replaced meanwhile); or this process already holds a lock;
       - run_marker_present or run_marker_unreadable: the marker exists, or cannot be checked, once the lock is held.
     """
     global _HELD
     if _HELD is not None:
         raise SuiteError("run_lock_invalid")
-    roots.ensure_dir(os.path.dirname(lock))
+    try:
+        roots.ensure_dir(os.path.dirname(lock))
+    except OSError:                                     # an uncaught PermissionError before (round-4 review)
+        raise SuiteError("run_lock_invalid") from None
     fd = _open_lock(lock)
     try:
         code = _lock_shared(fd)
