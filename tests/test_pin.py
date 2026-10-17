@@ -214,6 +214,45 @@ class VerifyCopyTests(unittest.TestCase):
                          ["pin_mismatch", "upstream_absent"])
 
 
+class OpenBelowTests(unittest.TestCase):
+    """pin._open_below: "tree itself must not be a link, though its ancestors may be", with O_NOFOLLOW_ANY and with
+    the component walk that replaces it."""
+
+    def test_the_tree_itself_spelt_with_a_final_slash_or_dot(self):
+        # The guard-paths review: a final "/", "/." or "//" makes the kernel follow a link at tree even with
+        # O_NOFOLLOW, so tree-link + "/" opened the file below the link's target. No caller passes such a spelling
+        # (deps_dir and vendor's partial and dest are joined paths), so this pins the function's own contract: tree
+        # must end in its own name, and a real tree spelt that way is refused too.
+        home = make_home(self)
+        base = os.path.join(home, "trees")
+        tree = os.path.join(base, "tree")
+        os.makedirs(os.path.join(tree, "a", "b", "c"))
+        with open(os.path.join(tree, "a", "b", "c", "f.txt"), "w", encoding="utf-8") as handle:
+            handle.write("synthetic")
+        tree_link = os.path.join(base, "tree-link")
+        os.symlink(tree, tree_link)
+        base_link = os.path.join(home, "trees-link")
+        os.symlink(base, base_link)
+
+        def opens(spelled):
+            try:
+                os.close(pin._open_below(spelled, "a/b/c/f.txt"))
+            except OSError:
+                return False
+            return True
+
+        for nofollow_any in (pin._NOFOLLOW_ANY, 0):
+            with mock.patch.object(pin, "_NOFOLLOW_ANY", nofollow_any):
+                self.assertTrue(opens(tree))
+                self.assertTrue(opens(os.path.join(base_link, "tree")))           # an ancestor a link: fine
+                self.assertEqual(pin.read_below(tree, "a/b/c/f.txt"), b"synthetic")
+                for spelled in (tree_link, tree_link + "/", tree_link + "/.", tree_link + "//", tree_link + "/./",
+                                tree + "/", tree + "/.", os.path.join(tree, "a", "..")):
+                    with self.subTest(nofollow_any=bool(nofollow_any), tree=spelled[len(base):]):
+                        self.assertFalse(opens(spelled))
+                        self.assertIsNone(pin.read_below(spelled, "a/b/c/f.txt"))
+
+
 class ActivationTests(unittest.TestCase):
 
     def test_unarmed_process_cannot_activate_or_import_rx(self):

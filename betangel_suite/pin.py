@@ -345,11 +345,14 @@ def _open_below(tree, relpath):
     with ELOOP at a symlink anywhere in it: a deps tree whose research/ links into the deploy clone is refused
     (Nuance's PR #2 review, item 8). Without O_NOFOLLOW_ANY the walk is done here instead, one component at a
     time, each opened O_NOFOLLOW (directories also O_DIRECTORY), which refuses the same links. relpath must be a
-    plain relative path (no "", "." or ".." component). OSError otherwise.
+    plain relative path (no "", "." or ".." component), and tree must end in its own name: a final "/", "/." or
+    "//" makes the kernel follow a link at tree despite O_NOFOLLOW (the guard-paths review). OSError otherwise.
     """
     parts = relpath.split("/")
     if os.path.isabs(relpath) or any(part in ("", os.curdir, os.pardir) for part in parts):
         raise OSError("not a plain relative path")
+    if os.path.basename(tree) in ("", os.curdir, os.pardir):
+        raise OSError("tree does not end in its own name")
     top = os.open(tree, _READ_FLAGS | os.O_DIRECTORY | os.O_NOFOLLOW)
     current = top
     try:
