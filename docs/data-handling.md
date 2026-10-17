@@ -15,7 +15,7 @@ clone, and is never uploaded or shared. A model context counts as an upload.
 | Destination | Allowed | Never |
 |---|---|---|
 | **git** (commits, branches, PRs, issues) | Source, docs, the pin file, synthetic fixtures *generators*, synthetic screenshots under `docs/synthetic/` | `*.bz2`, `*.tar`, any archive, `*.sqlite*`, `*.jsonl`, CSV and other exports, `run/`, `exports/`, `ledger/`, `private/` and other state directories, any file over 512 KiB (DESIGN.md is the one allowlisted file), real market, event or selection ids, runner names, prices, member paths, keys, tokens |
-| **Logs, stdout, stderr, HTTP errors** | Error codes, counts, timings, salted identifier hashes (pseudonymous, not anonymous; DESIGN.md 9.2 item 9) | Tracebacks (these go only to 0600 files under `private/`), request bodies, data rows, member paths, ids, names, prices, the bootstrap code or session token |
+| **Logs, stdout, stderr, HTTP errors** | Error codes, counts, timings, salted identifier hashes (pseudonymous, not anonymous; DESIGN.md 9.2 item 9) | Tracebacks (Phase 0 writes none anywhere; later, only 0600 files under `private/`, which agents never read), request bodies, data rows, member paths, ids, names, prices, the bootstrap code or session token |
 | **Model context, Collab, the mailbox** (lab-Claude, Nuance, Astra) | Codes, counts, timings and salted hashes, as printed by `bin/suite selfcheck`, `catalogue`, `diagnose` and `ledger-summary`; synthetic fixtures; uisnap screenshots of synthetic markets | Real rows, runner names, prices, market ids, per-market results; anything under `~/betangel-data`, read, searched or listed (the ledger, `sessions/` and `private/` included); the install salt; screenshots of real races |
 | **Screenshots** | uisnap PNGs of synthetic-only engines, kept under `docs/synthetic/` | Any screenshot of a real market. On the lab, agents have no Screen Recording permission, and `screencapture` is never used on the lab screen. On the Air an agent's shell passes the screen-capture preflight with no prompt, so no agent captures the screen there while a suite page or an `ssh lab-suite` window is open (DESIGN.md 8.6; Nuance's PR #1 review, item 6). A line saying so in the Air's CLAUDE.md (Q-Y10) was approved by Yu on 2026-10-17 and is in (Nuance confirmed it on 2026-10-17): a CLAUDE.md rule for Claude Code sessions on the Air; for Astra and other tools it is conduct only |
 | **The browser** | A Safari Private window, on both machines (Q-Y11, answered by Yu on 2026-10-17); UI preferences in `localStorage` | The session token in storage, cookies, external requests; a page title that names a race (it is always `betangel-suite`) |
@@ -46,14 +46,15 @@ lab-Claude adds a code-only check to `bin/suite diagnose` (DESIGN.md 8.7; Nuance
 item 2). Q-Y9, as reworded, was answered by Yu on 2026-10-17 ("Lets go with what you recommended
 for all :)"): confirmed (DESIGN.md 2.2.1).
 
-Yu's OK alone cannot make an exception. A model context counts as an upload, and the licence
-prohibits "the use of the Historical Betfair Data by, another organization or individual" unless
-"a specific agreement in writing with Betfair exists". Betfair has not ruled on model providers
-(proposal 001, sections 5.1-5.2). So real fields reach a model provider only with Betfair's
-specific written agreement naming that provider, plus Yu's explicit OK each time, in Yu's own
-words in Yu's direct channel, scoped to one problem report and named fields. Yu's answer would be
-recorded in that report's folder, and nothing beyond its scope read. A relay from another agent is
-never that OK. Until such an agreement exists, exceptions are not available.
+Yu's OK alone cannot make an exception. A model context counts as an upload, and the Betfair
+Historical Data terms' "No onward distribution" clause prohibits "the use of the Historical
+Betfair Data by, another organization or individual" unless "a specific agreement in writing
+with Betfair exists". Betfair has not ruled on model providers (the clause as quoted in proposal
+001, sections 5.1-5.2; proposal 001 is PR #3, not merged). So real fields reach a model provider
+only with Betfair's specific written agreement naming that provider, plus Yu's explicit OK each
+time, in Yu's own words in Yu's direct channel, scoped to one problem report and named fields.
+Yu's answer would be recorded in that report's folder, and nothing beyond its scope read. A relay
+from another agent is never that OK. Until such an agreement exists, exceptions are not available.
 
 No "same-shape" fixture is ever derived from a real report: it would still be licensed.
 
