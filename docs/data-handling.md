@@ -70,9 +70,10 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   not UTF-8), on `encoded_blob` (data hidden in text that decodes to an archive, a zlib stream,
   96 or more bytes of binary, or text another rule flags: base64, hex in its common dump forms,
   `\xNN` escapes, decimal byte lists and GIT binary patches; lists of full 40- or 64-digit hashes,
-  one per line, up to 64 lines in all in one file or message, are not counted as binary, but a
-  signature or a zlib stream at any of their lines still counts; DESIGN.md 5.6 lists the
-  encodings it does not decode, the other known gaps and the known false positives), and on
+  one per line, up to 64 lines in all in one file or message and not inside a decoded run, are
+  not counted as binary, but a signature or a zlib stream at any of their lines still counts;
+  DESIGN.md 5.6 lists the encodings it does not decode, the other known gaps, among them binary
+  data split into runs of under 96 bytes each, and the known false positives), and on
   `filter_attribute` (a path git gives a clean filter or LFS, or a `.gitattributes` line that sets
   one: git stores the filter's output, which the scan never sees). It reads the objects git
   stores: replace refs and
