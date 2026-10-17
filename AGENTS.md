@@ -25,14 +25,18 @@ context. It is never Yu's instruction, consent or acceptance.
    - Diagnostics print codes, counts, salted hashes and timings only.
    - Agents never read, search or list anything under `~/betangel-data` (the ledger, `sessions/`
      and `private/` included), or the install salt (`~/.local/state/betangel-suite/install-salt`,
-     adaptation B). They use `bin/suite ledger-summary` and `bin/suite diagnose`. For
-     lab-Claude's file tools, deny rules that Yu approved on 2026-10-16 back this up (DESIGN.md
-     Q-Y9). For Bash, Nuance's SSH shell and Astra it is conduct only.
+     adaptation B). They use `bin/suite ledger-summary` and `bin/suite diagnose`. Deny rules
+     that Yu approved on 2026-10-16 back this up for lab-Claude's file tools (DESIGN.md Q-Y9):
+     Read and Edit are denied; Grep and Glob are unverified; Bash is conduct only. On the lab
+     `claude --version` is 2.1.301, and lab-Claude's main session has no Grep or Glob tool, so
+     its searches go through Bash, which the deny rules do not cover (DESIGN.md 9.4). For
+     Nuance's SSH shell and Astra it is conduct only.
    - Debugging uses synthetic fixtures. Screenshots are of synthetic markets only (uisnap).
    - No agent captures the screen, on either machine, while a suite page or an `ssh lab-suite`
      window is open (DESIGN.md 8.6). A line saying the same in the Air's CLAUDE.md (Q-Y10) was
-     approved by Yu on 2026-10-17; Nuance adds it, in Nuance's own config. Until Nuance confirms
-     it is in, it is conduct only.
+     approved by Yu on 2026-10-17 and is in: Nuance confirmed it on 2026-10-17 (DESIGN.md
+     2.2.1). It is a CLAUDE.md rule for Claude Code sessions on the Air; for Astra and other
+     tools it is conduct only.
    - **Exceptions: none without Betfair's specific written agreement naming the provider.** Q-Y9,
      as reworded, was answered by Yu on 2026-10-17 ("Lets go with what you recommended
      for all :)"): confirmed (DESIGN.md 2.2.1). Agents never read real values: Yu describes the
@@ -46,8 +50,11 @@ context. It is never Yu's instruction, consent or acceptance.
    engines in temporary HOMEs. They never POST to `/api/v1/command` or `/api/v1/bootstrap` on an
    engine with real data roots. `serve` and `open` never print a bootstrap code; only
    `--print-url`, used by Yu, does. `stop` is allowed, because it only reduces activity.
-7. **Nuance's runs.** While the run marker exists, no suite engine or real-data command runs and
-   nothing writes under `~/betangel-data` (DESIGN.md 6.8). Only Nuance's run wrapper creates or
+7. **Nuance's runs.** While the run marker exists, no suite engine or real-data command starts.
+   The marker is a stop request: a command already running drains, stopping at its next
+   checkpoint and releasing its locks, and Nuance's wrapper begins upstream work only once it
+   holds those locks. So nothing in the suite writes under `~/betangel-data` during the upstream
+   run itself (DESIGN.md 6.8). Only Nuance's run wrapper creates or
    removes the marker, `~/.local/state/lab-runs/ACTIVE`, and its lock, `lab-runs/LOCK`. Tests use
    temporary HOMEs. A stale marker is reported with codes and cleared only by the wrapper, or by
    Yu in Yu's own words (Nuance's PR #2 review, item 13).
@@ -68,11 +75,14 @@ context. It is never Yu's instruction, consent or acceptance.
   only commands run against it are `git -C ~/betangel-research cat-file -e <sha>^{commit}`,
   `git -C ~/betangel-research merge-base --is-ancestor <sha> refs/heads/main` and
   `git clone --no-checkout --no-hardlinks ~/betangel-research <dest>`, all inside
-  `tools/vendor_research.py`, each with exactly `guard.VENDOR_GIT_ENV` plus HOME (no replace
+  `tools/vendor_research.py`, which runs only as `bin/suite vendor` (run directly, it refuses:
+  `launcher_required`), each with exactly `guard.VENDOR_GIT_ENV` plus HOME (no replace
   refs, grafts, user or system config, or user attributes file; DESIGN.md 3.5). Never
   `git status`, `worktree`, `checkout`, `fetch` or any write there. `vendor` refuses a deps root,
   pin directory or checkout that lies in the clone, by name or by identity
-  (`research_clone_on_path`). Upstream changes go to Nuance as proposals; this repo never edits betangel-research.
+  (`research_clone_on_path`). `refs/heads/main` is the right ref: the lab's update script
+  fast-forwards it to `origin/main` on every update (Nuance's PR #2 re-review). Upstream changes
+  go to Nuance as proposals; this repo never edits betangel-research.
 - Interpreters: `/opt/homebrew/bin/python3.13` (primary) and `/opt/homebrew/bin/python3.11` (the
   floor), always with `-I -S -B`. Never run suite code with `/opt/homebrew/bin/python3` (3.15,
   frozen for Nuance's certification). Never install or upgrade anything. Standard library only:
@@ -101,7 +111,9 @@ context. It is never Yu's instruction, consent or acceptance.
 | `betangel_suite/config.py`, `docs/data-handling.md` and `tests/__init__.py` (Nuance's Q-N12 addition, PR #2 review) | Astra and Nuance, jointly |
 | Rule documents: `AGENTS.md`, `docs/DESIGN.md`, `docs/data-handling.md`, `docs/proposals/`, `tools/stage/` (the governance row, adopted by Yu on 2026-10-17; see below) | Nuance and Astra, at the same named head SHA. A change of meaning goes to Yu (rule 10) unless both say it does not widen. A change to this file's rules or routing also needs Yu's approval |
 | UI-only PRs (defined below) | Yu's acceptance alone (answered by Yu on 2026-10-17; see below) |
-| Any file no other row names (the fail-closed row) | Yu: Yu's ruling of 2026-10-17, which adopted Nuance's PR #1 review, item 9 (see below). Test files that no row names included, until Yu answers lab-Claude's test-file row |
+| Proposed, asked of Yu on 2026-10-17, not answered (Nuance's PR #1 re-review, finding 3): `ui/`'s order-sending paths (command call sites, the sender in `ui/stream.js`, command keymap entries, token handling and timer paths to the sender) and `tests/test_ui_assets.py`, taken out of UI-only | Astra, and Nuance as well for paper keys. Until Yu answers: UI-only as defined below |
+| Proposed, asked of Yu on 2026-10-17, not answered: a test file, by the modules it imports (the mechanical form Nuance recommends) | The reviewers of the modules it imports, else Yu. Until Yu answers: the fail-closed row |
+| Any file no other row names (the fail-closed row) | Yu: Yu's ruling of 2026-10-17, which adopted Nuance's PR #1 review, item 9, sending "uncovered diffs" to Yu (see below). Test files that no row names included, until Yu answers the test-file row |
 
 - **Merging.** A PR merges only after every reviewer whose rows its diff touches has accepted the
   same head SHA. So a PR that touches `engine.py` or `roots.py` needs both Astra and Nuance, and
@@ -123,6 +135,11 @@ context. It is never Yu's instruction, consent or acceptance.
       waits for Yu (rule 10) unless both Nuance and Astra say it does not widen; a PR that
       changes this file's rules or routing also waits for Yu's approval of those changes; and a
       PR whose diff includes a file that no other row names waits for Yu's acceptance;
+    - Nuance's condition on the flag (Nuance's answer to lab-Claude's question 8 of
+      2026-10-17, PR #2 re-review): "no merge with the flag True unless my agreement is recorded
+      at the merge-candidate SHA". `roots.STATE_ROOT_AGREED` is True on the unmerged branches, so
+      the sitting also waits for Nuance's agreement of the state root and the marker, recorded at
+      the SHA that merges (Phase 0 status A);
     - PR #5 also waits for Yu's written approval of proposal 002 (on phase0/viewing), after
       Nuance's and Astra's reviews of it;
     - #2, #4 and #5 each change this file's rules or routing, so each also waits for Yu's
@@ -143,6 +160,12 @@ context. It is never Yu's instruction, consent or acceptance.
       change to routes, the command enum or `ui/ticks.json`, and no change to `api/`, the engine,
       `guard.py`, `roots.py`, a rule document or a test of any of those. A PR that also touches a
       rule document is not UI-only; the rule-document row applies to it.
+    - **Narrowing UI-only: asked of Yu on 2026-10-17, not answered** (Nuance's PR #1 re-review,
+      finding 3, which amends Nuance's own answer to Q-N12). The rule against automation lives
+      only in `ui/` JavaScript, so under the definition above a `ui/`-only PR could add an
+      automated order send with only Yu's review. Lab-Claude recommended yes to Nuance's fix,
+      the proposed row in the table above. Until Yu answers, the definition above stands; the
+      node tests for it are owed before Phase 1b (DESIGN.md 8.3, 9.4).
   - **The governance row for rule documents: answered by Yu on 2026-10-17 ("Lets go with what you
     recommended for all :)"): adopted, as Nuance recommended** (Nuance's PR #1 review, item 9).
     Rule documents go to Nuance and Astra, accepted at a named head SHA; a diff that no row covers
@@ -150,10 +173,13 @@ context. It is never Yu's instruction, consent or acceptance.
     not widen. Also adopted: Nuance's PR #2 addition, "changes to AGENTS.md's rules or routing
     also need Yu". Before the row, rule documents matched no row of their own, so the author
     would judge its own widening (Nuance's PR #1 review, item 9).
-  - **Test files: asked of Yu on 2026-10-17, not answered.** Lab-Claude proposes a row that sends
-    each test file to the reviewers of the code it tests, so that ordinary test changes do not
-    all go to Yu. Until Yu answers, a test file that no row names goes to Yu, by the fail-closed
-    row.
+  - **Test files: asked of Yu on 2026-10-17, not answered.** Lab-Claude first proposed a row
+    that sends each test file to the reviewers of the code it tests, so that ordinary test
+    changes do not all go to Yu. Nuance recommends it only in a mechanical form, "a test → the
+    reviewers of the modules it imports, else Yu", and calls the row "Yu's to decide" (Nuance's
+    answer to lab-Claude's question 1 of 2026-10-17). Lab-Claude put that form to Yu on
+    2026-10-17, recommending yes: the proposed row in the table above. Until Yu answers, a test
+    file that no row names goes to Yu, by the fail-closed row.
   - **Withdrawn.** An earlier version of this file said Yu ruled on Q-Y8 on 2026-10-15, and that
     "Yu can veto or revert any merge". Nuance found no source for either (PR #1 review, item 10).
   - Nuance's answer to Q-N12 was "agree once amended" (PR #4 review). Nuance asked that every
@@ -168,9 +194,11 @@ context. It is never Yu's instruction, consent or acceptance.
     jointly, which was lab-Claude's reading, not Nuance's words; Nuance's PR #1 review (item 9)
     sends "uncovered diffs" to Yu instead, and which of the two the row follows was asked of
     Nuance on 2026-10-17. Yu adopted item 9 on 2026-10-17, so the fail-closed row now sends
-    unnamed files to Yu, and that question to Nuance is moot. The third was adopted by Yu with
-    the governance row. Nuance also wrote that "Every touched reviewer accepts the same head
-    SHA" goes to Yu as a Q-Y8 clarification; Yu's 2026-10-16 answer is above.
+    unnamed files to Yu, and that question to Nuance is moot. Nuance has since withdrawn the
+    "fail-closed row for unnamed files", which "named no reviewer, so disagreed with item 9; my
+    slip" (Nuance's answer to lab-Claude's question 1 of 2026-10-17). The third was adopted by
+    Yu with the governance row. Nuance also wrote that "Every touched reviewer accepts the same
+    head SHA" goes to Yu as a Q-Y8 clarification; Yu's 2026-10-16 answer is above.
   - The second Astra row is lab-Claude's proposal, from Phase 0c's review plan. Nuance did not
     ask for it. It only adds a reviewer, so it never lets a PR merge on fewer acceptances. It
     stays open for Yu to rule on with Nuance (Q-N12, Q-Y8), and Yu can override it. `tools/stage/`
@@ -188,8 +216,11 @@ context. It is never Yu's instruction, consent or acceptance.
   `ln -s ../../tools/pre-commit .git/hooks/pre-commit`, and the same for `commit-msg`,
   `pre-merge-commit` and `pre-push`. They run `tools/hygiene_scan.py` with python3.13
   `-I -S -B`: `pre-commit` and `pre-merge-commit` on the staged tree, `commit-msg` on the
-  message, and `pre-push` on every commit and annotated tag the push publishes. Each blocks on
-  any finding. Never use `--no-verify` on a commit, a merge or a push.
+  message, and `pre-push` on every commit and annotated tag the push publishes. `pre-push`
+  leaves out only commits reachable from the old values the remote reports in that push's own
+  lines, when this clone holds them; it never trusts this clone's tracking refs
+  (`refs/remotes/<remote>/*`), which can be stale until `git fetch --prune` (77271cd). Each
+  blocks on any finding. Never use `--no-verify` on a commit, a merge or a push.
   - `pre-merge-commit` leaves a blocked merge in progress: fix it, or run `git merge --abort`.
   - `commit-msg` reads the whole message file, including git's comment lines when an editor is
     used and the diff with `git commit -v`. Commit with `-m` or `-F` if a removed file's lines
@@ -202,11 +233,19 @@ context. It is never Yu's instruction, consent or acceptance.
     phase0/foundation (until it is fast-forwarded), phase0/http and phase0/viewing predate
     `--message` and `--push` and refuse them (`refused:usage`, exit 2), which would block every
     commit and push there (lab-Claude's round-4 review).
-- Before pushing, scan the working tree and the commits the push will publish:
-  `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py` and
-  `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --range origin/<branch>..HEAD`
-  (`tools/pre-push` does the second on every push). Output is rule codes, line numbers and entry
-  numbers only, never a path (`--list-rules` explains each code).
+  - So on the lab only `pre-commit` is live today: no hook scans a commit message or a push, and
+    the manual scans below are conduct (Nuance's PR #2 re-review, F9). **Phase 1a entry gate**
+    (lab-Claude's decision, adopting F9's fix; DESIGN.md 5.6): before Phase 1a starts, the
+    scanner on every live branch accepts `--message` and `--push`, the two `event_id` findings in
+    PR #3's history are dealt with, all four links resolve, and a synthetic `commit-msg` block
+    and a push blocked by a local bare remote are shown on the lab.
+- Before pushing, run `git fetch --prune`, then scan the working tree and the commits the push
+  will publish: `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py` and
+  `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --range origin/<branch>..HEAD`.
+  The range trusts `origin/<branch>`, a tracking ref that is stale until the fetch: a commit
+  removed from the remote but still named by it would be left out. `tools/pre-push` does not
+  trust tracking refs (above), so the range is not what it does. Output is rule codes, line
+  numbers and entry numbers only, never a path (`--list-rules` explains each code).
 - Scan PR descriptions, review replies and other outbound text before posting: write the text to
   a scratch file and run
   `/opt/homebrew/bin/python3.13 -I -S -B tools/hygiene_scan.py --root <scratch dir> <file>`
@@ -216,6 +255,9 @@ context. It is never Yu's instruction, consent or acceptance.
   with codes only. If it is in source you wrote, move the value into the reserved namespace.
   To find which of your files it is, scan them by name a few at a time. Do not map an entry
   number to its path: that prints the path the scanner withholds (docs/data-handling.md).
+  After Yu has had something removed from a remote, run `git fetch --prune` in every clone:
+  until then a tracking ref can still name the removed commit, and a manual `--range` scan from
+  it leaves that commit out.
 - Synthetic fixtures use only the reserved namespace: market ids `1.999` plus six digits, event
   ids `99` plus six digits, selection ids `9` plus seven digits, the venue "Synthetic Park" and
   runners "Synthetic 1..n". They are generated at test time into temp dirs and never committed
@@ -237,17 +279,40 @@ reviewed PR changes them.
   `_launch.py` refuses any mismatch between them (`tmpdir_mismatch`), so a half-done change fails
   closed. Tests cover both settings under a temporary HOME. Nuance's PR #2 review makes the
   agreement conditional again: "agree the root half after 1, the marker half after 6". Item 1 is
-  fixed here (62c39c6, 851885a), and its re-check was asked of Nuance on 2026-10-17, not
-  answered; the flag stays True meanwhile (lab-Claude's call).
-  - Every command except `test`, `uisnap` and `vendor` uses `~/betangel-data/suite.noindex/tmp`
-    as `TMPDIR` and `SQLITE_TMPDIR`. `cli.main` creates it 0700 only after the run-marker check
-    and, for a real-data command, after it holds `run/realdata.lock` shared and has checked the
-    marker again under it (adaptation E). It creates none for `stop` and `vendor`
-    (`cli.NO_TMPDIR`), which make no temporary files: so `stop` works during a run (96d0bcc). The first engine command run with the real HOME creates the suite
-    root itself.
-  - Only the engine may write the suite root. The test runner and `vendor` write only under
-    `~/.local/state/betangel-suite` (`vendor` also its deps clone and `pin/`). Any other write
-    under `~/betangel-data` is refused (`write_outside_roots`).
+  fixed here (62c39c6, 851885a). The flag stays True meanwhile (lab-Claude's call).
+  - **Nuance's re-review of #2 (2026-10-17), answering lab-Claude's question 8:** "I agree the
+    root half (item 1) and the marker half (item 6) as built at 823c194, pending F4/F5", and it
+    accepts the flag True on the unmerged branches, labelled as lab-Claude's. Its conditions, in
+    Nuance's words: "no merge with the flag True unless my agreement is recorded at the
+    merge-candidate SHA; any later change to placement/runmarker/root-lock protection reopens the
+    re-check; until then no engine command runs on the lab with the real HOME." F4 and F5 are
+    fixed here (ff35218, c3b0c61). c3b0c61 changes placement, so by the second condition the
+    re-check is open again, at the merge-candidate SHA (lab-Claude's reading).
+  - Every command except `test`, `uisnap`, `vendor` and `stop` uses
+    `~/betangel-data/suite.noindex/tmp` as `TMPDIR` and `SQLITE_TMPDIR` (`stop` joined the four
+    in 8102f99). `cli.main` creates it 0700 only after the run-marker check and, for a real-data
+    command, after it holds `run/realdata.lock` shared and has checked the marker again under it
+    (adaptation E). It creates none for `stop` and `vendor` (`cli.NO_TMPDIR`), which make no
+    temporary files: so `stop` works during a run (96d0bcc). The first engine command run with
+    the real HOME creates the suite root itself.
+  - Only the engine may write the suite root. `test`, `uisnap`, `vendor` and `stop` run in guard
+    modes of their own (`cli.OWN_MODE_COMMANDS`; 8102f99 for `uisnap` and `stop`, which ran in
+    engine mode before), whose only write root is `~/.local/state/betangel-suite` (`vendor` also
+    its deps clone and `pin/`), never the suite root. Any other write under `~/betangel-data` is
+    refused (`write_outside_roots`).
+  - In those four modes the guard also refuses reads in `~/betangel-data`
+    (`data_home_read_refused`; 0a3ed65; Nuance's answer to lab-Claude's question 2, condition 1,
+    taken as fail closed): opens without a write flag, `os.listdir`, `os.scandir` and `os.chdir`,
+    by text, realpath and identity, stat calls only. It does not cover `os.open` with a `dir_fd`
+    and a relative path, descriptors opened before `arm()` or inherited, hard links made
+    elsewhere, or stat-level calls. Engine mode is unchanged: Phase 1a reads the data roots.
+  - The test runner's launcher children (`bin/suite`, or an interpreter running `_launch.py`)
+    need an explicit environment whose HOME, the roots under it and `TMPDIR` keep out of the
+    runner's data home, judged by realpath and identity at spawn (`subprocess_refused`; Nuance's
+    re-review of #2, F2; 96f8a90). An interpreter child that does not arm the guard is
+    unguarded, so tests give every child a temporary HOME; that is conduct. The runner's git
+    gets an exact environment allowlist; `DEVELOPER_DIR` and any other key outside it are refused
+    (dd95582).
   - `guard.arm` refuses at start a write root or `TMPDIR` that the file system puts in, around or
     onto `~/betangel-data` (`root_overlaps_data_home`), and an engine suite root that is not a
     real directory, or missing, at exactly `realpath(~/betangel-data)/suite.noindex`
@@ -259,9 +324,15 @@ reviewed PR changes them.
     (`root_overlaps_data_home`); a link from a root down to `TMPDIR` (`tmpdir_mismatch`); and a
     `run/` or realdata lock that is a link (`run_lock_invalid`). The hook also keeps every
     directory between `TMPDIR` and its root in place (`root_replace_refused`) (57fc0c9, b0d5c0d,
-    8d0955d). These are lab-Claude's fixes and only narrow what is accepted; Astra and Nuance
-    have not reviewed them yet.
-  - No Phase 0 command reads a data root. Before Phase 1a the suite owes Nuance's condition 2: it
+    8d0955d). These are lab-Claude's fixes and only narrow what is accepted. The re-reviews of #2
+    at 823c194 include them: Nuance agrees the root and marker halves as built there, and Astra
+    found the root and marker integration "consistent in the reviewed implementation".
+  - Since round 5, `guard.arm` in every mode, and the writer helper, also refuse a write root or
+    `TMPDIR` in, around or onto `~/.local/state/lab-runs` (`root_overlaps_lab_runs`), stat calls
+    only: a state root linked to `~/.local/state` took `lab-runs/` into the roots (Nuance's
+    re-review of #2, F5; c3b0c61).
+  - No Phase 0 command reads a data root, and in every mode but engine the guard refuses such
+    reads (above). Before Phase 1a the suite owes Nuance's condition 2: it
     refuses a data root that equals, contains or lies inside `suite.noindex`, `lab-state` or
     `logs`, or that lies inside `incoming/`, comparing roots by file identity. Duplicate data
     roots are refused by identity too: today `config.py` refuses only an exact repeat (Nuance's
@@ -270,19 +341,29 @@ reviewed PR changes them.
     `state_root_not_agreed`, and every command would use `~/.local/state/betangel-suite/tmp`.
 - **B. Install salt.** The per-install salt for identifier hashes lives at
   `~/.local/state/betangel-suite/install-salt` (mode 0600), not under the suite root. It stayed
-  there when the root was agreed: the first process that hashes makes it, and only the engine may
-  write the suite root.
+  there when the root was agreed: it is made once, at first provisioning (below), and only the
+  engine may write the suite root.
   - The hashes are pseudonymous, not anonymous. The hashed labels follow the public member
     layout, so a ref reverses by enumeration (Nuance's PR #1 review, item 3, and PR #2 review,
     item 14). So the salt is on rule 5's never-read list, and lab-Claude's file tools deny it
     (DESIGN.md Q-Y9).
-  - It is never regenerated: every hash already recorded would stop matching. Nuance wrote "Move
-    the salt, never regenerate it" (PR #1 review, item 3). For now it stays where it is. Moving it
-    byte-for-byte into `suite.noindex`, where the `~/betangel-data` deny would cover it, is
-    lab-Claude's proposal, asked of Nuance on 2026-10-17, not answered (DESIGN.md 9.2 item 9).
+  - It is made once and never regenerated: every hash already recorded would stop matching
+    (lab-Claude's decision of 2026-10-17, as Nuance recommends; 8288c76). At first provisioning
+    the salt is written and synced with its directory, and only then is a separate marker
+    written, `~/.local/state/betangel-suite/salt-provisioned` (0600, empty, not named
+    `install-salt*`). Once the marker exists, a missing, unreadable or wrong-length salt is
+    refused (`salt_missing`) and no new one is made. Restoring a lost salt is Yu's; no agent
+    reads, copies or restores it. A salt from before the marker gets its marker on its first
+    read; until then a lost salt is still made again (DESIGN.md 9.2 item 9).
+  - **The move is withdrawn.** Lab-Claude had proposed moving it into `suite.noindex`, and asked
+    Nuance on 2026-10-17 what "Move the salt, never regenerate it" (PR #1 review, item 3) meant.
+    Nuance recommended not moving it: "Yu's deny already covers it as well as a `~/betangel-data`
+    deny would, so a move adds no protection and several costs" (Nuance's answer to lab-Claude's
+    question 4). Lab-Claude accepts it: the salt stays where it is, with its own Read deny.
 - **C. Pin.** betangel-research `76f71dc94588a50f0df56dde2c3fabcf6e102f88`. The deps clone is at
   `~/.local/share/betangel-suite/deps/betangel-research-76f71dc94588/`, made by
-  `tools/vendor_research.py` exactly as DESIGN.md 3.5 describes. Nuance answered Q-N2: keep this
+  `bin/suite vendor` exactly as DESIGN.md 3.5 describes; `tools/vendor_research.py` run
+  directly refuses (`launcher_required`; 9e6dfce). Nuance answered Q-N2: keep this
   pin, and bump only when a closure module the suite needs, or the month roles, change.
   - Nuance's PR #2 review adds: "Lab-Claude bumps in its own PR only to a sha Nuance names on main",
     and "Nuance reviews every bump; Astra reviews pin and vendor code. Routing is proposed until
@@ -292,20 +373,27 @@ reviewed PR changes them.
     only from bytes that match the pin (`upstream_import_refused`). A pinned file with a link on
     its way or more than one link gives `pin_mismatch`, and a deps tree holding such a file
     stops `vendor` (`deps_link_present`).
+  - The deps directory is never on `sys.path` (3f86e34; Nuance's re-review of #2, F1): the
+    closure finder gives each of the 25 its spec at its pinned file, by name, so no other
+    deps-tree name is found. `pin` judges the clone and every `sys.path` entry through
+    `roots.lies_in`, an empty entry as the cwd, and refuses what it cannot judge (c00461c; F11).
 - **D. Synthetic only.** No data-root reading, no paper trading, no HTTP server yet (Phase 0b),
   and no release copies or `ssh-session` yet (Phase 0c). `cli.py` commands that are not built
   yet refuse with code `not_implemented` and exit 2.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE` (Q-N3: agreed by Nuance in
   Nuance's PR #4 review; Nuance's PR #2 review makes the marker half conditional again, on
-  Nuance's item 6).
+  Nuance's item 6; Nuance's re-review of #2 agrees it as built at 823c194, pending F4 and F5,
+  on the conditions in A).
   The config key `run_marker` accepts only that path, so no config edit can point the check at a
   file that never exists; only a reviewed change could move it. Nuance's wrapper creates the
-  marker with O_EXCL, waits at least 60 s for `engine.lock`, failing closed, and takes `LOCK_EX`
-  on `~/.local/state/betangel-suite/run/realdata.lock`, waiting 60 s or more and failing closed
-  (Nuance's PR #4 and PR #2 terms; DESIGN.md 6.8). The engine may hold both locks for about 35 s
-  after the marker appears. Lab-Claude never creates or removes the marker, and the suite never
-  creates or removes `lab-runs/ACTIVE` or `lab-runs/LOCK`: the guard refuses any suite write in
-  `lab-runs/`. Every command except `stop` refuses to start while the marker is present,
+  marker with O_EXCL, waits for `engine.lock` to be free, and takes `LOCK_EX` on
+  `~/.local/state/betangel-suite/run/realdata.lock`. For each lock it waits at least 60 s, then
+  refuses its own run (fails closed) if it is still held, the one sentence Nuance's re-review of
+  #2 asks for (Nuance's PR #4 and PR #2 terms; DESIGN.md 6.8). The engine may hold both locks
+  for about 35 s after the marker appears. Lab-Claude never creates or removes the marker, and
+  the suite never creates or removes `lab-runs/ACTIVE` or `lab-runs/LOCK`: the guard refuses any
+  suite write in `lab-runs/`, and a root in, around or onto it (`root_overlaps_lab_runs`;
+  c3b0c61). Every command except `stop` refuses to start while the marker is present,
   unreadable, or in an unreadable directory (DESIGN.md 6.8).
   - Real-data commands (`serve`, `open`, `ssh-session`, `catalogue`, `selfcheck`, `diagnose`,
     `ledger-summary`) take `LOCK_SH` on `run/realdata.lock` without waiting, before their
@@ -313,12 +401,16 @@ reviewed PR changes them.
     the wrapper holds it). The suite makes the file once (0600) and never removes or replaces it,
     or renames `run/` (which would move the lock with it); the guard refuses each
     (`run_lock_protected`; 6aeb1d5 for `run/`). This is Nuance's PR #2 review, item 6 (596d052,
-    18de53e, fbbc0c3); its re-check was asked of Nuance on 2026-10-17, not answered, and Nuance's
-    agreement of the marker half is still owed. The wiring of `serve`,
-    `open` and `ssh-session` on phase0/http and phase0/viewing is owed (DESIGN.md 6.8).
+    18de53e, fbbc0c3). Nuance's re-review of #2 agrees it as built at 823c194, pending F4 and
+    F5, which are fixed here; the agreement is owed at the merge-candidate SHA (A). The wiring
+    of `serve`, `open` and `ssh-session` on phase0/http and phase0/viewing is owed (DESIGN.md
+    6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
-    `TMPDIR` (lab-Claude's decision, asked of Nuance on 2026-10-17, not answered; DESIGN.md 6.8
-    gives the reasons).
+    `TMPDIR` (lab-Claude's decision; DESIGN.md 6.8 gives the reasons). Nuance agreed it on four
+    conditions (Nuance's answer to lab-Claude's question 2 of 2026-10-17): the guard refuses
+    reads in `~/betangel-data` in their modes, or the docs say it does not (lab-Claude took the
+    refusal, 0a3ed65); `uisnap` and `stop` keep guard modes of their own (8102f99); and a test
+    running when the marker appears is bounded by the per-test stop and Q-N14's per-module check.
   - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
     be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
     exists too; stop stays exempt".

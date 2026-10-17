@@ -468,7 +468,7 @@ exec /usr/bin/env -i HOME="$HOME" USER="$USER" LANG=en_GB.UTF-8 PATH=/usr/bin:/b
 ### 3.9 Development workflow and the suite's AGENTS.md
 
 - **Branches and PRs.** Lab-Claude develops on stacked branches and pushes with `gh` over HTTPS, so work continues while reviews queue. Review routing is proposed up front (Q-N12); who merges is Q-Y8 (section 2.2.1). The table in AGENTS.md is the binding copy:
-  - Astra reviews `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the launcher, the boundary tests, the scanner (`tools/hygiene_scan.py`, `tools/pre-commit`, `tools/pre-merge-commit`, `tools/commit-msg`, `tools/pre-push`) and pin bumps;
+  - Astra reviews `guard.py`, `rx.py`, `errors.py`, `release.py`, `runmarker.py`, `api/`, the launcher (`bin/suite`, `bin/_launch.py`), the boundary tests, the hygiene scanner (`tools/hygiene_scan.py`, `tools/pre-commit`, `tools/pre-merge-commit`, `tools/commit-msg`, `tools/pre-push`, `.gitignore`) and pin bumps;
   - Astra also reviews `cli.py`, uisnap (`betangel_suite/uisnap.py`, `tools/uisnap/`) and the staged scripts (`tools/stage/`). This row is lab-Claude's proposal, from Phase 0c's review plan; Nuance did not ask for it. It only adds a reviewer. It stays open for Yu to rule on with Nuance (Q-N12, Q-Y8). `tools/stage/` is also a rule document, so the governance row (below) sends it to Nuance and Astra either way;
   - Nuance reviews the data and paper paths (`data/`, `paper/`, `replay/`), the synthetic generator (`synthetic.py`, `tests/fixtures/`), the tick export (`tools/export_ticks.py`, `ui/ticks.json`), and every pin bump that changes an allowlisted file;
   - Astra and Nuance review `engine.py` and the roots (`roots.py`) jointly;
