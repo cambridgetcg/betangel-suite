@@ -2081,6 +2081,53 @@ attempt("remove_directory", lambda: os.rmdir(lab_runs))
             self.assertEqual(len(results), 8)
             self.assertEqual(sorted(os.listdir(lab_runs)), ["ACTIVE", "LOCK"])
 
+    def test_no_root_lies_in_around_or_onto_the_run_markers_directory(self):
+        # Nuance's re-review of #2, F5: with the state root linked to ~/.local/state, arm() succeeded and removing
+        # lab-runs/ACTIVE or renaming the wrapper's lab-runs/LOCK were allowed, since lab-runs/ was then inside a
+        # root. check_placement now refuses a write root or TMPDIR in, around or onto lab-runs/, by realpath and
+        # identity, in every mode; a root elsewhere is refused only in the modes that write it.
+        def layout(home, name):
+            """Make lab-runs/ with ACTIVE and LOCK, then the named link; return the modes it is a root of."""
+            local_state = os.path.join(home, ".local", "state")
+            lab = os.path.join(local_state, "lab-runs")
+            os.makedirs(os.path.join(lab, "sub"), mode=0o700)
+            for marker in ("ACTIVE", "LOCK"):
+                open(os.path.join(lab, marker), "w").close()
+            state = roots.state_dir(home)
+            if name.startswith(("around", "onto", "into")):
+                target = {"around": local_state, "onto": lab, "into": os.path.join(lab, "sub")}[name.split("_")[0]]
+                if name.endswith("_firmlink"):
+                    target = FIRMLINK + os.path.realpath(target)
+                rmtree(state)
+                os.symlink(target, state)
+                return ("engine", "test", "vendor")
+            if name == "share_into":
+                os.rmdir(os.path.join(home, ".local", "share"))
+                os.symlink(os.path.join(lab, "sub"), os.path.join(home, ".local", "share"))
+                return ("vendor",)
+            os.symlink(os.path.join(lab, "sub"), roots.data_home(home))           # suite_root_in: the suite root
+            return ("engine",)
+
+        names = ("around", "around_firmlink", "onto", "into", "into_firmlink", "share_into", "suite_root_in")
+        for name in names:
+            for mode in ("engine", "test", "vendor"):
+                home = make_home(self)
+                refused_in = layout(home, name)
+                results = armed_attempts(self, home, mode=mode, body="""
+lab = os.path.join(os.environ["HOME"], ".local", "state", "lab-runs")
+attempt("remove_marker", lambda: os.remove(os.path.join(lab, "ACTIVE")))
+attempt("rename_lock", lambda: os.rename(os.path.join(lab, "LOCK"), os.path.join(lab, "LOCK.old")))
+""")
+                with self.subTest(layout=name, mode=mode):
+                    if mode in refused_in:
+                        self.assertEqual(results, {"arm": "root_overlaps_lab_runs"})
+                    else:
+                        self.assertEqual(results, {"arm": "ok", "remove_marker": "write_outside_roots",
+                                                   "rename_lock": "write_outside_roots"})
+                    lab = os.path.join(home, ".local", "state", "lab-runs")
+                    self.assertEqual(sorted(os.listdir(lab)), ["ACTIVE", "LOCK", "sub"])
+                    self.assertEqual(os.listdir(os.path.join(lab, "sub")), [])
+
     def test_bin_suite_refuses_before_creating_anything(self):
         # The evidence's own commands: bin/suite test made lab-state/betangel-suite/tmp; an engine command would
         # have used historic-pro/tmp as its TMPDIR.

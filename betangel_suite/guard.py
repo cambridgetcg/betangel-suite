@@ -70,7 +70,10 @@ What the hook refuses, in every mode and phase:
        That check trusts each root's real path, so arm() first refuses any write root, and TMPDIR, that
        the file system puts in, around or onto ~/betangel-data (roots.check_placement, stat calls only):
        root_overlaps_data_home, or suite_root_misplaced for an engine suite root that is not a real
-       directory, or missing, at exactly realpath(~/betangel-data)/suite.noindex. And the hook refuses a
+       directory, or missing, at exactly realpath(~/betangel-data)/suite.noindex; and any that it puts in,
+       around or onto the run marker's directory, ~/.local/state/lab-runs (root_overlaps_lab_runs; Nuance's
+       re-review of #2, F5): a state root linked to ~/.local/state took lab-runs/ into the roots, and with it
+       the removal of ACTIVE and the renaming of the wrapper's LOCK. And the hook refuses a
        symlink, hard link or rename that puts a name where a root, TMPDIR or a directory between TMPDIR and its
        root really is, or moves one away (root_replace_refused): os.symlink(<a data root>, suite.noindex) would
        otherwise pass as a write in the roots and steer the next process. Links elsewhere in the roots stay
@@ -431,7 +434,9 @@ def _check_placement(state):
 
     The hook trusts each root's real path, so a root that a link puts in, around or onto ~/betangel-data would
     take every write there: root_overlaps_data_home, or suite_root_misplaced for a suite root that is not a real
-    directory (or missing) at exactly realpath(data home)/suite.noindex. Stat calls only; nothing is opened.
+    directory (or missing) at exactly realpath(data home)/suite.noindex. Likewise a root in, around or onto
+    ~/.local/state/lab-runs would let the suite remove the run marker or the wrapper's lock (root_overlaps_lab_runs;
+    Nuance's re-review of #2, F5). Stat calls only; nothing is opened.
     """
     for path in state.roots + (state.tmp_root,):
         roots.check_placement(path, state.home)

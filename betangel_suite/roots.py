@@ -27,8 +27,9 @@ and every Git worktree).
 
 Path text is not enough for the roots themselves: a link on an ancestor (~/.local/state pointing into
 ~/betangel-data/lab-state, say) or a suite.noindex that is a link to a data root would put every write there.
-So check_placement() judges each root on the file system, with stat calls only (Nuance's PR #2 review, item 1).
-guard.arm() runs it on every write root and TMPDIR, and the writer helper on the root of every path it writes.
+So check_placement() judges each root on the file system, with stat calls only (Nuance's PR #2 review, item 1),
+against the data home and against the run marker's directory, ~/.local/state/lab-runs (Nuance's re-review of #2,
+F5). guard.arm() runs it on every write root and TMPDIR, and the writer helper on the root of every path it writes.
 """
 
 import os
@@ -42,6 +43,9 @@ DATA_HOME_PARTS = ("betangel-data",)
 SUITE_ROOT_PARTS = ("betangel-data", "suite.noindex")
 STATE_DIR_PARTS = (".local", "state", "betangel-suite")
 SHARE_DIR_PARTS = (".local", "share", "betangel-suite")
+# The directory of the run marker, ~/.local/state/lab-runs/ACTIVE (config's run_marker accepts only that path), which
+# holds Nuance's wrapper's lab-runs/LOCK too. No write root and no TMPDIR may lie in, on or around it (check_placement).
+LAB_RUNS_PARTS = (".local", "state", "lab-runs")
 STATE_TMP_COMMANDS = ("test", "uisnap", "vendor")   # commands whose TMPDIR is always the state root's tmp/
 REALDATA_LOCK_NAME = "realdata.lock"                 # in run/; never unlinked (runmarker.hold_shared)
 _MAX_ANCESTORS = 256                                 # deeper than any real tree: past it, fail closed
@@ -81,6 +85,11 @@ def deps_root(home_dir=None):
 
 def run_dir(home_dir=None):
     return os.path.join(state_dir(home_dir), "run")
+
+
+def lab_runs_dir(home_dir=None):
+    """~/.local/state/lab-runs: the run marker's directory, which only Nuance's run wrapper writes (runmarker.py)."""
+    return os.path.join(_home(home_dir), *LAB_RUNS_PARTS)
 
 
 def realdata_lock_path(home_dir=None):
@@ -144,8 +153,9 @@ def place(path, home_dir=None):
 
 def check_placement(path, home_dir=None):
     """Refuse a write root, or a path in one (TMPDIR), that the file system puts in the wrong place relative to
-    ~/betangel-data (Nuance's PR #2 review, item 1; DESIGN.md 3.7, I-6). Stat calls only: realpath's lstat and
-    readlink, and os.stat. Nothing is opened, read or listed.
+    ~/betangel-data (Nuance's PR #2 review, item 1; DESIGN.md 3.7, I-6) or to the run marker's directory (Nuance's
+    re-review of #2, F5). Stat calls only: realpath's lstat and readlink, and os.stat. Nothing is opened, read or
+    listed.
 
     While STATE_ROOT_AGREED, the suite root and every path in it (by text): the suite root must be a real
     directory, or missing, at exactly realpath(data home)/suite.noindex, and path must resolve inside it. A
@@ -154,7 +164,14 @@ def check_placement(path, home_dir=None):
 
     Any other path must not equal, lie in or contain the data home: root_overlaps_data_home otherwise, and also
     when that cannot be judged (a stat of path or the data home that fails for any reason but the name not existing,
-    or an ancestor walk that cannot go on). Two comparisons, each both ways:
+    or an ancestor walk that cannot go on).
+
+    Then every path, the suite root's included, must not equal, lie in or contain the run marker's directory,
+    ~/.local/state/lab-runs, judged the same way: root_overlaps_lab_runs otherwise (Nuance's re-review of #2, F5).
+    The guard refuses every suite write in lab-runs/ only because it lies outside the roots; a state root linked to
+    ~/.local/state put it inside them, and removing ACTIVE or renaming the wrapper's LOCK was allowed.
+
+    The two comparisons, each both ways:
       - text: path and the data home, each as written and with its links resolved (realpath), casefolded
         (the lab's APFS volume folds case);
       - identity: the data home's (st_dev, st_ino) must not be that of path or of any directory above it, and
@@ -171,9 +188,10 @@ def check_placement(path, home_dir=None):
         if not (_real_dir_or_missing(expected) and os.path.realpath(suite) == expected
                 and within(os.path.realpath(path), expected)):
             raise SuiteError("suite_root_misplaced")
-        return
-    if _overlaps_data_home(path, home_dir):
+    elif _overlaps_data_home(path, home_dir):
         raise SuiteError("root_overlaps_data_home")
+    if _overlaps(path, lab_runs_dir(home_dir), "root_overlaps_lab_runs"):
+        raise SuiteError("root_overlaps_lab_runs")
 
 
 def overlaps_data_home(path, home_dir=None):
@@ -185,20 +203,25 @@ def overlaps_data_home(path, home_dir=None):
 
 
 def _overlaps_data_home(path, home_dir):
-    data = data_home(home_dir)
-    real_data = os.path.realpath(data)
+    return _overlaps(path, data_home(home_dir), "root_overlaps_data_home")
+
+
+def _overlaps(path, other, code):
+    """True when path equals, lies in or contains other, by text, realpath or identity (check_placement's two
+    comparisons); SuiteError(code) when that cannot be judged."""
+    real_other = os.path.realpath(other)
     real = os.path.realpath(path)
     for mine in (path.casefold(), real.casefold()):
-        for theirs in (data.casefold(), real_data.casefold()):
+        for theirs in (other.casefold(), real_other.casefold()):
             if within(mine, theirs) or within(theirs, mine):
                 return True
-    if real_data.casefold().startswith("/.vol/"):
+    if real_other.casefold().startswith("/.vol/"):
         return True
-    data_id = _known_identity(data)
-    if data_id is not None and data_id in _lineage(real):
+    other_id = _known_identity(other, code)
+    if other_id is not None and other_id in _lineage(real, code):
         return True
-    path_id = _known_identity(real)
-    return path_id is not None and (path_id == data_id or path_id in _lineage(os.path.dirname(real_data)))
+    path_id = _known_identity(real, code)
+    return path_id is not None and (path_id == other_id or path_id in _lineage(os.path.dirname(real_other), code))
 
 
 def _known_identity(path, code="root_overlaps_data_home"):
