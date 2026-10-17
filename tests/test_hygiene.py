@@ -732,6 +732,63 @@ class LineShapeTests(_RepoCase):
         hidden = MARKET_2015[:5] + "​" + MARKET_2015[5:]
         self.plant("pkg/u.py", f"m = '{hidden}'\n", MARKET_2015, hidden, code="market_id")
 
+    def test_spaces_digits_and_invisible_marks_that_nfkc_or_the_ignorables_hide(self):
+        # Nuance's re-review of #2, F8: a no-break, figure, narrow or ideographic space between a name's words,
+        # fullwidth digits, and U+034F (combining grapheme joiner) or U+FE0F (a variation selector) inside a name or an
+        # id passed the runner and id rules. Lines are read in NFKC form now, with every default-ignorable code point
+        # dropped.
+        rows = [(n, f"{3 + i}.4", f"{3 + i}.45") for i, n in enumerate(RUNNER_NAMES)]
+        full = str.maketrans("0123456789.", "".join(chr(0xFF10 + d) for d in range(10)) + "．")
+        tables = {f"names with U+{ord(space):04X}": [(n.replace(" ", space), a, b) for n, a, b in rows]
+                  for space in (" ", " ", " ", "　")}
+        tables["prices in fullwidth digits"] = [(n, a.translate(full), b.translate(full)) for n, a, b in rows]
+        tables["names holding U+034F or U+FE0F"] = [(n[:2] + "͏" + n[2:] + "️", a, b) for n, a, b in rows]
+        tables["fullwidth names"] = [("".join(chr(ord(c) + 0xFEE0) if c.isalpha() else c for c in n), a, b)
+                                     for n, a, b in rows]
+        for label, cells in tables.items():
+            with self.subTest(shape=label):
+                self.setUp()
+                self.plant("docs/t.md", "".join(f"| {n} | {a} | {b} |\n" for n, a, b in cells),
+                           *(n for n, _, _ in cells), code="runner_table")
+        ids = {"market_id": MARKET_2015, "event_id": EVENT}
+        for code, value in ids.items():
+            hidden = {"U+034F": value[:4] + "͏" + value[4:], "U+FE0F": value[:4] + "️" + value[4:],
+                      "fullwidth digits": value.translate(full)}
+            for label, text in hidden.items():
+                with self.subTest(code=code, shape=label):
+                    self.setUp()
+                    self.plant("pkg/u.py", f"m = '{text}'\n", value, text, code=code)
+        with self.subTest(code="market_id", shape="fullwidth digits in a file name"):
+            self.setUp()
+            self.plant(f"docs/{MARKET_2015.translate(full)}.md", "synthetic\n", MARKET_2015, code="market_id")
+
+    def test_time_date_and_id_first_columns(self):
+        # Nuance's re-review of #2, F8: a table whose first column held a time, a date or an id (not a row number) was
+        # not read as a runner table. The ids here are reserved ones, so only runner_table can flag these rows.
+        rows = [(n, f"{3 + i}.4", f"{3 + i}.45") for i, n in enumerate(RUNNER_NAMES)]
+        shapes = {
+            "time": "".join(f"| 13:3{i} | {n} | {a} | {b} |\n" for i, (n, a, b) in enumerate(rows)),
+            "time with seconds": "".join(f"13:30:0{i}.250 {n}  {a}  {b}\n" for i, (n, a, b) in enumerate(rows)),
+            "ISO date": "".join(f"2015-05-0{i + 1},{n},{a},{b}\n" for i, (n, a, b) in enumerate(rows)),
+            "ISO date and time": "".join(f"2015-05-03T13:3{i}:00Z\t{n}\t{a}\t{b}\n" for i, (n, a, b) in enumerate(rows)),
+            "date and time": "".join(f"03/05/2015 13:3{i}  {n}  {a}  {b}\n" for i, (n, a, b) in enumerate(rows)),
+            "six digits": "".join(f"13300{i} {n}  {a}  {b}\n" for i, (n, a, b) in enumerate(rows)),
+            "a reserved event id": "".join(f"| {SYN_EVENT} | {n} | {a} | {b} |\n" for n, a, b in rows),
+            "an id, a date and a time": "".join(f"| {SYN_EVENT} | 2015-05-03 | 13:3{i} | {n} | {a} | {b} |\n"
+                                               for i, (n, a, b) in enumerate(rows)),
+        }
+        for label, text in shapes.items():
+            with self.subTest(shape=label):
+                self.setUp()
+                self.plant("docs/t.md", text, *RUNNER_NAMES, code="runner_table")
+        # A dated changelog with version numbers and words beside them is not a runner table.
+        with self.subTest(shape="a dated changelog"):
+            self.setUp()
+            self.write("docs/c.md", "".join(f"- 2026-10-1{i} {w} 3.13 and 3.11 pass\n"
+                                            for i, w in enumerate(("Python", "Release", "Review", "Merge"))))
+            self.add("docs/c.md")
+            self.assert_clean()
+
     def test_line_numbers_count_newlines_only(self):
         self.write("docs/v.md", f"one\rtwo\nthree\x0bfour\nm = '{MARKET_2015}'\n")
         self.add("docs/v.md")
@@ -1212,7 +1269,7 @@ class ScanTimeTests(_RepoCase):
     SIZE = 200 * 1024
     BOUND = 10  # seconds for one 200 KB line; the quadratic versions took minutes, the cubic ones far longer
 
-    # (head, unit repeated to SIZE characters, tail). Each line is its own file: two of them would be oversize.
+    # (head, unit repeated to SIZE bytes of UTF-8, tail). Each line is its own file: two of them would be oversize.
     SHAPES = {
         "snake_case": ("", "x_", ""),
         "kebab-case": ("", "a-", ""),
@@ -1230,6 +1287,14 @@ class ScanTimeTests(_RepoCase):
         "octal escapes in one literal": ('"', "\\101", '"'),
         "short literals of octal escapes": ("", "'\\1\\2\\3\\4'", ""),
         "an unclosed literal of escaped quotes after octal escapes": ("\\101 '", "\\'", ""),
+        # NFKC and the wider lead cells (Nuance's re-review of #2, F8). U+FDFA becomes 18 characters under NFKC, so its
+        # line is read as 1.2 million.
+        "a character NFKC makes 18 of": ("", "\ufdfa", ""),
+        "no-break spaces after a token": ("A" * 24, "\u00a0", "!"),
+        "fullwidth digits": ("", "\uff11", ""),
+        "digits split by a combining grapheme joiner": ("", "1\u034f", ""),
+        "fullwidth table cells": ("", "\uff5c \uff21\uff41\uff41\uff41 \uff11.\uff15 ", "|"),
+        "date and time cells": ("", "2015-05-03 13:30 ", ""),
         "letters": ("", "a", ""),
         "digits": ("", "7", ""),
         "'=' and ':'": ("token", "=:", ""),
@@ -1242,7 +1307,8 @@ class ScanTimeTests(_RepoCase):
 
     def test_long_lines_scan_in_linear_time(self):
         for index, (name, (head, unit, tail)) in enumerate(self.SHAPES.items()):
-            line = head + (unit * (self.SIZE // len(unit) + 1))[:self.SIZE] + tail + "\n"
+            body = (unit * (self.SIZE // len(unit) + 1))[:self.SIZE]
+            line = head + body[:len(body) * self.SIZE // len(body.encode())] + tail + "\n"
             rel = f"docs/long{index}.txt"
             self.write(rel, line)
             with self.subTest(shape=name):
@@ -1252,6 +1318,7 @@ class ScanTimeTests(_RepoCase):
                     self.fail(f"no result within {self.BOUND} s")
                 self.assertIn(rc, (0, 1), out)
                 self.assertRegex(out.splitlines()[-1], r"^hygiene_scan: (OK|FAIL) ")
+                self.assertNotIn("oversize", self.codes(out))                  # its content was read
                 self.assert_withheld(out)
 
 

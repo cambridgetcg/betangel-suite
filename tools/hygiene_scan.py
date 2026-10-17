@@ -10,9 +10,12 @@ never prints a path or any part of one (no directory, name or suffix), and
 never the text that matched. Line 0 means the finding is about the entry
 itself (its name, type, size or link target), not one of its lines. Line
 numbers count "\\n" line ends, as git and sed do; the rules also split a
-line at CR, NEL, LS and the other str.splitlines() boundaries, and ignore
-format characters (Unicode category Cf: a BOM, zero-width spaces). After
-ten lines for one entry and rule, one more line counts the rest:
+line at CR, NEL, LS and the other str.splitlines() boundaries, ignore
+format characters (Unicode category Cf: a BOM, zero-width spaces) and the
+other default-ignorable code points (a combining grapheme joiner, variation
+selectors), and read each line in NFKC form (no-break and other spaces as
+a space, fullwidth digits and letters as ASCII). After ten lines for one
+entry and rule, one more line counts the rest:
 
     FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)
 
@@ -311,15 +314,21 @@ _NAME_FIELD = re.compile(
 _RUNNER_CONTEXT = re.compile(
     r"[\"'](?:sortPriority|selectionId|selection_id|adjustmentFactor|ltp|bsp|spn|spf)[\"']")
 _PRICE = re.compile(r"(?<![0-9.])([0-9]{1,3}\.[0-9]{1,2})(?![0-9.])")
-# Up to two leading cells before the name: a saddle-cloth or row number ("1", "12a", "(3)") followed by a
-# cell separator, a list marker ("1." or "1)") or spaces.
-_LEAD_CELL = r"[\"']?(?:[0-9]{1,3}[A-Za-z]?|\([0-9]{1,2}\))[\"']?(?:\s*[|,;\t]\s*|[.)]\s+|\s+)"
+# Up to three leading cells before the name, each followed by a cell separator, a list marker ("1." or "1)") or
+# spaces: a saddle-cloth or row number ("1", "12a", "(3)"), a longer number (an id, a time as HHMMSS, epoch seconds or
+# milliseconds), a time ("13:30", "13:30:05.250"), or a date ("2015-05-03", "03/05/2015", "3.5.15") with an optional
+# time and zone ("2015-05-03T13:30:00Z") (Nuance's re-review of #2, F8: a time or date first column hid the table).
+_TIME_CELL = r"[0-9]{1,2}:[0-9]{2}(?::[0-9]{2}(?:[.,][0-9]{1,6})?)?"
+_LEAD_CELL = (r"[\"']?(?:[0-9]{1,3}[A-Za-z]?|\([0-9]{1,2}\)|[0-9]{4,13}|%s"
+              r"|(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[-/.][0-9]{1,2}[-/.][0-9]{2,4})"
+              r"(?:[T ]%s(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?)"
+              r"[\"']?(?:\s*[|,;\t]\s*|[.)]\s+|\s+)" % (_TIME_CELL, _TIME_CELL))
 # Names may hold Latin letters with accents (Latin-1 and Latin Extended-A and B), as runner names do.
 _LATIN = [chr(code) for code in range(0xC0, 0x250)]
 _UPPER = "A-Z" + "".join(c for c in _LATIN if c.isupper())
 _LETTER = "A-Za-z" + "".join(c for c in _LATIN if c.isalpha())
 _ROW = re.compile(
-    r"^[\s|>*#(\[{-]*(?:" + _LEAD_CELL + r"){0,2}[\"']?"
+    r"^[\s|>*#(\[{-]*(?:" + _LEAD_CELL + r"){0,3}[\"']?"
     r"(?P<name>[%s][%s'.-]{1,30}(?: [%s(][%s'.()-]{0,30}){0,4})" % (_UPPER, _LETTER, _UPPER, _LETTER) +
     r"[\"']?\s*(?:[|,;\t]|:\s|\s{2,}|\s-\s)(?P<rest>.*)$")
 # Other table renderings, turned into "|" cells before a row is matched (round-4 review): box drawing (SQLite's
@@ -449,15 +458,31 @@ def _table_row_name(line: str):
     return name if prices >= 2 and words <= (0 if capitals else 1) else None
 
 
-def _without_format_chars(line: str) -> str:
-    """Drop Unicode format characters (category Cf): a BOM, zero-width spaces and joiners, soft hyphens."""
+# Unicode's default-ignorable code points (the Default_Ignorable_Code_Point property, which unicodedata does not give):
+# invisible, so a name or an id can hold them unseen. Most are format characters (Cf); these are not all: U+034F (the
+# combining grapheme joiner), the variation selectors (U+FE00-FE0F, U+E0100-E01EF) and the Hangul fillers.
+_IGNORABLE = re.compile(
+    "[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164"
+    "\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
+
+
+def _visible(text: str) -> str:
+    return "".join(c for c in _IGNORABLE.sub("", text) if unicodedata.category(c) != "Cf")
+
+
+def _normalised(line: str) -> str:
+    """The text the rules read: format characters (category Cf: a BOM, zero-width spaces and joiners, soft hyphens) and
+    the other default-ignorable code points dropped, then NFKC, then those dropped again (NFKC makes some: U+FFA0
+    becomes U+1160). NFKC reads a no-break, figure or ideographic space as a space, fullwidth digits and letters as
+    ASCII, and composes accents. Before it, a name with a no-break space, or an id or a name holding U+034F or U+FE0F
+    or written in fullwidth digits, passed the id and runner rules (Nuance's re-review of #2, F8)."""
     if line.isascii():
         return line
-    return "".join(c for c in line if unicodedata.category(c) != "Cf")
+    return _visible(unicodedata.normalize("NFKC", _visible(line)))
 
 
 def _lines(text: str):
-    """Yield (line number, line) with format characters removed, for the line rules.
+    """Yield (line number, line), normalised (_normalised), for the line rules.
 
     Line numbers count "\\n", as git, sed and editors do. A line that holds another line
     boundary (CR alone, NEL, LS, PS, VT, FF, FS, GS, RS: str.splitlines()) is split there
@@ -467,7 +492,7 @@ def _lines(text: str):
         if line.endswith("\r"):
             line = line[:-1]
         for part in line.splitlines() or [""]:
-            yield number, _without_format_chars(part)
+            yield number, _normalised(part)
 
 
 def _text_findings(text: str) -> list:
@@ -1009,7 +1034,7 @@ def _content_codes(rel: str, data: bytes, oversize: bool) -> list:
 
 
 def _rel_id_codes(rel: str) -> list:
-    codes = [code for code in _line_codes(rel) if code in _PATH_ID_CODES]
+    codes = [code for code in _line_codes(_normalised(rel)) if code in _PATH_ID_CODES]
     return [(0, code) for code in codes]
 
 
