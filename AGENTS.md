@@ -288,8 +288,9 @@ reviewed PR changes them.
     or renames `run/` (which would move the lock with it); the guard refuses each
     (`run_lock_protected`; 6aeb1d5 for `run/`). This is Nuance's PR #2 review, item 6 (596d052,
     18de53e, fbbc0c3); its re-check was asked of Nuance on 2026-10-17, not answered, and Nuance's
-    agreement of the marker half is still owed. The wiring of `serve`,
-    `open` and `ssh-session` on phase0/http and phase0/viewing is owed (DESIGN.md 6.8).
+    agreement of the marker half is still owed. On phase0/http `serve` and `open` take it in
+    `cli.main`, `open`'s attach path included, and hold it for the engine's life; their I-17
+    tests came in round 4b. `ssh-session`'s, on phase0/viewing, is owed (DESIGN.md 6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
     `TMPDIR` (lab-Claude's decision, asked of Nuance on 2026-10-17, not answered; DESIGN.md 6.8
     gives the reasons).

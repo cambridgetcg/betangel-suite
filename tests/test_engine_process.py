@@ -1,15 +1,21 @@
-"""The engine process behind serve and open: I-4, I-5 (sealed after startup), I-16, I-17 mid-session, stop.
+"""The engine process behind serve and open: I-4, I-5 (sealed after startup), I-16, I-17 mid-session and the
+realdata lock, startup refusals, stop.
 
 Every server here is a real engine-mode child on an ephemeral 127.0.0.1 port under a temporary HOME
 (tests/test_http_support.py). /usr/bin/open is never started: the open path runs in a python child with an
 injected opener, which checks the argv against the guard's own predicate and hands the URL to the test
-client through a 0600 file, as a browser would receive it. I-5 is checked for serve, for open once its
-opener has run, and for open's attach path once it returns: each probe tries harmless spawns only
-(/usr/bin/true, a git rev-parse), never /usr/bin/open, so a broken seal could not open anything.
+client through a 0600 file, as a browser would receive it; or, to go through cli.main as bin/suite open does
+(OPEN_SAFE), with a recorder in place of server.system_opener and a second audit hook that refuses any start
+of /usr/bin/open. I-5 is checked for serve, for open once its opener has run, and for open's attach path once
+it returns: each probe tries harmless spawns only (/usr/bin/true, a git rev-parse), never /usr/bin/open, so a
+broken seal could not open anything.
 """
 
+import fcntl
 import json
 import os
+import stat
+import subprocess
 import time
 import unittest
 from unittest import mock
@@ -18,7 +24,7 @@ from betangel_suite import pin, roots, runmarker
 from betangel_suite.api import control
 from betangel_suite.errors import SuiteError
 from tests import LAUNCHER, PRELUDE, PYTHON, child_env, make_home, require_no_run_marker, run_suite, tree_listing
-from tests import test_engine
+from tests import test_engine, test_runmarker
 from tests import test_http_support as support
 
 # sealed_probe(): what a sealed engine must refuse (I-5), tried in the child itself. Only harmless spawns.
@@ -72,8 +78,8 @@ def main():
 # TMPDIR as `bin/suite open` does. /usr/bin/open is never started: server.system_opener is replaced by a recorder, and
 # a second audit hook (a hook can only add refusals) refuses any process start that names /usr/bin/open, should the
 # replacement ever be missed. The child also records "connecting" when it connects to a Unix socket, and "requests",
-# the control commands it sent.
-OPEN_CLI = PRELUDE + """
+# the control commands it sent. OPEN_SAFE is that set-up and run(argv); OPEN_CLI runs open with it.
+OPEN_SAFE = PRELUDE + """
 import json, os, sys
 from betangel_suite import guard, errors
 guard.arm("engine")
@@ -99,20 +105,22 @@ def watch(event, args):
         record("connecting", True)
 sys.addaudithook(watch)
 server.system_opener = lambda argv: record("opened-url", {"argv": argv})
-try:
-    status = cli.main(["open", "--port", "0"])
-except errors.SuiteError as exc:
-    sys.stderr.write(errors.describe(exc) + "\\n")
-    status = 2
-sys.exit(status)
+def run(argv):
+    try:
+        return cli.main(argv)
+    except errors.SuiteError as exc:
+        sys.stderr.write(errors.describe(exc) + "\\n")
+        return 2
 """
+OPEN_CLI = OPEN_SAFE + 'sys.exit(run(["open", "--port", "0"]))\n'
 
 
-def open_cli(case, home, name="open"):
-    """OPEN_CLI as a child of this HOME, with the TMPDIR bin/suite gives open; started after the real marker check."""
+def open_cli(case, home, name="open", code=OPEN_CLI):
+    """code (OPEN_CLI) as a child of this HOME, with the TMPDIR bin/suite gives open; started after the real marker
+    check."""
     require_no_run_marker()
     tmp = roots.tmp_dir("open", home)
-    return support.Child(case, home, [PYTHON, "-I", "-S", "-B", "-c", OPEN_CLI],
+    return support.Child(case, home, [PYTHON, "-I", "-S", "-B", "-c", code],
                          env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp), name=name)
 
 
@@ -641,6 +649,144 @@ def main():
         result = run_suite(["serve", "--port", "0"], home)
         self.assertEqual((result.returncode, result.stderr), (2, "refused:run_marker_present\n"))
         self.assertEqual(tree_listing(home), before)
+
+
+class RealDataLockTests(unittest.TestCase):
+    """I-17 for serve and open (DESIGN.md 6.8, "Owed on phase0/http and phase0/viewing"): each takes run/realdata.lock
+    shared in cli.main before its TMPDIR, checks the marker again under it, refuses with the existing codes, and
+    holds it for the engine's life, letting it go within the grace period of the marker appearing. Everything runs
+    under a temporary HOME: serve through bin/suite or cli.main, and open only through cli.main with OPEN_SAFE's
+    recorder in place of /usr/bin/open."""
+
+    def lock_free(self, home):
+        """True when LOCK_EX on the temporary HOME's realdata lock is granted at once (and let go again)."""
+        fd = os.open(runmarker.lock_path(home), os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+        finally:
+            os.close(fd)
+
+    def hold_exclusive(self, home):
+        """LOCK_EX on the realdata lock, as Nuance's wrapper would hold it, until the test ends."""
+        os.makedirs(roots.run_dir(home), mode=0o700, exist_ok=True)
+        fd = os.open(runmarker.lock_path(home), os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def start(self, home, code):
+        require_no_run_marker()
+        child = subprocess.Popen([PYTHON, "-I", "-S", "-B", "-c", code], env=child_env(home), cwd=home,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: child.poll() is None and (child.kill(), child.communicate()))
+        return child
+
+    def test_serve_holds_the_lock_shared_for_the_engines_life(self):
+        home = support.short_home(self)
+        serving, _port = support.serve(self, home)          # bin/suite serve: _launch.py, then cli.main
+        info = os.lstat(runmarker.lock_path(home))
+        self.assertEqual((stat.S_ISREG(info.st_mode), stat.S_IMODE(info.st_mode)), (True, 0o600))
+        self.assertFalse(self.lock_free(home))
+        stop = run_suite(["stop"], home)
+        self.assertEqual((stop.returncode, stop.stdout, stop.stderr), (0, "stopped\n", ""))
+        self.assertEqual(serving.wait_exit(), 0, serving.stderr())
+        self.assertTrue(self.lock_free(home))
+
+    def test_open_holds_the_lock_shared_for_the_engine_it_starts(self):
+        home = support.short_home(self)
+        opening = open_cli(self, home)
+        port = opening.wait_ready()
+        self.assertEqual(opening.stdout(), "opened port=%d\n" % port)
+        self.assertRegex(read_opened(home)["argv"][1], r"\Ahttp://127\.0\.0\.1:%d/#c=" % port)
+        self.assertFalse(self.lock_free(home))
+        stop = run_suite(["stop"], home)
+        self.assertEqual((stop.returncode, stop.stdout, stop.stderr), (0, "stopped\n", ""))
+        self.assertEqual(opening.wait_exit(), 0, opening.stderr())
+        self.assertTrue(self.lock_free(home))
+
+    def test_a_lock_the_wrapper_holds_refuses_serve_and_open_at_once(self):
+        home = support.short_home(self)
+        self.hold_exclusive(home)
+        before = tree_listing(home)
+        serving = run_suite(["serve", "--port", "0"], home, timeout=60)
+        self.assertEqual((serving.returncode, serving.stdout, serving.stderr), (2, "", "refused:run_lock_busy\n"))
+        opening = open_cli(self, home)
+        self.assertEqual(opening.wait_exit(60), 2, opening.stderr())
+        self.assertEqual((opening.stdout(), opening.stderr()), ("", "refused:run_lock_busy\n"))
+        for name in ("open.out", "open.err"):                      # the open child's own output files
+            os.remove(os.path.join(home, name))
+        self.assertEqual(tree_listing(home), before)                # no TMPDIR, no engine.lock, no URL
+
+    def test_serve_and_open_check_the_marker_again_under_the_lock(self):
+        # The launcher's check passed, then the wrapper made the marker before the command took its lock: the command
+        # refuses under the lock, before its TMPDIR or engine.lock, as runmarker.hold_shared does for every real-data
+        # command (DESIGN.md 6.8). open runs with OPEN_SAFE, serve as the engine-mode HOLDER of test_runmarker.
+        gate = """
+def mark(name):
+    open(os.path.join(roots.state_dir(), name), "w").close()
+def wait_for(name):
+    deadline = time.monotonic() + 60
+    while not os.path.exists(os.path.join(roots.state_dir(), name)) and time.monotonic() < deadline:
+        time.sleep(0.02)
+import time
+from betangel_suite import runmarker
+runmarker.require_absent(runmarker.marker_path())      # bin/_launch.py's check, passed
+mark("checked")
+wait_for("go")
+"""
+        for command in ("serve", "open"):
+            with self.subTest(command):
+                home = support.short_home(self)
+                if command == "serve":
+                    require_no_run_marker()
+                    child = support.Child(self, home, [PYTHON, "-I", "-S", "-B", "-c", test_runmarker.HOLDER
+                                                       + "from betangel_suite import roots\n" + gate
+                                                       + 'sys.exit(run(["serve", "--port", "0"]))\n'], name=command)
+                else:
+                    child = open_cli(self, home, code=OPEN_SAFE + gate + 'sys.exit(run(["open", "--port", "0"]))\n')
+                state = roots.state_dir(home)
+                deadline = time.monotonic() + 60
+                while not os.path.exists(os.path.join(state, "checked")) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                marker = runmarker.marker_path(None, home)
+                os.makedirs(os.path.dirname(marker), mode=0o700)
+                open(marker, "w").close()
+                open(os.path.join(state, "go"), "w").close()
+                self.assertEqual(child.wait_exit(60), 2, child.stderr())
+                self.assertEqual((child.stdout(), child.stderr()), ("", "refused:run_marker_present\n"))
+                self.assertFalse(os.path.lexists(control.lock_path(home)))      # server.run never ran
+                self.assertEqual(os.listdir(roots.data_home(home)), [])       # no suite root, no TMPDIR
+                self.assertFalse(os.path.lexists(opened_path(home)))
+                self.assertTrue(self.lock_free(home))
+
+    def test_serve_lets_the_lock_go_within_the_grace_period_of_the_marker(self):
+        # The engine may hold realdata.lock for about 35 s after the marker appears: its 30 s grace, then its shutdown
+        # (DESIGN.md 6.8). Here the grace is 2 s, and a stand-in for Nuance's wrapper, which makes the marker and then
+        # waits for LOCK_EX, gets the lock after the grace and within 5 s more.
+        home = support.short_home(self)
+        grace = 2
+        tmp = roots.tmp_dir("serve", home)
+        require_no_run_marker()
+        serving = support.Child(self, home, [PYTHON, "-I", "-S", "-B", "-c", test_runmarker.HOLDER + r"""
+from betangel_suite import engine
+engine.MARKER_GRACE_S = %d
+sys.exit(run(["serve", "--port", "0"]))
+""" % grace], env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp))
+        serving.wait_ready()
+        self.assertFalse(self.lock_free(home))
+        wrapper = self.start(home, test_runmarker.WRAPPER % (runmarker.marker_path(None, home),
+                                                            runmarker.lock_path(home), 60.0))
+        out, err = wrapper.communicate(timeout=120)
+        self.assertEqual((wrapper.returncode, err), (0, ""))
+        result = json.loads(out)
+        self.assertEqual(result["result"], "locked")
+        self.assertGreaterEqual(result["waited_s"], grace - 0.1)       # held while the engine was frozen
+        self.assertLess(result["waited_s"], grace + 5)
+        self.assertEqual(serving.wait_exit(), 2)
+        self.assertEqual(serving.stderr(), "refused:run_marker_present\n")
+        self.assertFalse(control.engine_running(home))
 
 
 class RunnerMarkerTests(test_engine.EngineCase):
