@@ -10,10 +10,13 @@ with their signatures and their behaviour on small synthetic inputs. The other u
 calls get their signatures and the result shapes the suite reads. Everything is reached through rx, the way
 suite code reaches it; this file never imports betangel_research.
 
-CoverageTests fails when suite code uses an rx.<module>.<name> that CONTRACT_NAMES does not list, so each new
-upstream name brings its contract with it. It reads only that spelling; the I-10 rule (tests/test_ast_boundary.py)
-refuses every other, such as `from .rx import ticks` or `t = rx.ticks`. The later-phase names of DESIGN.md 4.5 are
-added as code uses them.
+CoverageTests fails when suite code uses an upstream name that CONTRACT_NAMES does not list, so each new upstream
+name brings its contract with it. It reads rx.<namespace>.<name> however rx is reached (a name an import binds to
+it, `from . import rx as r` included, or any .rx attribute, engine.rx included), and also <alias>.<name> where alias
+is bound to a namespace by `from .rx import <namespace> [as alias]` (or `*`) or by a plain `alias = rx.<namespace>`.
+The I-10 rule (tests/test_ast_boundary.py) refuses those last spellings; counting them anyway keeps such a name
+under contract even if one were ever allowlisted (round-3 review of #4). The later-phase names of DESIGN.md 4.5
+are added as code uses them.
 """
 
 import ast
@@ -274,6 +277,33 @@ class OtherPhase0NameTests(unittest.TestCase):
                 self.assertEqual(str(caught.exception), "w:" + reason)
 
 
+def rx_uses(tree):
+    """{(namespace, name)} for every upstream name one module's syntax tree uses through rx (see the docstring)."""
+    checker = _Checker(tree)
+    aliases = {}                                    # a local name -> the rx namespace it is bound to
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in ("rx", "betangel_suite.rx"):
+            for alias in node.names:
+                if alias.name == "*":
+                    aliases.update((namespace, namespace) for namespace in rx.ALLOWLIST)
+                elif alias.name in rx.ALLOWLIST:
+                    aliases[alias.asname or alias.name] = alias.name
+        elif (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+              and isinstance(node.value, ast.Attribute) and checker.is_rx(node.value.value)
+              and node.value.attr in rx.ALLOWLIST):
+            aliases[node.targets[0].id] = node.value.attr
+    used = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        value = node.value
+        if isinstance(value, ast.Attribute) and checker.is_rx(value.value) and value.attr in rx.ALLOWLIST:
+            used.add((value.attr, node.attr))
+        elif isinstance(value, ast.Name) and value.id in aliases:
+            used.add((aliases[value.id], node.attr))
+    return used
+
+
 class CoverageTests(unittest.TestCase):
 
     def test_every_upstream_name_suite_code_uses_is_under_contract(self):
@@ -282,14 +312,29 @@ class CoverageTests(unittest.TestCase):
             if relative(path) == os.path.join("betangel_suite", "rx.py"):
                 continue
             with open(path, encoding="utf-8") as handle:
-                tree = ast.parse(handle.read(), path)
-            checker = _Checker(tree)
-            for node in ast.walk(tree):
-                if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
-                        and checker.is_rx(node.value.value) and node.value.attr in rx.ALLOWLIST):
-                    used.add((node.value.attr, node.attr))
+                used |= rx_uses(ast.parse(handle.read(), path))
         self.assertTrue(used)
         self.assertEqual(sorted(used - CONTRACT_NAMES), [])
+
+    def test_every_spelling_of_an_rx_name_is_counted(self):
+        # The I-10 rule refuses the spellings after the first three; the count must see them all the same (the
+        # round-3 review of #4 found that it saw only rx.<namespace>.<name>).
+        cases = {
+            "from . import rx\nrx.ticks.snap(345, 'down')\n": {("ticks", "snap")},
+            "from .. import rx as r\nr.book.MarketBookCache(key_type='historical')\n": {("book", "MarketBookCache")},
+            "import betangel_suite.rx as facade\nfacade.receipts.parse_utc_ns(text)\n": {("receipts", "parse_utc_ns")},
+            "from . import engine\nengine.rx.ticks.tick_offset(1, 2)\n": {("ticks", "tick_offset")},
+            "import betangel_suite\nbetangel_suite.rx.paper.PaperExchange\n": {("paper", "PaperExchange")},
+            "from .rx import ticks\nticks.tick_offset(1, 2)\n": {("ticks", "tick_offset")},
+            "from .rx import ticks as t\nt.ticks_between(1, 2)\n": {("ticks", "ticks_between")},
+            "from betangel_suite.rx import validate as v\nv.validate_place\n": {("validate", "validate_place")},
+            "from .rx import *\nschemas.validate_book_snapshot(book)\n": {("schemas", "validate_book_snapshot")},
+            "from . import rx\nt = rx.ticks\nt.parse_money(text)\n": {("ticks", "parse_money")},
+            "from . import engine\np = engine.rx.pnl\np.market_realized\n": {("pnl", "market_realized")},
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(rx_uses(ast.parse(text)), expected)
 
     def test_contract_names_are_allowlisted(self):
         for namespace, name in sorted(CONTRACT_NAMES):
