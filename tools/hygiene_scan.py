@@ -528,7 +528,10 @@ def _plain_findings(lines) -> list:
 # of small counts are not.
 # A hex run whose every line gave one whole token of exactly 40 or 64 digits is a list of commit
 # or file hashes, one per line (bare, quoted or after a marker), so the second test never applies
-# to it; the first and the third still do (round-4 recheck: lists of full hashes were binary).
+# to it (round-4 recheck: lists of full hashes were binary). The first applies where any of its
+# lines starts, not only at its first byte, and the third reads its bytes with each NUL as a line
+# end and any other byte that is not UTF-8 replaced (round-4 finishing review: with one real hash
+# line first, as a commit message cites a commit, or with one NUL or 0xFF byte, data passed).
 # Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
 # patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
 # characters (groups of 8, or a list whose first piece is that short), and lists split by commas.
@@ -809,17 +812,37 @@ def _without_prefixes(lines):
     return out if any(line for _number, line in out) else None
 
 
-def _blob_flagged(blob: bytes, mixed: bool, depth: int, digests: bool = False) -> bool:
-    """Whether one decoded run is flagged (the three tests above). digests: a list of hashes is never binary data."""
-    if len(blob) >= ENCODED_MIN_MAGIC and (_blob_magic(blob) or _zlib_stream(blob)):
-        return True
+def _hash_list_starts(payloads: list) -> list:
+    """For a list of hashes, one per line: the offset in its decoded bytes where each line's bytes start."""
+    starts = [0]
+    for payload in payloads[:-1]:
+        starts.append(starts[-1] + len(payload) // 2)
+    return starts
+
+
+def _blob_flagged(blob: bytes, mixed: bool, depth: int, starts=None) -> bool:
+    """Whether one decoded run is flagged (the three tests above).
+
+    starts: for a list of hashes (a hex run whose every line is one whole 40- or 64-digit token), where each line's
+    bytes start. Such a run is never binary data, so a magic or a zlib stream counts at the start of any of its lines,
+    and its text is read with NULs as line ends and other bytes that are not UTF-8 replaced.
+    """
+    view = memoryview(blob)
+    for start in starts or (0,):
+        if len(blob) - start >= ENCODED_MIN_MAGIC and (_blob_magic(blob[start:start + SNIFF_BYTES])
+                                                        or _zlib_stream(view[start:])):
+            return True
     if not mixed:
         return False
     if b"\0" in blob or not _is_utf8(blob):
-        return len(blob) >= ENCODED_MIN_BINARY and not digests
-    if len(blob) < ENCODED_MIN_TEXT:
+        if starts is None:
+            return len(blob) >= ENCODED_MIN_BINARY
+        text = blob.replace(b"\0", b"\n").decode("utf-8", "replace")
+    elif len(blob) < ENCODED_MIN_TEXT:
         return False
-    lines = list(_lines(blob.decode("utf-8")))
+    else:
+        text = blob.decode("utf-8")
+    lines = list(_lines(text))
     return bool(_plain_findings(lines)) or (depth < ENCODED_MAX_DEPTH and bool(_encoded_blob_lines(lines, depth + 1)))
 
 
@@ -834,7 +857,8 @@ def _encoded_blob_lines(lines, depth: int = 0) -> list:
         for kind in ("b64", "hex", "esc", "dec"):
             for number, payloads, digests in _runs(kind, view):
                 blob, mixed = _decode_run(kind, payloads)
-                if blob is not None and _blob_flagged(blob, mixed, depth, digests):
+                starts = _hash_list_starts(payloads) if digests else None
+                if blob is not None and _blob_flagged(blob, mixed, depth, starts):
                     flagged.add(number)
         flagged.update(number for number, blob in _git_binary_hunks(view) if _blob_flagged(blob, True, depth))
     return sorted(flagged)

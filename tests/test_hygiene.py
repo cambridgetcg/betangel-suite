@@ -943,6 +943,40 @@ class EncodedDataTests(_RepoCase):
                 self.assertEqual(self.codes(out), {"encoded_blob"})
                 self.assertNotIn(MARKET_2015, out)
 
+    def test_data_after_a_real_hash_or_with_one_odd_byte_is_still_caught(self):
+        # Round-4 finishing review: the magic and zlib tests looked only at a run's first byte, and one NUL or 0xFF
+        # byte made a run binary, which skipped the text test. So data after one real hash line, as a commit message
+        # cites a commit, and text holding one such byte, passed in the layouts of a list of hashes.
+        member = bz2.compress(_stream_text().encode())
+        record = _j('{"op":"mcm","id":"', MARKET_2015, '"}').encode()
+        text = _stream_text(lines=2).encode()
+        table = "".join(f"| {name} | 3.5 | 4.25 |\n" for name in RUNNER_NAMES).encode()
+        lead = {40: hashlib.sha1(b"synthetic lead").hexdigest(), 64: hashlib.sha256(b"synthetic lead").hexdigest()}
+
+        def lines(data: bytes, width: int, fmt: str, first: bool = True) -> str:
+            body = _wrap((data + b" " * (-len(data) % (width // 2))).hex(), width, fmt)
+            return (fmt.format(lead[width]) if first else "") + body
+
+        shapes = {
+            "bz2 after a hash, bare 40": lines(member, 40, "{}\n"),
+            "bz2 after a hash, - 40": lines(member, 40, "- {}\n"),
+            "gzip after a hash, quoted 64": lines(gzip.compress(record), 64, '"{}"\n'),
+            "zlib after a hash, # 64": lines(zlib.compress(record), 64, "# {}\n"),
+            "SQLite after a hash, - `40`": lines(b"SQLite format 3\x00" + bytes(range(16, 112)), 40, "- `{}`\n"),
+            "text after a hash, bare 40": lines(text, 40, "{}\n"),
+            "text with a NUL, bare 64": lines(b"\0" + text, 64, "{}\n", first=False),
+            "text with a 0xFF byte, quoted 40": lines(b"\xff" + text, 40, '"{}"\n', first=False),
+            "a table with a NUL, - 40": lines(b"\0" + table, 40, "- {}\n", first=False),
+        }
+        self.plant_shapes(shapes)
+        for name in ("bz2 after a hash, - 40", "text with a NUL, bare 64"):
+            with self.subTest(shape=name, mode="--message"):
+                self.write(".git/MSG", "synthetic subject\n\nThe fixes:\n" + shapes[name])
+                rc, out = self.scan("--message", os.path.join(self.repo, ".git", "MSG"))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.codes(out), {"encoded_blob"})
+                self.assertNotIn(MARKET_2015, out)
+
 
 class ScanTimeTests(_RepoCase):
     """One long line scans in linear time (round-4 recheck, issue 1). _SECRET_LOOSE took 212 s on one 120 KB
