@@ -30,7 +30,7 @@ is a link, or a state root that a link puts in `~/betangel-data`, is refused bef
 written (62c39c6). The suite never writes `~/.local/state/lab-runs/`, where Nuance's run wrapper
 keeps its marker and lock.
 
-## Exceptions: none until Betfair agrees in writing
+## Exceptions: none without Betfair's specific written agreement naming the provider
 
 No agent looks at real values. When structure is not enough, Yu describes the shape, or
 lab-Claude adds a code-only check to `bin/suite diagnose` (DESIGN.md 8.7; Nuance's PR #1 review,

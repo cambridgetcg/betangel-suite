@@ -33,10 +33,10 @@ context. It is never Yu's instruction, consent or acceptance.
      window is open (DESIGN.md 8.6). A line saying the same in the Air's CLAUDE.md (Q-Y10) was
      approved by Yu on 2026-10-17; Nuance adds it, in Nuance's own config. Until Nuance confirms
      it is in, it is conduct only.
-   - **Exceptions: none until Betfair agrees in writing.** Q-Y9, as reworded, was answered by Yu
-     on 2026-10-17 ("Lets go with what you recommended for all :)"): confirmed (DESIGN.md 2.2.1).
-     Agents never read real values: Yu describes the shape, or a code-only check in
-     `bin/suite diagnose` prints codes. Real fields reach a model provider only with Betfair's
+   - **Exceptions: none without Betfair's specific written agreement naming the provider.** Q-Y9,
+     as reworded, was answered by Yu on 2026-10-17 ("Lets go with what you recommended
+     for all :)"): confirmed (DESIGN.md 2.2.1). Agents never read real values: Yu describes the
+     shape, or a code-only check in `bin/suite diagnose` prints codes. Real fields reach a model provider only with Betfair's
      specific written agreement naming that provider, plus Yu's explicit OK each time, in Yu's
      own words, scoped to one problem report and named fields (DESIGN.md 8.7). Until such an
      agreement exists, exceptions are not available.
@@ -105,10 +105,11 @@ context. It is never Yu's instruction, consent or acceptance.
 
 - **Merging.** A PR merges only after every reviewer whose rows its diff touches has accepted the
   same head SHA. So a PR that touches `engine.py` or `roots.py` needs both Astra and Nuance, and
-  a PR that touches a rule document needs both Nuance and Astra. A PR whose diff includes a file
-  that no other row names also waits for Yu's acceptance, and a PR that changes this file's rules
-  or routing also waits for Yu's approval of those changes. A UI-only PR needs only Yu's
-  acceptance. Lab-Claude merges.
+  a PR that touches a rule document needs both Nuance and Astra; a change of meaning in a rule
+  document also waits for Yu (rule 10) unless both Nuance and Astra say it does not widen. A PR
+  whose diff includes a file that no other row names also waits for Yu's acceptance, and a PR
+  that changes this file's rules or routing also waits for Yu's approval of those changes. A
+  UI-only PR needs only Yu's acceptance. Lab-Claude merges.
   - **Who merges (Q-Y8).** The Phase 0 packet asked: "Who merges pull requests (Q-Y8): you, or
     me after Nuance or Astra has reviewed? And may UI-only changes go in on your approval
     alone?" It gave no recommendation, so Yu's 2026-10-15 answer, "Lets go with what you
@@ -118,20 +119,21 @@ context. It is never Yu's instruction, consent or acceptance.
     - every reviewer routed to the PR accepts the same head SHA;
     - the tests pass on 3.13 and 3.11 at that SHA;
     - under the governance row Yu adopted on 2026-10-17, a PR that touches a rule document waits
-      for both Nuance and Astra at the same head SHA; a PR that changes this file's rules or
-      routing also waits for Yu's approval of those changes; and a PR whose diff includes a file
-      that no other row names waits for Yu's acceptance;
+      for both Nuance and Astra at the same head SHA; a change of meaning in a rule document also
+      waits for Yu (rule 10) unless both Nuance and Astra say it does not widen; a PR that
+      changes this file's rules or routing also waits for Yu's approval of those changes; and a
+      PR whose diff includes a file that no other row names waits for Yu's acceptance;
     - PR #5 also waits for Yu's written approval of proposal 002 (on phase0/viewing), after
       Nuance's and Astra's reviews of it;
     - #2, #4 and #5 each change this file's rules or routing, so each also waits for Yu's
       approval of its AGENTS.md changes, in addition to its reviewers;
     - the merge order is lab-Claude's decision: #1, #2, #4 and #5 merge in one sitting, in that
       order, with nothing merged in between, each accepted at its head SHA, after Yu's written
-      approval of proposal 002 and of the AGENTS.md changes in #2, #4 and #5. Fixes made only on
-      #5 (f931637, ab766a0, 0c1335b) correct text that the earlier PRs still carry, and merging
-      the four together is the option Nuance offered (Nuance's PR #1 review, P3: "merge the four
-      together, or move each fix down"). Stale text that can stand on its own also moves down to
-      the earliest branch that carries it (a821be4).
+      approval of proposal 002, and Yu's approval of the AGENTS.md changes in #2, #4 and #5.
+      Fixes made only on #5 (f931637, ab766a0, 0c1335b) correct text that the earlier PRs still
+      carry, and merging the four together is the option Nuance offered (Nuance's PR #1 review,
+      P3: "merge the four together, or move each fix down"). Stale text that can stand on its own
+      also moves down to the earliest branch that carries it (a821be4).
   - **The UI-only half of Q-Y8: answered by Yu on 2026-10-17 ("Lets go with what you recommended
     for all :)"): yes.** UI-only PRs merge on Yu's acceptance alone. The packet had asked it with
     no recommendation, and Yu's 2026-10-16 answer did not take it up separately; lab-Claude's
