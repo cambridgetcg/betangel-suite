@@ -1732,10 +1732,51 @@ class HistoryTests(_RepoCase):
         link = os.path.join(self.tmp, "link")
         os.symlink(os.path.join(self.repo, "README.md"), link)
         inside = os.path.join(self.tmp, _j("betangel", "-data"), "MSG")
-        for path, code in ((fifo, "message_not_regular"), (link, "message_unreadable"), (inside, "data_root")):
+        for path, code in ((fifo, "message_not_regular"), (link, "message_unreadable"), (inside, "data_root"),
+                           (self.tmp, "message_not_regular"), (os.path.join(self.repo, "README.md", ""),
+                                                               "message_unreadable")):
             with self.subTest(code=code):
                 rc, out = self.scan("--message", path)
                 self.assertEqual((rc, out.strip()), (2, f"hygiene_scan: refused:{code}"))
+
+    def test_message_paths_follow_no_link_into_a_data_root(self):
+        # Astra's re-review of #2, new finding 3: only the last component had O_NOFOLLOW and only the normalised text
+        # was checked, so alias/MSG, with alias a link into a data root, and down/../MSG, with down a link to a
+        # directory in one, were read and their contents reported. Each component is now opened in turn, links read
+        # and their targets checked, never followed. All of it is synthetic and under the test's temporary directory.
+        data = os.path.join(self.tmp, _j("betangel", "-data"))
+        os.makedirs(os.path.join(data, "sub"))
+        with open(os.path.join(data, "MSG"), "w") as handle:
+            handle.write(f"synthetic subject\n\nsee {MARKET_2015}\n")
+        notes = os.path.join(self.tmp, "notes")
+        os.makedirs(os.path.join(notes, "sub"))
+        with open(os.path.join(notes, "MSG"), "w") as handle:
+            handle.write(f"synthetic subject\n\nsee {MARKET_2015}\n")
+        with open(os.path.join(self.tmp, "MSG"), "w") as handle:                 # what down/../MSG normalises to
+            handle.write("synthetic subject\n\nA clean body.\n")
+        links = {"alias": data, "down": os.path.join(data, "sub"), "hop2": data, "hop1": os.path.join(self.tmp, "hop2"),
+                 "rel": "notes/../" + _j("betangel", "-data"), "plain": notes, "deep": os.path.join(notes, "sub")}
+        for name, target in links.items():
+            os.symlink(target, os.path.join(self.tmp, name))
+        refused = {"alias/MSG": "data_root", "down/../MSG": "data_root", "hop1/MSG": "data_root",
+                   "rel/MSG": "data_root", "plain/../" + _j("betangel", "-data") + "/MSG": "data_root"}
+        info = os.stat(data)
+        vol = "/.vol/%d/%d" % (info.st_dev, info.st_ino)
+        if os.path.isfile(os.path.join(vol, "MSG")):                             # the same directory, by its inode
+            refused[vol + "/MSG"] = "message_unreadable"                         # /.vol has no names below a descriptor
+        for rel, code in refused.items():
+            with self.subTest(path=rel):
+                path = rel if rel.startswith("/") else os.path.join(self.tmp, rel)
+                rc, out = self.scan("--message", path)
+                self.assertEqual((rc, out.strip()), (2, f"hygiene_scan: refused:{code}"))
+        # Links that stay out of a data root are walked as open() walks them: deep/.. is notes, not the directory deep
+        # is in, so deep/../MSG is notes/MSG (flagged), not the clean MSG beside deep.
+        for rel in ("plain/MSG", "deep/../MSG", "plain/sub/../MSG"):
+            with self.subTest(path=rel):
+                rc, out = self.scan("--message", os.path.join(self.tmp, rel))
+                self.assertEqual(rc, 1, out)
+                self.assertIn(f"FAIL market_id {WITHHELD}:3 (message)", out)
+                self.assertNotIn(MARKET_2015, out)
 
 
 class HookScriptTests(unittest.TestCase):

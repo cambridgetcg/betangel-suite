@@ -75,6 +75,9 @@ exempt from the runner rules.
 Safety. The scanner refuses (exit 2) to run with a root inside betangel-data
 or a *.noindex directory. It never follows a symbolic link, never reads a
 path with a data-root component, and reads working-tree files with O_NOFOLLOW.
+A --message file is opened a component at a time, each with O_NOFOLLOW and
+its name checked before it is opened; a link on the way is read and its
+target checked and walked the same way, never followed.
 Every git command it runs has replace refs and grafts turned off
 (GIT_NO_REPLACE_OBJECTS=1, GIT_GRAFT_FILE=/dev/null), so it reads the objects
 and parents a commit records and a push sends, never a stand-in.
@@ -1184,17 +1187,78 @@ def _read_metadata(objects, sha: str):
     return kind, data
 
 
-def _read_message_file(path: str) -> bytes:
-    """The message file git hands commit-msg, read with no link followed and never blocking."""
-    _check_lexical(os.path.abspath(path))
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+MAX_LINK_HOPS = 40
+
+
+def _open_message(path: str) -> int:
+    """A descriptor for the message file at path, opened with no link followed by the kernel (Astra's re-review of
+    #2, new finding 3: a link on the way, as in alias/MSG, was followed into a data root, since only the last
+    component had O_NOFOLLOW and only the normalised text was checked).
+
+    path is read as open() reads it, never normalised first: "alias/.." is the parent of alias's target, not the
+    directory alias is in. From "/" (a relative path from the current directory, by its real path), each component's
+    name is checked for a data-root component, then it is opened relative to the one before, with O_NOFOLLOW. A link
+    on the way is read, never followed: its target is checked and walked the same way, a component at a time, as
+    --root's links are (at most MAX_LINK_HOPS). The last component must be a regular file, not a link. A
+    /.vol/<dev>/<ino> spelling is refused (message_unreadable): /.vol looks up no name relative to a descriptor.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(path, flags)
+        if not path or "\0" in path:
+            raise Refusal("message_unreadable")
+        pending = (path if path.startswith("/") else os.getcwd() + "/" + path).split("/")
+        names = []
+        fds = [os.open("/", os.O_RDONLY | os.O_DIRECTORY)]
+        hops = 0
+        try:
+            while pending:
+                part = pending.pop(0)
+                if part in ("", "."):
+                    continue
+                if part == "..":
+                    if names:
+                        names.pop()
+                        os.close(fds.pop())
+                    continue
+                _check_lexical("/" + "/".join([*names, part]))
+                info = os.stat(part, dir_fd=fds[-1], follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode) and pending:
+                    hops += 1
+                    if hops > MAX_LINK_HOPS:
+                        raise Refusal("symlink_loop")
+                    target = os.readlink(part, dir_fd=fds[-1])
+                    _check_lexical(target)
+                    if target.startswith("/"):
+                        while names:
+                            names.pop()
+                            os.close(fds.pop())
+                    pending[:0] = target.split("/")
+                    continue
+                if pending:
+                    fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | nofollow, dir_fd=fds[-1])
+                    fds.append(fd)
+                    names.append(part)
+                    continue
+                fd = os.open(part, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0), dir_fd=fds[-1])
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise Refusal("message_not_regular")
+                except BaseException:
+                    os.close(fd)
+                    raise
+                return fd
+        finally:
+            for walked in fds:
+                os.close(walked)
     except OSError:
         raise Refusal("message_unreadable") from None
+    raise Refusal("message_not_regular")  # the path names a directory
+
+
+def _read_message_file(path: str) -> bytes:
+    """The message file git hands commit-msg: opened by _open_message, never blocking, at most MAX_FILE_BYTES + 1."""
+    fd = _open_message(path)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise Refusal("message_not_regular")
         chunks, left = [], MAX_FILE_BYTES + 1
         while left > 0:
             chunk = os.read(fd, min(left, 1 << 16))
