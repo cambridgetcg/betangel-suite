@@ -97,6 +97,11 @@ def _escaped(data: bytes) -> str:
     return "".join(f"\\x{b:02x}" for b in data)
 
 
+def _octal(data: bytes, shortest: bool = False) -> str:
+    """Each byte as an octal escape: three digits, or C's shortest form (unambiguous when every byte is escaped)."""
+    return "".join(f"\\{b:o}" if shortest else f"\\{b:03o}" for b in data)
+
+
 def _xxd(data: bytes) -> str:
     """xxd's default layout: offset, eight groups of four hex digits, the printable characters."""
     lines = []
@@ -727,6 +732,63 @@ class LineShapeTests(_RepoCase):
         hidden = MARKET_2015[:5] + "​" + MARKET_2015[5:]
         self.plant("pkg/u.py", f"m = '{hidden}'\n", MARKET_2015, hidden, code="market_id")
 
+    def test_spaces_digits_and_invisible_marks_that_nfkc_or_the_ignorables_hide(self):
+        # Nuance's re-review of #2, F8: a no-break, figure, narrow or ideographic space between a name's words,
+        # fullwidth digits, and U+034F (combining grapheme joiner) or U+FE0F (a variation selector) inside a name or an
+        # id passed the runner and id rules. Lines are read in NFKC form now, with every default-ignorable code point
+        # dropped.
+        rows = [(n, f"{3 + i}.4", f"{3 + i}.45") for i, n in enumerate(RUNNER_NAMES)]
+        full = str.maketrans("0123456789.", "".join(chr(0xFF10 + d) for d in range(10)) + "．")
+        tables = {f"names with U+{ord(space):04X}": [(n.replace(" ", space), a, b) for n, a, b in rows]
+                  for space in (" ", " ", " ", "　")}
+        tables["prices in fullwidth digits"] = [(n, a.translate(full), b.translate(full)) for n, a, b in rows]
+        tables["names holding U+034F or U+FE0F"] = [(n[:2] + "͏" + n[2:] + "️", a, b) for n, a, b in rows]
+        tables["fullwidth names"] = [("".join(chr(ord(c) + 0xFEE0) if c.isalpha() else c for c in n), a, b)
+                                     for n, a, b in rows]
+        for label, cells in tables.items():
+            with self.subTest(shape=label):
+                self.setUp()
+                self.plant("docs/t.md", "".join(f"| {n} | {a} | {b} |\n" for n, a, b in cells),
+                           *(n for n, _, _ in cells), code="runner_table")
+        ids = {"market_id": MARKET_2015, "event_id": EVENT}
+        for code, value in ids.items():
+            hidden = {"U+034F": value[:4] + "͏" + value[4:], "U+FE0F": value[:4] + "️" + value[4:],
+                      "fullwidth digits": value.translate(full)}
+            for label, text in hidden.items():
+                with self.subTest(code=code, shape=label):
+                    self.setUp()
+                    self.plant("pkg/u.py", f"m = '{text}'\n", value, text, code=code)
+        with self.subTest(code="market_id", shape="fullwidth digits in a file name"):
+            self.setUp()
+            self.plant(f"docs/{MARKET_2015.translate(full)}.md", "synthetic\n", MARKET_2015, code="market_id")
+
+    def test_time_date_and_id_first_columns(self):
+        # Nuance's re-review of #2, F8: a table whose first column held a time, a date or an id (not a row number) was
+        # not read as a runner table. The ids here are reserved ones, so only runner_table can flag these rows.
+        rows = [(n, f"{3 + i}.4", f"{3 + i}.45") for i, n in enumerate(RUNNER_NAMES)]
+        shapes = {
+            "time": "".join(f"| 13:3{i} | {n} | {a} | {b} |\n" for i, (n, a, b) in enumerate(rows)),
+            "time with seconds": "".join(f"13:30:0{i}.250 {n}  {a}  {b}\n" for i, (n, a, b) in enumerate(rows)),
+            "ISO date": "".join(f"2015-05-0{i + 1},{n},{a},{b}\n" for i, (n, a, b) in enumerate(rows)),
+            "ISO date and time": "".join(f"2015-05-03T13:3{i}:00Z\t{n}\t{a}\t{b}\n" for i, (n, a, b) in enumerate(rows)),
+            "date and time": "".join(f"03/05/2015 13:3{i}  {n}  {a}  {b}\n" for i, (n, a, b) in enumerate(rows)),
+            "six digits": "".join(f"13300{i} {n}  {a}  {b}\n" for i, (n, a, b) in enumerate(rows)),
+            "a reserved event id": "".join(f"| {SYN_EVENT} | {n} | {a} | {b} |\n" for n, a, b in rows),
+            "an id, a date and a time": "".join(f"| {SYN_EVENT} | 2015-05-03 | 13:3{i} | {n} | {a} | {b} |\n"
+                                               for i, (n, a, b) in enumerate(rows)),
+        }
+        for label, text in shapes.items():
+            with self.subTest(shape=label):
+                self.setUp()
+                self.plant("docs/t.md", text, *RUNNER_NAMES, code="runner_table")
+        # A dated changelog with version numbers and words beside them is not a runner table.
+        with self.subTest(shape="a dated changelog"):
+            self.setUp()
+            self.write("docs/c.md", "".join(f"- 2026-10-1{i} {w} 3.13 and 3.11 pass\n"
+                                            for i, w in enumerate(("Python", "Release", "Review", "Merge"))))
+            self.add("docs/c.md")
+            self.assert_clean()
+
     def test_line_numbers_count_newlines_only(self):
         self.write("docs/v.md", f"one\rtwo\nthree\x0bfour\nm = '{MARKET_2015}'\n")
         self.add("docs/v.md")
@@ -809,6 +871,12 @@ class EncodedDataTests(_RepoCase):
             "bytes repr": f"DATA = {member!r}\n",
             "wrapped repr": "DATA = (\n" + "".join(f"    {piece!r}\n" for piece in pieces) + ")\n",
             "C string": f'const char d[] = "{_escaped(member)}";\n',
+            # Nuance's re-review of #2, F7: a literal holding only octal escapes was never decoded.
+            "C string, octal": f'const char d[] = "{_octal(member)}";\n',
+            "C string, shortest octal": f'const char d[] = "{_octal(member, shortest=True)}";\n',
+            "shell string, octal": f"printf $'{_octal(member)}' > x\n",
+            "wrapped C string, octal": "const char d[] =\n" + "".join(f'    "{_octal(piece)}"\n' for piece in pieces)
+                                       + ";\n",
             # A quote that never closes comes first: the other kind is still read (round-4 finishing review).
             "C string after an unclosed quote": f'/* it\'s */ const char d[] = "{_escaped(member)}";\n',
         })
@@ -825,6 +893,16 @@ class EncodedDataTests(_RepoCase):
             shapes[f"hex {label}"] = _wrap(data.hex(), 20)
             shapes[f"escapes {label}"] = "D = (\n" + "".join(
                 f"    b'{_escaped(data[i:i + 10])}'\n" for i in range(0, len(data), 10)) + ")\n"
+            shapes[f"octal {label}"] = "D = (\n" + "".join(
+                f"    b'{_octal(data[i:i + 10])}'\n" for i in range(0, len(data), 10)) + ")\n"
+        # A last line of one to three octal escapes, under the four a line needs alone, still closes a run. Here it
+        # holds the end of the Adler-32 check of a zlib stream too short (under 96 bytes) to count as binary data, so
+        # only the whole stream is flagged.
+        short = zlib.compress(bytes(range(40)))
+        self.assertLess(len(short), 96)
+        width = next(w for w in range(8, 17) if 1 <= len(short) % w <= 3)
+        shapes["octal zlib, short last line"] = "D = (\n" + "".join(
+            f"    b'{_octal(short[i:i + width])}'\n" for i in range(0, len(short), width)) + ")\n"
         self.plant_shapes(shapes)
 
     def test_a_short_last_line_closes_a_run(self):
@@ -905,6 +983,11 @@ class EncodedDataTests(_RepoCase):
         hashes = [hashlib.sha256(f"synthetic {i}".encode()).hexdigest() for i in range(12)]
         magic = (b"\x1f\x8b", b"PK\x03\x04", b"PK\x05\x06", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd")
         reserved = _j('{"op":"mcm","id":"', SYN_MARKET, '","rc":[{"id":', SYN_SELECTION, "}]}").encode()
+        quoted = "".join(chr(b) if b < 128 else _octal(bytes([b])) for b in "caf\u00e9 \u65e5\u672c".encode())
+        esc = _octal(bytes([27]))
+        text = ("Caf\u00e9, cr\u00e8me and na\u00efve, " + "plain words " * 7).encode("latin-1")
+        latin1 = "".join(chr(b) if b < 128 else _octal(bytes([b])) for b in text)
+        self.assertEqual((latin1.count("\\"), len(text) >= 96), (3, True))
         files = {
             "pkg/hashes.py": "HASHES = [\n" + "".join(f'    "{h}",\n' for h in hashes) + "]\n",
             "pkg/pins.json": "{\n" + "".join(f'  "pkg/m{i}.py": "{h}",\n' for i, h in enumerate(hashes)) + "}\n",
@@ -919,6 +1002,11 @@ class EncodedDataTests(_RepoCase):
             "docs/words.md": "we add a bad bed to the cafe; dead beef faced a decade\n" * 10,
             "pkg/ids.py": f"sha = '{hashes[0][:40]}'\nrun = '12345678-5ec0-40c0-93f4-4adfd5acd836'\n" * 5,
             "pkg/png.py": f'PNG = b"{_escaped(bytes([0x89]))}PNG\\r\\n{_escaped(bytes([0x1a]))}\\n"\n',
+            # Octal escapes that are not data (Nuance's re-review of #2, F7): paths as git quotes them, colour codes,
+            # and Latin-1 text with three escapes, which would be binary data if it were read (not UTF-8, 96+ bytes).
+            "docs/status.md": "".join(f'\t"docs/{quoted}{i}.md"\n' for i in range(8)),
+            "pkg/colour.sh": "".join(f'printf "{esc}[1m%s{esc}[0m {esc}[3{i}m%s{esc}[0m\\n" a b\n' for i in range(8)),
+            "pkg/latin1.c": "".join(f'const char *m{i} = "{latin1}";\n' for i in range(8)),
             "docs/reserved.md": base64.b64encode(reserved).decode() + "\n",
             # A price ladder in hundredths, as ui/ticks.json holds it: sorted, so not data.
             "ui/ladder.json": '{"ticks": [\n' + "".join("    " + ", ".join(str(t) for t in range(k, k + 16)) + ",\n"
@@ -1181,7 +1269,7 @@ class ScanTimeTests(_RepoCase):
     SIZE = 200 * 1024
     BOUND = 10  # seconds for one 200 KB line; the quadratic versions took minutes, the cubic ones far longer
 
-    # (head, unit repeated to SIZE characters, tail). Each line is its own file: two of them would be oversize.
+    # (head, unit repeated to SIZE bytes of UTF-8, tail). Each line is its own file: two of them would be oversize.
     SHAPES = {
         "snake_case": ("", "x_", ""),
         "kebab-case": ("", "a-", ""),
@@ -1195,6 +1283,18 @@ class ScanTimeTests(_RepoCase):
         "spaces after an escaped literal": ('"' + "\\x5a" * 4 + '"', " ", "!"),
         "an unclosed literal of escaped single quotes": ("\\x41 '", "\\'", ""),
         "an unclosed literal of escaped double quotes": ('\\x41 "', '\\"', ""),
+        # Octal-escape literals (Nuance's re-review of #2, F7): one long literal, many short ones, and an unclosed one.
+        "octal escapes in one literal": ('"', "\\101", '"'),
+        "short literals of octal escapes": ("", "'\\1\\2\\3\\4'", ""),
+        "an unclosed literal of escaped quotes after octal escapes": ("\\101 '", "\\'", ""),
+        # NFKC and the wider lead cells (Nuance's re-review of #2, F8). U+FDFA becomes 18 characters under NFKC, so its
+        # line is read as 1.2 million.
+        "a character NFKC makes 18 of": ("", "\ufdfa", ""),
+        "no-break spaces after a token": ("A" * 24, "\u00a0", "!"),
+        "fullwidth digits": ("", "\uff11", ""),
+        "digits split by a combining grapheme joiner": ("", "1\u034f", ""),
+        "fullwidth table cells": ("", "\uff5c \uff21\uff41\uff41\uff41 \uff11.\uff15 ", "|"),
+        "date and time cells": ("", "2015-05-03 13:30 ", ""),
         "letters": ("", "a", ""),
         "digits": ("", "7", ""),
         "'=' and ':'": ("token", "=:", ""),
@@ -1207,7 +1307,8 @@ class ScanTimeTests(_RepoCase):
 
     def test_long_lines_scan_in_linear_time(self):
         for index, (name, (head, unit, tail)) in enumerate(self.SHAPES.items()):
-            line = head + (unit * (self.SIZE // len(unit) + 1))[:self.SIZE] + tail + "\n"
+            body = (unit * (self.SIZE // len(unit) + 1))[:self.SIZE]
+            line = head + body[:len(body) * self.SIZE // len(body.encode())] + tail + "\n"
             rel = f"docs/long{index}.txt"
             self.write(rel, line)
             with self.subTest(shape=name):
@@ -1217,6 +1318,7 @@ class ScanTimeTests(_RepoCase):
                     self.fail(f"no result within {self.BOUND} s")
                 self.assertIn(rc, (0, 1), out)
                 self.assertRegex(out.splitlines()[-1], r"^hygiene_scan: (OK|FAIL) ")
+                self.assertNotIn("oversize", self.codes(out))                  # its content was read
                 self.assert_withheld(out)
 
 
@@ -1531,11 +1633,25 @@ class HistoryTests(_RepoCase):
         _base, added, tip = self.history_only_file()
         rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {added}")  # the remote's old value
         self.assertEqual((rc, out.strip()), (0, "hygiene_scan: OK 1 item(s) scanned [push]"))
-        self.write_ref("refs/remotes/origin/main", added)  # or a tracking ref for this remote
-        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}")
+        # The old value of another ref in the same push counts too: the remote reported it for this push.
+        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}",
+                                 f"refs/heads/side {added} refs/heads/side {added}")
         self.assertEqual(rc, 0, out)
-        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}", remote="elsewhere")
-        self.assertEqual(rc, 1, out)
+
+    def test_a_stale_tracking_ref_hides_nothing(self):
+        # Nuance's re-review of #2, F3: the scan left out every commit reachable from refs/remotes/<remote>/*. A
+        # tracking ref can name a commit the remote no longer holds (deleted there and pruned, or rewritten away)
+        # until `git fetch --prune`, and a push that sent that commit again published it unscanned. Only the old
+        # values the remote reports in the push lines count now.
+        base, added, tip = self.history_only_file()
+        for ref in ("refs/remotes/origin/main", "refs/remotes/origin/gone"):
+            with self.subTest(tracking_ref=ref):
+                self.write_ref(ref, added)                               # stale: the remote dropped added
+                for old in (ZERO, base):                                 # a new ref, or one the remote holds at base
+                    rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {old}")
+                    self.assertEqual(rc, 1, out)
+                    self.assert_push_flags(out, f"FAIL market_id {WITHHELD}:1 (commit {added} entry 1)")
+                os.unlink(os.path.join(self.repo, ".git", *ref.split("/")))
 
     def test_commit_and_tag_messages(self):
         self.commit("base")
@@ -1654,6 +1770,34 @@ class HistoryTests(_RepoCase):
                 self.assertEqual(rc, 1, out)
                 self.assertIn("market_id", self.codes(out))
 
+    def test_a_commit_or_tag_over_the_parsing_budget_is_refused(self):
+        # Astra's re-review of #2, new finding 2: a commit or tag object was read up to 1 MiB, and an author or tagger
+        # line that filled it left no blank line in what was read, so the message read as empty and passed. Such an
+        # object is refused now, by the size git gives; one just under the budget is still read whole.
+        base = self.commit("base")
+        tree = self.rev(base + "^{tree}")
+        stamp = "Synthetic Tester <tester@example.invalid> 1700000000 +0000"
+        budget = 2 * 512 * 1024                                          # the scanner's MAX_OBJECT_BYTES
+        made = {}
+        for label, pad in (("over", budget), ("under", budget // 2)):
+            person = f"Synthetic {'a' * pad} <tester@example.invalid> 1700000000 +0000"
+            commit = self.loose("commit", f"tree {tree}\nparent {base}\nauthor {person}\ncommitter {stamp}\n\n"
+                                          f"note {MARKET_2015}\n".encode())
+            tag = self.loose("tag", f"object {base}\ntype commit\ntag v-{label}\ntagger {person}\n\n"
+                                    f"tag {MARKET_2015}\n".encode())
+            made[label] = (commit, tag)
+        over_commit, over_tag = made["over"]
+        for args, stdin in ((("--range", f"{base}..{over_commit}"), b""),
+                            (("--push", "origin"), f"refs/heads/main {over_commit} refs/heads/main {base}\n".encode()),
+                            (("--push", "origin"), f"refs/tags/v-over {over_tag} refs/tags/v-over {ZERO}\n".encode())):
+            with self.subTest(args=args, budget="over"):
+                rc, out = self.scan(*args, stdin=stdin)
+                self.assertEqual((rc, out.strip()), (2, "hygiene_scan: refused:object_oversize"))
+        under_commit, under_tag = made["under"]
+        self.assert_found((("--range", f"{base}..{under_commit}"), b""),
+                          (("--push", "origin"), f"refs/heads/main {under_commit} refs/heads/main {base}\n".encode()),
+                          (("--push", "origin"), f"refs/tags/v-under {under_tag} refs/tags/v-under {ZERO}\n".encode()))
+
     def test_push_input_past_the_limit_is_refused_not_cut_short(self):
         # Round-4 review: only the first 1 MiB of git's pre-push lines was read. A cut at a line end dropped every
         # later ref, so a push of about 8,900 refs or more could publish commits that no scan saw.
@@ -1690,10 +1834,51 @@ class HistoryTests(_RepoCase):
         link = os.path.join(self.tmp, "link")
         os.symlink(os.path.join(self.repo, "README.md"), link)
         inside = os.path.join(self.tmp, _j("betangel", "-data"), "MSG")
-        for path, code in ((fifo, "message_not_regular"), (link, "message_unreadable"), (inside, "data_root")):
+        for path, code in ((fifo, "message_not_regular"), (link, "message_unreadable"), (inside, "data_root"),
+                           (self.tmp, "message_not_regular"), (os.path.join(self.repo, "README.md", ""),
+                                                               "message_unreadable")):
             with self.subTest(code=code):
                 rc, out = self.scan("--message", path)
                 self.assertEqual((rc, out.strip()), (2, f"hygiene_scan: refused:{code}"))
+
+    def test_message_paths_follow_no_link_into_a_data_root(self):
+        # Astra's re-review of #2, new finding 3: only the last component had O_NOFOLLOW and only the normalised text
+        # was checked, so alias/MSG, with alias a link into a data root, and down/../MSG, with down a link to a
+        # directory in one, were read and their contents reported. Each component is now opened in turn, links read
+        # and their targets checked, never followed. All of it is synthetic and under the test's temporary directory.
+        data = os.path.join(self.tmp, _j("betangel", "-data"))
+        os.makedirs(os.path.join(data, "sub"))
+        with open(os.path.join(data, "MSG"), "w") as handle:
+            handle.write(f"synthetic subject\n\nsee {MARKET_2015}\n")
+        notes = os.path.join(self.tmp, "notes")
+        os.makedirs(os.path.join(notes, "sub"))
+        with open(os.path.join(notes, "MSG"), "w") as handle:
+            handle.write(f"synthetic subject\n\nsee {MARKET_2015}\n")
+        with open(os.path.join(self.tmp, "MSG"), "w") as handle:                 # what down/../MSG normalises to
+            handle.write("synthetic subject\n\nA clean body.\n")
+        links = {"alias": data, "down": os.path.join(data, "sub"), "hop2": data, "hop1": os.path.join(self.tmp, "hop2"),
+                 "rel": "notes/../" + _j("betangel", "-data"), "plain": notes, "deep": os.path.join(notes, "sub")}
+        for name, target in links.items():
+            os.symlink(target, os.path.join(self.tmp, name))
+        refused = {"alias/MSG": "data_root", "down/../MSG": "data_root", "hop1/MSG": "data_root",
+                   "rel/MSG": "data_root", "plain/../" + _j("betangel", "-data") + "/MSG": "data_root"}
+        info = os.stat(data)
+        vol = "/.vol/%d/%d" % (info.st_dev, info.st_ino)
+        if os.path.isfile(os.path.join(vol, "MSG")):                             # the same directory, by its inode
+            refused[vol + "/MSG"] = "message_unreadable"                         # /.vol has no names below a descriptor
+        for rel, code in refused.items():
+            with self.subTest(path=rel):
+                path = rel if rel.startswith("/") else os.path.join(self.tmp, rel)
+                rc, out = self.scan("--message", path)
+                self.assertEqual((rc, out.strip()), (2, f"hygiene_scan: refused:{code}"))
+        # Links that stay out of a data root are walked as open() walks them: deep/.. is notes, not the directory deep
+        # is in, so deep/../MSG is notes/MSG (flagged), not the clean MSG beside deep.
+        for rel in ("plain/MSG", "deep/../MSG", "plain/sub/../MSG"):
+            with self.subTest(path=rel):
+                rc, out = self.scan("--message", os.path.join(self.tmp, rel))
+                self.assertEqual(rc, 1, out)
+                self.assertIn(f"FAIL market_id {WITHHELD}:3 (message)", out)
+                self.assertNotIn(MARKET_2015, out)
 
 
 class HookScriptTests(unittest.TestCase):
@@ -1796,8 +1981,11 @@ class OwnFilesTests(unittest.TestCase):
 
     def test_whole_checkout_passes(self):
         # I-9 for every file of this checkout, tracked or not (not ignored): the core package, bin/, pin/
-        # and every test, not only the governance files above. Tree mode lists files with git ls-files.
-        env = {"PATH": "/usr/bin:/bin", "LANG": "en_GB.UTF-8", "HOME": os.environ["HOME"],
+        # and every test, not only the governance files above. Tree mode lists files with git ls-files. The child
+        # gets a temporary HOME, never the runner's own (Nuance's re-review of #2, F2): it is unguarded.
+        home = tempfile.mkdtemp(prefix="home-")
+        self.addCleanup(shutil.rmtree, home)
+        env = {"PATH": "/usr/bin:/bin", "LANG": "en_GB.UTF-8", "HOME": home,
                "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", **FORBID}
         proc = subprocess.run(
             [sys.executable, "-I", "-S", "-B", str(SCANNER), "--root", str(REPO)],

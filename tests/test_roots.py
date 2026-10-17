@@ -12,7 +12,7 @@ import stat
 import unittest
 from unittest import mock
 
-from betangel_suite import cli, roots
+from betangel_suite import cli, roots, runmarker
 from betangel_suite.errors import SuiteError
 from tests import make_home, rmtree
 
@@ -32,8 +32,12 @@ class RootPathTests(unittest.TestCase):
         self.assertEqual(roots.deps_root(home), "/h/.local/share/betangel-suite/deps")
         self.assertEqual(roots.suite_root(home), "/h/betangel-data/suite.noindex")
         self.assertEqual(roots.salt_path(home), "/h/.local/state/betangel-suite/install-salt")
+        self.assertEqual(roots.salt_marker_path(home), "/h/.local/state/betangel-suite/salt-provisioned")
         self.assertEqual(roots.config_path(home), "/h/.local/state/betangel-suite/config.json")
         self.assertEqual(roots.research_clone(home), "/h/betangel-research")
+        # The run marker's directory, which check_placement keeps every root out of: the one config's run_marker names.
+        self.assertEqual(roots.lab_runs_dir(home), "/h/.local/state/lab-runs")
+        self.assertEqual(roots.lab_runs_dir(home), os.path.dirname(runmarker.marker_path(None, home)))
 
     def test_flag_off_every_command_uses_the_state_tmp(self):
         with mock.patch.object(roots, "STATE_ROOT_AGREED", False):
@@ -45,7 +49,7 @@ class RootPathTests(unittest.TestCase):
         with mock.patch.object(roots, "STATE_ROOT_AGREED", True):
             self.assertEqual(roots.write_roots("/h"), ("/h/.local/state/betangel-suite", "/h/betangel-data/suite.noindex"))
             for command in cli.COMMANDS:
-                expected = "/h/.local/state/betangel-suite/tmp" if command in ("test", "uisnap", "vendor") else (
+                expected = "/h/.local/state/betangel-suite/tmp" if command in ("test", "uisnap", "vendor", "stop") else (
                     "/h/betangel-data/suite.noindex/tmp")
                 self.assertEqual(roots.tmp_dir(command, "/h"), expected, command)
 
@@ -132,6 +136,39 @@ class WriterTests(unittest.TestCase):
         roots.ensure_dir(os.path.join(self.state, "x"), home_dir=self.home)
         self.assertEqual(mode(self.state), 0o700)
 
+    def test_a_directory_another_process_makes_meanwhile_is_judged_as_existing(self):
+        # Two commands started together in a new HOME both make the suite root's tmp/. The directory can appear after
+        # _make_dir's lstat and before its prospective path guard (which then said path_denied:already_exists: the
+        # flaky SignalTests run, round 4b), or after that guard and before mkdir. Either way it is now judged as an
+        # existing entry: kept and tightened to 0700 when it is a real directory, refused when it is a link.
+        real_guard = roots._path_guard
+        elsewhere = os.path.join(self.home, "elsewhere")
+        os.makedirs(elsewhere)
+
+        def other_process(target, when, make):
+            def guard(path, *, prospective):
+                if prospective and path == target and when == "before_guard":
+                    make(path)
+                real_guard(path, prospective=prospective)
+                if prospective and path == target and when == "before_mkdir":
+                    make(path)
+            return mock.patch.object(roots, "_path_guard", guard)
+
+        def make_directory(path):
+            os.mkdir(path)
+            os.chmod(path, 0o755)
+
+        for when in ("before_guard", "before_mkdir"):
+            with self.subTest(when):
+                target = os.path.join(self.state, when, "tmp")
+                with other_process(target, when, make_directory):
+                    self.assertEqual(roots.ensure_dir(target, home_dir=self.home), target)
+                self.assertEqual(mode(target), 0o700)
+                link = os.path.join(self.state, when, "linked")
+                with other_process(link, when, lambda path: os.symlink(elsewhere, path)):
+                    self.refused("symlink_refused", roots.ensure_dir, link)
+                self.assertEqual(os.listdir(elsewhere), [])
+
     def test_outside_the_roots(self):
         self.refused("write_outside_roots", roots.write_new, os.path.join(self.home, "x"), b"x")
         self.refused("write_outside_roots", roots.ensure_dir, os.path.join(self.home, ".local", "share", "x"))
@@ -206,6 +243,35 @@ class WriterTests(unittest.TestCase):
                 self.refused("root_overlaps_data_home", roots.ensure_dir, os.path.join(self.state, "sub"))
                 self.refused("root_overlaps_data_home", roots.check_placement, self.state)
         self.assertEqual(os.listdir(lab), [])
+
+    def test_writer_refuses_a_root_that_a_link_puts_in_around_or_onto_lab_runs(self):
+        # Nuance's re-review of #2, F5: a state root linked to ~/.local/state (around), to lab-runs/ itself (onto) or
+        # to a directory in it (into) put the run marker's directory inside the roots. check_placement refuses each,
+        # and the writer helper with it, before anything is made there.
+        local_state = os.path.join(self.home, ".local", "state")
+        lab = os.path.join(local_state, "lab-runs")
+        os.makedirs(os.path.join(lab, "sub"), mode=0o700)
+        for name in ("ACTIVE", "LOCK"):
+            open(os.path.join(lab, name), "w").close()
+        rmtree(self.state)
+        for target in (local_state, lab, os.path.join(lab, "sub")):
+            os.symlink(target, self.state)
+            for agreed in (False, True):
+                with self.subTest(target=os.path.relpath(target, local_state), agreed=agreed), \
+                        mock.patch.object(roots, "STATE_ROOT_AGREED", agreed):
+                    self.refused("root_overlaps_lab_runs", roots.write_new, os.path.join(self.state, "x"), b"x")
+                    self.refused("root_overlaps_lab_runs", roots.ensure_dir, os.path.join(self.state, "sub"))
+                    self.refused("root_overlaps_lab_runs", roots.check_placement, self.state)
+                    if target != local_state:       # around it, the root's tmp/ lies beside lab-runs/, not in it
+                        self.refused("root_overlaps_lab_runs", roots.check_placement, os.path.join(self.state, "tmp"))
+            os.remove(self.state)
+        self.assertEqual(sorted(os.listdir(lab)), ["ACTIVE", "LOCK", "sub"])
+        self.assertEqual(os.listdir(os.path.join(lab, "sub")), [])
+        # The control: a real state root beside lab-runs/ passes, and so does a suite root beside it.
+        os.makedirs(self.state, mode=0o700)
+        with mock.patch.object(roots, "STATE_ROOT_AGREED", True):
+            roots.check_placement(self.state, self.home)
+            roots.check_placement(roots.suite_root(self.home), self.home)
 
     def test_writer_refuses_a_suite_root_that_is_not_a_real_directory_in_place(self):
         historic = os.path.join(roots.data_home(self.home), "historic-pro")

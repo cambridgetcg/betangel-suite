@@ -10,9 +10,12 @@ never prints a path or any part of one (no directory, name or suffix), and
 never the text that matched. Line 0 means the finding is about the entry
 itself (its name, type, size or link target), not one of its lines. Line
 numbers count "\\n" line ends, as git and sed do; the rules also split a
-line at CR, NEL, LS and the other str.splitlines() boundaries, and ignore
-format characters (Unicode category Cf: a BOM, zero-width spaces). After
-ten lines for one entry and rule, one more line counts the rest:
+line at CR, NEL, LS and the other str.splitlines() boundaries, ignore
+format characters (Unicode category Cf: a BOM, zero-width spaces) and the
+other default-ignorable code points (a combining grapheme joiner, variation
+selectors), and read each line in NFKC form (no-break and other spaces as
+a space, fullwidth digits and letters as ASCII). After ten lines for one
+entry and rule, one more line counts the rest:
 
     FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)
 
@@ -55,8 +58,10 @@ Run it with the fixed interpreter, standard library only:
   PATH ...         scan these files or directories, relative to --root
   --message FILE   scan a commit message file; tools/commit-msg runs this
   --push REMOTE    scan what a push to REMOTE publishes, from git's pre-push
-                   lines on stdin: every commit not known to be on REMOTE
-                   (its message, and each path it adds or changes) and each
+                   lines on stdin: every commit not reachable from the old
+                   value REMOTE reported for a ref this push updates (its
+                   message, and each path it adds or changes; this clone's
+                   tracking refs for REMOTE are never trusted) and each
                    annotated tag's message; tools/pre-push runs this
   --range RANGE    the same for the commits `git rev-list RANGE` gives
   --root DIR       repository root (default: the git toplevel of the cwd, else the cwd)
@@ -73,6 +78,9 @@ exempt from the runner rules.
 Safety. The scanner refuses (exit 2) to run with a root inside betangel-data
 or a *.noindex directory. It never follows a symbolic link, never reads a
 path with a data-root component, and reads working-tree files with O_NOFOLLOW.
+A --message file is opened a component at a time, each with O_NOFOLLOW and
+its name checked before it is opened; a link on the way is read and its
+target checked and walked the same way, never followed.
 Every git command it runs has replace refs and grafts turned off
 (GIT_NO_REPLACE_OBJECTS=1, GIT_GRAFT_FILE=/dev/null), so it reads the objects
 and parents a commit records and a push sends, never a stand-in.
@@ -131,8 +139,8 @@ RULES = {
     "market_id": "Betfair market-id shape (1.1 or 1.2 then 8-9 digits); reserved 1.999 never matches",
     "event_id": "8-digit event or selection id shape outside the reserved 9xxxxxxx namespace",
     "member_path": "historical-data member path with a non-reserved event id",
-    "runner_table": "three or more rows of a capitalised name (after up to two number cells) and price columns, "
-                    "in any table rendering (|, box drawing, HTML cells, LaTeX &)",
+    "runner_table": "three or more rows of a capitalised name (after up to three number, time or date cells) and price "
+                    "columns, in any table rendering (|, box drawing, HTML cells, LaTeX &)",
     "runner_record": "runner-name field holding a non-synthetic name",
     "stream_record": "exchange-stream runner change (ladder, traded or ltp values) with a non-reserved runner id",
     "data_path_text": "text naming a member or archive path under betangel-data",
@@ -142,7 +150,7 @@ RULES = {
     "secret_value": "secret-looking value assigned to a key, token, password or session field",
     "known_token": "token with a known provider prefix (GitHub, AWS, Slack, JWT, ...)",
     "bootstrap_code": "suite bootstrap-code URL fragment",
-    "encoded_blob": "base64, hex, \\xNN-escaped, decimal-byte or GIT-binary-patch data that decodes to an "
+    "encoded_blob": "base64, hex, \\xNN- or octal-escaped, decimal-byte or GIT-binary-patch data that decodes to an "
                     "archive, a zlib stream, 96+ bytes of binary, or text another rule flags",
     "filter_attribute": "path git gives a filter driver (clean filter, LFS), or a .gitattributes line "
                         "that sets one: git stores the filter's output, which the scan never sees",
@@ -306,15 +314,21 @@ _NAME_FIELD = re.compile(
 _RUNNER_CONTEXT = re.compile(
     r"[\"'](?:sortPriority|selectionId|selection_id|adjustmentFactor|ltp|bsp|spn|spf)[\"']")
 _PRICE = re.compile(r"(?<![0-9.])([0-9]{1,3}\.[0-9]{1,2})(?![0-9.])")
-# Up to two leading cells before the name: a saddle-cloth or row number ("1", "12a", "(3)") followed by a
-# cell separator, a list marker ("1." or "1)") or spaces.
-_LEAD_CELL = r"[\"']?(?:[0-9]{1,3}[A-Za-z]?|\([0-9]{1,2}\))[\"']?(?:\s*[|,;\t]\s*|[.)]\s+|\s+)"
+# Up to three leading cells before the name, each followed by a cell separator, a list marker ("1." or "1)") or
+# spaces: a saddle-cloth or row number ("1", "12a", "(3)"), a longer number (an id, a time as HHMMSS, epoch seconds or
+# milliseconds), a time ("13:30", "13:30:05.250"), or a date ("2015-05-03", "03/05/2015", "3.5.15") with an optional
+# time and zone ("2015-05-03T13:30:00Z") (Nuance's re-review of #2, F8: a time or date first column hid the table).
+_TIME_CELL = r"[0-9]{1,2}:[0-9]{2}(?::[0-9]{2}(?:[.,][0-9]{1,6})?)?"
+_LEAD_CELL = (r"[\"']?(?:[0-9]{1,3}[A-Za-z]?|\([0-9]{1,2}\)|[0-9]{4,13}|%s"
+              r"|(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[-/.][0-9]{1,2}[-/.][0-9]{2,4})"
+              r"(?:[T ]%s(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?)"
+              r"[\"']?(?:\s*[|,;\t]\s*|[.)]\s+|\s+)" % (_TIME_CELL, _TIME_CELL))
 # Names may hold Latin letters with accents (Latin-1 and Latin Extended-A and B), as runner names do.
 _LATIN = [chr(code) for code in range(0xC0, 0x250)]
 _UPPER = "A-Z" + "".join(c for c in _LATIN if c.isupper())
 _LETTER = "A-Za-z" + "".join(c for c in _LATIN if c.isalpha())
 _ROW = re.compile(
-    r"^[\s|>*#(\[{-]*(?:" + _LEAD_CELL + r"){0,2}[\"']?"
+    r"^[\s|>*#(\[{-]*(?:" + _LEAD_CELL + r"){0,3}[\"']?"
     r"(?P<name>[%s][%s'.-]{1,30}(?: [%s(][%s'.()-]{0,30}){0,4})" % (_UPPER, _LETTER, _UPPER, _LETTER) +
     r"[\"']?\s*(?:[|,;\t]|:\s|\s{2,}|\s-\s)(?P<rest>.*)$")
 # Other table renderings, turned into "|" cells before a row is matched (round-4 review): box drawing (SQLite's
@@ -444,15 +458,31 @@ def _table_row_name(line: str):
     return name if prices >= 2 and words <= (0 if capitals else 1) else None
 
 
-def _without_format_chars(line: str) -> str:
-    """Drop Unicode format characters (category Cf): a BOM, zero-width spaces and joiners, soft hyphens."""
+# Unicode's default-ignorable code points (the Default_Ignorable_Code_Point property, which unicodedata does not give):
+# invisible, so a name or an id can hold them unseen. Most are format characters (Cf); these are not all: U+034F (the
+# combining grapheme joiner), the variation selectors (U+FE00-FE0F, U+E0100-E01EF) and the Hangul fillers.
+_IGNORABLE = re.compile(
+    "[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164"
+    "\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
+
+
+def _visible(text: str) -> str:
+    return "".join(c for c in _IGNORABLE.sub("", text) if unicodedata.category(c) != "Cf")
+
+
+def _normalised(line: str) -> str:
+    """The text the rules read: format characters (category Cf: a BOM, zero-width spaces and joiners, soft hyphens) and
+    the other default-ignorable code points dropped, then NFKC, then those dropped again (NFKC makes some: U+FFA0
+    becomes U+1160). NFKC reads a no-break, figure or ideographic space as a space, fullwidth digits and letters as
+    ASCII, and composes accents. Before it, a name with a no-break space, or an id or a name holding U+034F or U+FE0F
+    or written in fullwidth digits, passed the id and runner rules (Nuance's re-review of #2, F8)."""
     if line.isascii():
         return line
-    return "".join(c for c in line if unicodedata.category(c) != "Cf")
+    return _visible(unicodedata.normalize("NFKC", _visible(line)))
 
 
 def _lines(text: str):
-    """Yield (line number, line) with format characters removed, for the line rules.
+    """Yield (line number, line), normalised (_normalised), for the line rules.
 
     Line numbers count "\\n", as git, sed and editors do. A line that holds another line
     boundary (CR alone, NEL, LS, PS, VT, FF, FS, GS, RS: str.splitlines()) is split there
@@ -462,7 +492,7 @@ def _lines(text: str):
         if line.endswith("\r"):
             line = line[:-1]
         for part in line.splitlines() or [""]:
-            yield number, _without_format_chars(part)
+            yield number, _normalised(part)
 
 
 def _text_findings(text: str) -> list:
@@ -504,7 +534,9 @@ def _plain_findings(lines) -> list:
 #        right after `\x` (a PostgreSQL bytea literal), or 0x-prefixed and comma-separated, or the
 #        hex columns of an xxd or `hexdump -C` line, or the octal words of an `od` line (its
 #        default output: 16-bit words, little-endian);
-#   esc  a quoted string literal holding at least one \xNN escape;
+#   esc  a quoted string literal holding at least one \xNN escape, or at least four octal escapes (\NNN, or C's
+#        shorter \N and \NN): a C or shell string of bytes (Nuance's re-review of #2, F7). Fewer octal escapes are
+#        not read (git's quoted paths, colour codes), except on the short last line of a run;
 #   dec  16+ integers from 0 to 255 split by commas or spaces: a byte list as `list(data)`,
 #        `Array.from(buf)` or `od -An -tu1` print it.
 # A token that ends its line (only a closing quote, bracket, `;`, `+` or `\` after it) runs on
@@ -550,7 +582,9 @@ def _plain_findings(lines) -> list:
 # is not a list and is not counted: alone it is too short for the second test either way.
 # Not decoded (known gaps; DESIGN.md I-9): base32, base85 and Ascii85 outside a GIT binary
 # patch, uuencode, quoted-printable, UTF-7, JSON \u escapes, base64 split into pieces under 16
-# characters (groups of 8, or a list whose first piece is that short), and lists split by commas.
+# characters (groups of 8, or a list whose first piece is that short), and lists split by commas;
+# \xNN and octal escapes outside a quoted literal (printf's unquoted argument), and literals of
+# three or fewer octal escapes and no \xNN each, as base64 in short pieces is.
 # Not flagged (known gaps): in lists of hashes (up to 64 whole lines of exactly 40 or 64 digits in
 # one file or message, outside a decoded run), binary data with no signature above and no zlib
 # stream at the start of a line (raw deflate, a compressed file without its header, encrypted
@@ -593,6 +627,8 @@ _ESC_LITERAL = {"'": re.compile(r"'(?:[^'\\]|\\.)*+'", re.S), '"': re.compile(r"
 _QUOTE = re.compile(r"['\"]")
 _HAS_XNN = re.compile(r"\\x[0-9a-fA-F]{2}")
 _ESC = re.compile(r"\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|.)", re.S)
+_MAY_ESCAPE = re.compile(r"\\(?:x[0-9a-fA-F]{2}|[0-7])")  # a line without one holds no esc token
+ENCODED_MIN_OCTAL = 4  # octal escapes in a literal that holds no \xNN, before it is read as bytes
 _ESC_SIMPLE = {"n": 10, "r": 13, "t": 9, "a": 7, "b": 8, "f": 12, "v": 11, "\\": 92, "'": 39, '"': 34}
 _PURE_BEFORE = {"b64": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
                 "hex": re.compile(r"\s*(?:\+\s*)?(?:[bBrRuU]{0,2}[\"'`])?"),
@@ -631,6 +667,17 @@ def _unescape(body: str) -> bytes:
         pos = m.end()
     out += body[pos:].encode("utf-8")
     return bytes(out)
+
+
+def _octal_escapes(literal: str, least: int) -> bool:
+    """Whether the literal holds least or more octal escapes, read as _unescape reads them ("\\\\0" is not one)."""
+    count = 0
+    for m in _ESC.finditer(literal):
+        if m.group(1)[0] in "01234567":
+            count += 1
+            if count >= least:
+                return True
+    return False
 
 
 def _esc_literals(line: str) -> list:
@@ -682,9 +729,10 @@ def _segments(kind: str, line: str, short: bool = False) -> list:
     elif kind == "dec":
         matches = list(_DEC_TOKEN[short].finditer(line))
     else:
-        if "\\x" not in line:
+        if not _MAY_ESCAPE.search(line):
             return []
-        matches = [m for m in _esc_literals(line) if _HAS_XNN.search(m.group())]
+        least = 1 if short else ENCODED_MIN_OCTAL
+        matches = [m for m in _esc_literals(line) if _HAS_XNN.search(m.group()) or _octal_escapes(m.group(), least)]
     segments = []
     for m in matches:
         token = m.group()
@@ -988,7 +1036,7 @@ def _content_codes(rel: str, data: bytes, oversize: bool) -> list:
 
 
 def _rel_id_codes(rel: str) -> list:
-    codes = [code for code in _line_codes(rel) if code in _PATH_ID_CODES]
+    codes = [code for code in _line_codes(_normalised(rel)) if code in _PATH_ID_CODES]
     return [(0, code) for code in codes]
 
 
@@ -1150,7 +1198,11 @@ def _staged_entries():
 # scanned; a file that one commit adds and a later one deletes passed every tree scan.
 
 _OBJECT_ID = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
-MAX_OBJECT_BYTES = 2 * MAX_FILE_BYTES  # a commit or tag object read whole: headers and message
+# A commit or tag object is read whole, headers and message, and one any larger is refused (object_oversize). The
+# reader keeps only the first bytes of a larger object, and a header that filled them (a padded author or tagger line)
+# left no blank line in what was kept, so its message read as empty and a dirty message passed (Astra's re-review of
+# #2, new finding 2).
+MAX_OBJECT_BYTES = 2 * MAX_FILE_BYTES
 # git's pre-push lines, about 8,900 ref updates. More is refused (push_input), never cut short: a cut at a line end
 # would drop every later ref, and the push would publish commits no scan saw (round-4 review).
 MAX_PUSH_INPUT = 1 << 20
@@ -1164,22 +1216,92 @@ def _message_findings(message: bytes) -> list:
 
 
 def _message_of(data: bytes) -> bytes:
-    """The message of a raw commit or tag object: everything after the first blank line."""
+    """The message of a whole raw commit or tag object: everything after the first blank line."""
     _headers, blank, message = data.partition(b"\n\n")
     return message if blank else b""
 
 
-def _read_message_file(path: str) -> bytes:
-    """The message file git hands commit-msg, read with no link followed and never blocking."""
-    _check_lexical(os.path.abspath(path))
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+def _read_metadata(objects, sha: str):
+    """(type, data) of a commit or tag object, read whole: refused (object_oversize) by the size git gives, before any
+    of it is parsed, when it is over MAX_OBJECT_BYTES. Never a prefix, whose message would be cut or missing."""
+    kind, size, data = objects.read(sha.encode(), MAX_OBJECT_BYTES, 0)
+    if size > MAX_OBJECT_BYTES or len(data) != size:
+        raise Refusal("object_oversize")
+    return kind, data
+
+
+MAX_LINK_HOPS = 40
+
+
+def _open_message(path: str) -> int:
+    """A descriptor for the message file at path, opened with no link followed by the kernel (Astra's re-review of
+    #2, new finding 3: a link on the way, as in alias/MSG, was followed into a data root, since only the last
+    component had O_NOFOLLOW and only the normalised text was checked).
+
+    path is read as open() reads it, never normalised first: "alias/.." is the parent of alias's target, not the
+    directory alias is in. From "/" (a relative path from the current directory, by its real path), each component's
+    name is checked for a data-root component, then it is opened relative to the one before, with O_NOFOLLOW. A link
+    on the way is read, never followed: its target is checked and walked the same way, a component at a time, as
+    --root's links are (at most MAX_LINK_HOPS). The last component must be a regular file, not a link. A
+    /.vol/<dev>/<ino> spelling is refused (message_unreadable): /.vol looks up no name relative to a descriptor.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(path, flags)
+        if not path or "\0" in path:
+            raise Refusal("message_unreadable")
+        pending = (path if path.startswith("/") else os.getcwd() + "/" + path).split("/")
+        names = []
+        fds = [os.open("/", os.O_RDONLY | os.O_DIRECTORY)]
+        hops = 0
+        try:
+            while pending:
+                part = pending.pop(0)
+                if part in ("", "."):
+                    continue
+                if part == "..":
+                    if names:
+                        names.pop()
+                        os.close(fds.pop())
+                    continue
+                _check_lexical("/" + "/".join([*names, part]))
+                info = os.stat(part, dir_fd=fds[-1], follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode) and pending:
+                    hops += 1
+                    if hops > MAX_LINK_HOPS:
+                        raise Refusal("symlink_loop")
+                    target = os.readlink(part, dir_fd=fds[-1])
+                    _check_lexical(target)
+                    if target.startswith("/"):
+                        while names:
+                            names.pop()
+                            os.close(fds.pop())
+                    pending[:0] = target.split("/")
+                    continue
+                if pending:
+                    fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | nofollow, dir_fd=fds[-1])
+                    fds.append(fd)
+                    names.append(part)
+                    continue
+                fd = os.open(part, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0), dir_fd=fds[-1])
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise Refusal("message_not_regular")
+                except BaseException:
+                    os.close(fd)
+                    raise
+                return fd
+        finally:
+            for walked in fds:
+                os.close(walked)
     except OSError:
         raise Refusal("message_unreadable") from None
+    raise Refusal("message_not_regular")  # the path names a directory
+
+
+def _read_message_file(path: str) -> bytes:
+    """The message file git hands commit-msg: opened by _open_message, never blocking, at most MAX_FILE_BYTES + 1."""
+    fd = _open_message(path)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise Refusal("message_not_regular")
         chunks, left = [], MAX_FILE_BYTES + 1
         while left > 0:
             chunk = os.read(fd, min(left, 1 << 16))
@@ -1199,15 +1321,18 @@ def _is_commit(sha: str) -> bool:
     return proc.returncode == 0
 
 
-def _push_targets(remote: str, lines: bytes):
+def _push_targets(lines: bytes):
     """(rev-list arguments, tag objects) for what a push publishes, from git's pre-push lines.
 
     Each line is "<local ref> <local object> <remote ref> <remote object>". A deletion (local
     object all zeros) publishes nothing. The commits published are those reachable from the
-    local objects but from neither the remote's old objects (when this clone has them) nor any
-    of this clone's tracking refs for the remote (refs/remotes/<remote>/*): what the remote is
-    known to hold already is not scanned again. A remote given as a URL has no tracking refs,
-    so everything not reachable from the old objects is scanned.
+    local objects but not from the remote's old objects that this clone holds: git takes those
+    from the remote's own list of refs for this push, so the remote holds them now, and they
+    are not scanned again. Nothing else counts as known, so a push that creates a ref scans the
+    whole history behind it. This clone's tracking refs (refs/remotes/<remote>/*) never count:
+    one can name a commit the remote no longer holds (deleted there and pruned, or rewritten
+    away) until a `git fetch --prune`, and a push that sent it again would not have scanned it
+    (Nuance's re-review of #2, F3).
     """
     tips, known = [], []
     for line in lines.splitlines():
@@ -1221,7 +1346,7 @@ def _push_targets(remote: str, lines: bytes):
             known.append(old)
     if not tips:
         return None, []
-    return [*tips, "--not", *known, f"--remotes={remote}"], tips
+    return [*tips, "--not", *known], tips
 
 
 def _peel_tags(objects: _Objects, tips) -> list:
@@ -1230,7 +1355,7 @@ def _peel_tags(objects: _Objects, tips) -> list:
     for sha in tips:
         while sha not in seen:
             seen.add(sha)
-            kind, _size, data = objects.read(sha.encode(), MAX_OBJECT_BYTES, MAX_OBJECT_BYTES)
+            kind, data = _read_metadata(objects, sha)
             if kind != b"tag":
                 if kind != b"commit":
                     raise Refusal("push_object_not_commit")
@@ -1277,7 +1402,7 @@ def _history_entries(revisions, tips=()):
             return
         commits = _git(ROOT, "rev-list", "--reverse", "--topo-order", *revisions).decode().split()
         for sha in commits:
-            kind, _size, data = objects.read(sha.encode(), MAX_OBJECT_BYTES, MAX_OBJECT_BYTES)
+            kind, data = _read_metadata(objects, sha)
             if kind != b"commit":
                 raise Refusal("git_object")
             yield "", _message_findings(_message_of(data)), f"commit {sha} message"
@@ -1542,7 +1667,7 @@ def _main(argv) -> int:
         lines = sys.stdin.buffer.read(MAX_PUSH_INPUT + 1)
         if len(lines) > MAX_PUSH_INPUT:
             raise Refusal("push_input")
-        revisions, tips = _push_targets(args.push, lines)
+        revisions, tips = _push_targets(lines)  # args.push, the remote, is git's argument: not needed
         return _report(_history_entries(revisions, tips), "push", "item(s)")
     if args.revisions is not None:
         return _report(_history_entries([args.revisions]), "range", "item(s)")
