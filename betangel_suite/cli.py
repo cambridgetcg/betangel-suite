@@ -25,10 +25,12 @@ COMMANDS = ("serve", "open", "ssh-session", "stop", "catalogue", "selfcheck", "d
 # vendor refuse under the marker").
 NO_RUN_MARKER_CHECK = ("stop",)
 # The commands that may read a real data root or write under ~/betangel-data. Each takes LOCK_SH on run/realdata.lock
-# before its TMPDIR is created, checks the marker again under the lock and holds it until it exits, so Nuance's
-# wrapper, which takes LOCK_EX, waits for it (Nuance's PR #2 review, item 6; PR #1 review, item 5). test, uisnap and
-# vendor touch neither and do not take it; stop must work during a run and takes nothing (runmarker.py says why;
-# lab-Claude's decision, asked of Nuance on 2026-10-17, not answered).
+# before its TMPDIR is created, checks the marker again under the lock and holds it until it exits. Nuance's wrapper,
+# which takes LOCK_EX, waits at least 60 s for the lock, then refuses its own run (fails closed) if it is still held
+# (Nuance's PR #2 review, item 6; PR #1 review, item 5; the wording is Nuance's re-review of #2). test, uisnap and
+# vendor read no data root and write nothing under ~/betangel-data (in their guard modes the guard refuses both,
+# within the limits guard.py lists) and do not take it; stop must work during a run and takes nothing (runmarker.py
+# says why; lab-Claude's decision, asked of Nuance on 2026-10-17, not answered).
 # main() refuses (run_lock_not_held) any other command whose TMPDIR would be made under ~/betangel-data.
 REALDATA_COMMANDS = ("serve", "open", "ssh-session", "catalogue", "selfcheck", "diagnose", "ledger-summary")
 # They create no temporary files, so main() makes no TMPDIR for them and never asks them for the lock. stop must work

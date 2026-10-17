@@ -30,7 +30,8 @@ make the wrapper wait for it. So:
     lock, then the lock held until the process exits. The descriptor is close-on-exec, so no child keeps it;
   - headless commands (catalogue, selfcheck --sample N, diagnose) call require_clear() between members, and stop at
     the first marker; engines call active() on every tick and exit within their grace period;
-  - Nuance's wrapper creates the marker first, then takes LOCK_EX, waiting 60 s or more and failing closed. A missing
+  - Nuance's wrapper creates the marker first, then takes LOCK_EX: it waits at least 60 s for the lock, then refuses
+    its own run (fails closed) if it is still held (the wording of Nuance's re-review of #2, for both locks). A missing
     lock file can count as free, as for engine.lock (DESIGN.md 6.8): every holder creates it before it locks.
 
 Why the re-check comes after the lock: macOS flock gives a waiting LOCK_EX no priority over a new LOCK_SH (probed on
@@ -41,9 +42,9 @@ once (run_lock_busy), since a run is ending or under way.
 
 test, uisnap and vendor do not take the lock, and stop takes nothing (lab-Claude's decision, asked of Nuance on
 2026-10-17, not answered; DESIGN.md 6.8). None of the first three reads a data root or writes under ~/betangel-data
-(the guard refuses it in their modes), each refuses under the marker at start, and holding the lock would let a long
-test run make Nuance's wrapper fail closed. A test run stops before its next test once the marker appears
-(cli.marker_stop_result). stop must work during a run, and only reduces activity.
+(in their guard modes the guard refuses both, within the limits guard.py lists), each refuses under the marker at
+start, and holding the lock would let a long test run make Nuance's wrapper fail closed. A test run stops before its
+next test once the marker appears (cli.marker_stop_result). stop must work during a run, and only reduces activity.
 Standard library only.
 """
 
