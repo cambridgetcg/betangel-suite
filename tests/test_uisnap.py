@@ -37,8 +37,9 @@ import time
 import types
 import unittest
 import zlib
+from unittest import mock
 
-from betangel_suite import cli, errors, guard, roots, uisnap
+from betangel_suite import cli, errors, guard, roots, runmarker, uisnap
 from tests import (HEAVY, HEAVY_ONLY, PRELUDE, PYTHON, ROOT, child_env, make_home, require_no_run_marker, run_python,
                    run_suite, stand_in_marker)
 from tests.test_http_support import control_path, secret_shaped, secrets_in, short_home
@@ -133,6 +134,22 @@ class ArgumentTests(unittest.TestCase):
     def test_exit_codes_are_listed(self):
         for code in list(uisnap.EXIT_CODES.values()) + ["uisnap_bad_output", "uisnap_timeout", "engine_stopping"]:
             self.assertIn(code, errors.CODES)
+
+    def test_the_build_checks_the_configured_run_marker(self):
+        # main hands the build the config's marker, which ensure_binary checks under build.lock (BuildCacheTests).
+        home = make_home(self)
+        calls = []
+
+        def ensure_binary(**kwargs):
+            calls.append(kwargs)
+            raise errors.SuiteError("run_marker_present")
+
+        with mock.patch.object(uisnap, "ensure_binary", ensure_binary):
+            with self.assertRaises(errors.SuiteError) as caught:
+                uisnap.main({"seed": 1, "out": None}, out=io.StringIO(), home_dir=home)
+        self.assertEqual(caught.exception.code, "run_marker_present")
+        self.assertEqual([call.get("marker") for call in calls], [runmarker.marker_path(None, home)])
+        self.assertFalse(os.path.lexists(uisnap.out_root(home)))
 
 
 class RecordTests(unittest.TestCase):
@@ -373,8 +390,20 @@ class BuildCacheTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, status, log, None)
         return run
 
-    def ensure(self, run=None):
-        return uisnap.ensure_binary(source_path=self.source, home_dir=self.home, run=run or self.fake_run())
+    def ensure(self, run=None, marker=None):
+        return uisnap.ensure_binary(source_path=self.source, home_dir=self.home, run=run or self.fake_run(),
+                                    marker=marker)
+
+    def make_marker(self, present=True):
+        """The run marker of this temporary HOME: a file, or a directory nobody can search (unreadable)."""
+        marker = runmarker.marker_path(None, self.home)
+        os.makedirs(os.path.dirname(marker), mode=0o700, exist_ok=True)
+        if present:
+            open(marker, "w").close()
+        else:
+            os.chmod(os.path.dirname(marker), 0)
+            self.addCleanup(os.chmod, os.path.dirname(marker), 0o700)
+        return marker
 
     def directory(self):
         with open(self.source, "rb") as handle:
@@ -418,6 +447,64 @@ class BuildCacheTests(unittest.TestCase):
             self.assertFalse(os.path.lexists(os.path.join(self.directory(), "build.json")))
             self.assertTrue(os.path.isfile(os.path.join(self.directory(), "build.log")))
         self.assertEqual(self.ensure()[1], "built")
+
+    def test_a_run_marker_starts_no_build(self):
+        # The launcher's check comes first; this one is under build.lock, before anything is built (DESIGN.md 6.8).
+        for present, code in ((True, "run_marker_present"), (False, "run_marker_unreadable")):
+            with self.subTest(code):
+                marker = self.make_marker(present)
+                with self.assertRaises(errors.SuiteError) as caught:
+                    self.ensure(marker=marker)
+                self.assertEqual((caught.exception.code, self.calls), (code, []))
+                self.assertFalse(os.path.lexists(self.directory()))
+                os.chmod(os.path.dirname(marker), 0o700)
+                if present:
+                    os.remove(marker)
+        self.assertEqual(self.ensure(marker=runmarker.marker_path(None, self.home))[1], "built")
+
+    def test_a_run_marker_ends_the_wait_for_another_build(self):
+        # Round 4b's review: a uisnap that waited LOCK_TIMEOUT_S (900 s) for another's build.lock started its own
+        # swiftc after a run had been announced. Now the wait stops at the marker, while the other still builds.
+        top = uisnap.build_root(self.home)
+        roots.ensure_dir(top, home_dir=self.home)
+        holder = os.open(os.path.join(top, "build.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        result = {}
+
+        def wait_and_build():
+            try:
+                result["value"] = self.ensure(marker=runmarker.marker_path(None, self.home))
+            except errors.SuiteError as exc:
+                result["value"] = exc.code
+
+        waiter = threading.Thread(target=wait_and_build, daemon=True)
+        with mock.patch.object(uisnap, "LOCK_TIMEOUT_S", 20):
+            waiter.start()
+            try:
+                time.sleep(0.5)
+                self.assertTrue(waiter.is_alive())              # waiting for the other build's lock
+                self.make_marker()
+                waiter.join(5)
+                self.assertFalse(waiter.is_alive())
+            finally:
+                os.close(holder)                                # the other build ends
+                waiter.join(30)
+        self.assertEqual((result.get("value"), self.calls), ("run_marker_present", []))
+        self.assertFalse(os.path.lexists(self.directory()))
+
+    def test_a_run_marker_made_while_the_build_is_prepared_starts_no_compiler(self):
+        marker = runmarker.marker_path(None, self.home)
+        clear = uisnap._clear_build
+
+        def clear_then_announce(directory):
+            clear(directory)
+            self.make_marker()                                  # after the check under the lock, before swiftc
+
+        with mock.patch.object(uisnap, "_clear_build", clear_then_announce):
+            with self.assertRaises(errors.SuiteError) as caught:
+                self.ensure(marker=marker)
+        self.assertEqual((caught.exception.code, self.calls), ("run_marker_present", []))
+        self.assertFalse(os.path.lexists(os.path.join(self.directory(), "build.json")))
 
     def test_odd_build_directories_and_sources_are_refused(self):
         os.makedirs(self.directory())

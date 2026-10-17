@@ -14,7 +14,10 @@ The launcher arms the guard in mode uisnap (guard.py) and checks the run marker 
    mode allows before seal()), with the clang module cache beside the build directories. build.json records
    the argv, the source and binary sha256s and the real paths of swiftc and the SDK; build.log holds the
    compiler's own output. A later run reuses the binary while all of those still match, and a successful build
-   removes older build directories. One build at a time (an flock on <state>/uisnap/build/build.lock).
+   removes older build directories. One build at a time (an flock on <state>/uisnap/build/build.lock). The run
+   marker is checked again while this waits for that lock, once it holds it, and just before swiftc starts, so a
+   run announced meanwhile starts no build (run_marker_present or run_marker_unreadable; DESIGN.md 6.8). A build
+   already running when the marker appears finishes first (BUILD_TIMEOUT_S at most).
 3. Register the binary with the guard (guard.permit_uisnap_binary: its path and sha256). Start the engine in this
    process with api.server.run (command serve, an ephemeral 127.0.0.1 port, its ready line swallowed), which
    seals the guard. In its on_ready hook: issue one bootstrap code in process, start the built binary (the only
@@ -58,7 +61,7 @@ import sys
 import threading
 import time
 
-from . import config, guard, roots
+from . import config, guard, roots, runmarker
 from .errors import SuiteError
 
 SOURCE = os.path.join(guard.REPO_ROOT, "tools", "uisnap", guard.UISNAP_SOURCE_NAME)
@@ -168,8 +171,14 @@ def toolchain():
     return {"swiftc": os.path.realpath(guard.SWIFTC), "sdk": os.path.realpath(guard.SWIFT_SDK)}
 
 
-def ensure_binary(*, source_path=SOURCE, home_dir=None, run=subprocess.run):
-    """(binary path, "built" or "cached") for the current source; builds it when needed."""
+def ensure_binary(*, source_path=SOURCE, home_dir=None, run=subprocess.run, marker=None):
+    """(binary path, "built" or "cached") for the current source; builds it when needed.
+
+    marker is the run marker's path (main passes the config's). It is checked while this waits for build.lock, once
+    the lock is held and just before swiftc starts: a run announced meanwhile refuses with run_marker_present or
+    run_marker_unreadable, and no build starts. The marker check at start (bin/_launch.py) comes before a wait of up
+    to LOCK_TIMEOUT_S for another uisnap's build, so without these a build could start long after the marker
+    appeared (round 4b's review). A build already running finishes first: BUILD_TIMEOUT_S at most."""
     source = read_source(source_path)
     digest = hashlib.sha256(source).hexdigest()
     tools = toolchain()
@@ -178,13 +187,15 @@ def ensure_binary(*, source_path=SOURCE, home_dir=None, run=subprocess.run):
     binary = os.path.join(directory, guard.UISNAP_BINARY_NAME)
     argv = guard.uisnap_build_argv(directory)
     roots.ensure_dir(top, home_dir=home_dir)
-    lock_fd = _lock(os.path.join(top, "build.lock"))
+    lock_fd = _lock(os.path.join(top, "build.lock"), marker)
     try:
+        _check_marker(marker)
         if cached_ok(directory, digest, argv, tools):
             return binary, "cached"
         _clear_build(directory)
         roots.ensure_dir(directory, home_dir=home_dir)
         roots.write_new(os.path.join(directory, guard.UISNAP_SOURCE_NAME), source, home_dir=home_dir)
+        _check_marker(marker)
         started = time.monotonic()
         try:
             result = run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -222,7 +233,14 @@ def cached_ok(directory, digest, argv, tools):
             and _executable_digest(os.path.join(directory, guard.UISNAP_BINARY_NAME)) == record["binary_sha256"])
 
 
-def _lock(path):
+def _check_marker(marker):
+    """runmarker.require_absent(marker) when there is one (main always passes it; tests of the build alone may not)."""
+    if marker is not None:
+        runmarker.require_absent(marker)
+
+
+def _lock(path, marker=None):
+    """build.lock, held: waits up to LOCK_TIMEOUT_S for another uisnap's build, and stops waiting for a run marker."""
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     deadline = time.monotonic() + LOCK_TIMEOUT_S
     while True:
@@ -230,10 +248,15 @@ def _lock(path):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return fd
         except BlockingIOError:
+            pass
+        try:
             if time.monotonic() > deadline:
-                os.close(fd)
-                raise SuiteError("uisnap_build_failed") from None
-            time.sleep(0.2)
+                raise SuiteError("uisnap_build_failed")
+            _check_marker(marker)
+        except SuiteError:
+            os.close(fd)
+            raise
+        time.sleep(0.2)
 
 
 def _clear_build(directory):
@@ -542,7 +565,7 @@ def main(options, *, out=None, binary=None, timeout_s=RUN_TIMEOUT_S, grace_s=RUN
     out_dir = check_out(options["out"], home_dir)
     if binary is None:
         try:
-            binary, build = ensure_binary(home_dir=home_dir)
+            binary, build = ensure_binary(home_dir=home_dir, marker=runmarker.marker_path(cfg, home_dir))
         except SuiteError as exc:
             if exc.code == "uisnap_build_failed":
                 log = os.path.join(build_root(home_dir), hashlib.sha256(read_source()).hexdigest(), "build.log")
