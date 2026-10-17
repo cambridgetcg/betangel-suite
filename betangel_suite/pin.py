@@ -11,19 +11,18 @@ file with exactly one link), refuses pin_mismatch on any difference, refuses a d
 stale .pyc beside a matching .py) or anything Python would import in preference to a pinned .py (an
 extension module such as paper.cpython-313-darwin.so, a .pyc, or a package directory named like a pinned
 module), and refuses a deps directory or any sys.path entry that lies in ~/betangel-research (the moving
-deploy clone) by name in any case or by identity. It never puts the deps directory on sys.path (Nuance's re-review of
-#2, F1): there, every other top-level name in the deps tree (scripts/, or a module planted there) and the standard
-library's probes for modules that macOS lacks (nt, _winapi, org) loaded unhashed code after seal(). Instead it puts
-_ClosureFinder first on sys.meta_path: from then on the import system loads a betangel_research module only if it is
-one of the 25 of the closure, only from its pinned file in the deps directory, and only from bytes that still match
-the pin (read_pinned), never from a bytecode cache; any other betangel_research name is refused
-(upstream_import_refused), however it is imported.
+deploy clone) by name in any case or by identity, or that cannot be judged (roots.lies_in; an empty entry is the cwd).
+It never puts the deps directory on sys.path (Nuance's re-review of #2, F1): there, every other top-level name in the
+deps tree (scripts/, or a module planted there) and the standard library's probes for modules that macOS lacks (nt,
+_winapi, org) loaded unhashed code after seal(). Instead it puts _ClosureFinder first on sys.meta_path: from then on
+the import system loads a betangel_research module only if it is one of the 25 of the closure, only from its pinned
+file in the deps directory, and only from bytes that still match the pin (read_pinned), never from a bytecode cache;
+any other betangel_research name is refused (upstream_import_refused), however it is imported.
 assert_origins() then checks that every loaded betangel_research module came from that directory.
 
 Standard library only.
 """
 
-import fcntl
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -265,65 +264,46 @@ def read_pinned(relpath):
 
 
 def refuse_research_on_path(home_dir=None):
-    """SuiteError(research_clone_on_path) if any sys.path entry lies in ~/betangel-research."""
+    """SuiteError(research_clone_on_path) if any sys.path entry lies in ~/betangel-research, or cannot be judged.
+
+    An empty entry is the cwd to the import system (PathFinder reads "" as os.getcwd()), so it is judged as the cwd:
+    skipped, it let a cwd in the clone put the clone on the path (Astra's re-review of #2, judgement items). Entries
+    that are not str are skipped, as the import system skips them.
+    """
     for entry in sys.path:
-        if isinstance(entry, str) and entry and _in_research(entry, home_dir):
+        if isinstance(entry, str) and _in_research(entry or os.curdir, home_dir):
             raise SuiteError("research_clone_on_path")
 
 
 def _in_research(entry, home_dir=None):
-    """True when entry lies in ~/betangel-research, however either path is spelled.
+    """True when entry lies in ~/betangel-research, however either path is spelt; SuiteError(research_clone_on_path)
+    when that cannot be judged.
 
-    By text first, as written and resolved, casefolded: the lab's APFS volume folds case and U+017F (long s),
-    so /Users/x/BetAngel-Research is the same directory, and a path that does not exist is judged by name.
-    Then by identity, for spellings realpath leaves as they are (the /System/Volumes/Data firmlink prefix,
-    /.vol/<dev>/<ino>): the kernel's own path for what entry names has neither, nor any link, so its
-    directories are the real ancestors, and none may be the clone (compared by st_dev and st_ino; the clone
-    itself is only stat()ed, never opened).
+    roots.lies_in judges it, as it does vendor's paths (Nuance's re-review of #2, F11): by text first, as written and
+    resolved, casefolded (the lab's APFS volume folds case and U+017F, long s, so /Users/x/BetAngel-Research is the
+    same directory, and a path that does not exist is judged by name); then by identity, the clone's (st_dev, st_ino)
+    against the directories at and above entry, found through ".." as the kernel resolves it, so the firmlink and
+    /.vol spellings and a link on any ancestor are seen. Stat calls only: neither the clone nor entry is opened.
+    A stat of the clone or of entry that fails for any reason but a missing name cannot be judged, and is refused.
+    Read as "no clone", a ~/betangel-research linked through a directory with no search permission let a deps
+    directory (or a sys.path entry) in the clone, reached by its own path, pass, and activate() loaded the closure
+    from it (F11).
 
-    realpath and F_GETPATH get entry as the import system opens it: unchanged when absolute, else joined to
-    the cwd without normalising. Normalising first folds "alias/.." away before alias is followed, so with
-    alias -> clone/sub the entry alias/../sub, which opens clone/sub, would be judged as a sibling of alias.
-    Only the text check also sees the normalised spelling.
+    entry is judged as the import system opens it: unchanged when absolute, else joined to the cwd without
+    normalising. Normalising first folds "alias/.." away before alias is followed, so with alias -> clone/sub the
+    entry alias/../sub, which opens clone/sub, would be judged as a sibling of alias. Only the text check also sees
+    the normalised spelling. A cwd that cannot be found cannot be judged either.
     """
-    research = roots.research_clone(home_dir)
-    forms = (research.casefold(), os.path.realpath(research).casefold())
-    raw = entry if os.path.isabs(entry) else os.path.join(os.getcwd(), entry)
-    if any(roots.within(candidate.casefold(), form)
-           for candidate in (os.path.normpath(raw), os.path.realpath(raw)) for form in forms):
-        return True
-    try:
-        clone = os.stat(research)
-    except OSError:
-        return False                                   # no clone, so nothing lies in it
-    path = _kernel_path(raw)
-    while path is not None:
+    if os.path.isabs(entry):
+        raw = entry
+    else:
         try:
-            if os.path.samestat(os.stat(path), clone):
-                return True
+            raw = os.path.join(os.getcwd(), entry)
         except OSError:
-            pass
-        parent = os.path.dirname(path)
-        path = parent if parent != path else None
-    return False
-
-
-def _kernel_path(path):
-    """The kernel's own path (macOS F_GETPATH) for the directory or regular file at path, or None."""
-    try:
-        mode = os.stat(path).st_mode
-        if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
-            return None                                # a FIFO or a device is not opened
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
-    except OSError:
-        return None
-    try:
-        buffer = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
-    except OSError:
-        return None
-    finally:
-        os.close(fd)
-    return os.fsdecode(buffer.split(b"\0", 1)[0])
+            raw = None
+        if raw is None:
+            raise SuiteError("research_clone_on_path")
+    return roots.lies_in(raw, roots.research_clone(home_dir), "research_clone_on_path")
 
 
 def assert_origins(deps):
