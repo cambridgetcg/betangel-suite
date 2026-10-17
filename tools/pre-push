@@ -3,11 +3,13 @@
 # Blocks a push that would publish anything `tools/hygiene_scan.py --push`
 # flags. git passes the remote's name (or URL) and, on stdin, one line per
 # ref; the scanner reads those lines and scans every commit the push would
-# publish that the remote is not known to hold (not reachable from the ref's
-# old value or from refs/remotes/<remote>/*): each commit's message and each
-# path it adds or changes, so a file one commit adds and a later one deletes
-# is still found, and the message of each annotated tag pushed. Findings name
-# the commit and the entry number there, never a path or the matched text.
+# publish that is not reachable from an old value the remote reported for a
+# ref this push updates: each commit's message and each path it adds or
+# changes, so a file one commit adds and a later one deletes is still found,
+# and the message of each annotated tag pushed. This clone's tracking refs
+# (refs/remotes/<remote>/*) are never trusted: they can be stale. A push
+# that creates a ref scans all the history behind it. Findings name the
+# commit and the entry number there, never a path or the matched text.
 #
 # Install once per clone, from the repository root, beside tools/pre-commit:
 #   ln -s ../../tools/pre-push .git/hooks/pre-push

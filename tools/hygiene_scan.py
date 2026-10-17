@@ -55,8 +55,10 @@ Run it with the fixed interpreter, standard library only:
   PATH ...         scan these files or directories, relative to --root
   --message FILE   scan a commit message file; tools/commit-msg runs this
   --push REMOTE    scan what a push to REMOTE publishes, from git's pre-push
-                   lines on stdin: every commit not known to be on REMOTE
-                   (its message, and each path it adds or changes) and each
+                   lines on stdin: every commit not reachable from the old
+                   value REMOTE reported for a ref this push updates (its
+                   message, and each path it adds or changes; this clone's
+                   tracking refs for REMOTE are never trusted) and each
                    annotated tag's message; tools/pre-push runs this
   --range RANGE    the same for the commits `git rev-list RANGE` gives
   --root DIR       repository root (default: the git toplevel of the cwd, else the cwd)
@@ -1199,15 +1201,18 @@ def _is_commit(sha: str) -> bool:
     return proc.returncode == 0
 
 
-def _push_targets(remote: str, lines: bytes):
+def _push_targets(lines: bytes):
     """(rev-list arguments, tag objects) for what a push publishes, from git's pre-push lines.
 
     Each line is "<local ref> <local object> <remote ref> <remote object>". A deletion (local
     object all zeros) publishes nothing. The commits published are those reachable from the
-    local objects but from neither the remote's old objects (when this clone has them) nor any
-    of this clone's tracking refs for the remote (refs/remotes/<remote>/*): what the remote is
-    known to hold already is not scanned again. A remote given as a URL has no tracking refs,
-    so everything not reachable from the old objects is scanned.
+    local objects but not from the remote's old objects that this clone holds: git takes those
+    from the remote's own list of refs for this push, so the remote holds them now, and they
+    are not scanned again. Nothing else counts as known, so a push that creates a ref scans the
+    whole history behind it. This clone's tracking refs (refs/remotes/<remote>/*) never count:
+    one can name a commit the remote no longer holds (deleted there and pruned, or rewritten
+    away) until a `git fetch --prune`, and a push that sent it again would not have scanned it
+    (Nuance's re-review of #2, F3).
     """
     tips, known = [], []
     for line in lines.splitlines():
@@ -1221,7 +1226,7 @@ def _push_targets(remote: str, lines: bytes):
             known.append(old)
     if not tips:
         return None, []
-    return [*tips, "--not", *known, f"--remotes={remote}"], tips
+    return [*tips, "--not", *known], tips
 
 
 def _peel_tags(objects: _Objects, tips) -> list:
@@ -1542,7 +1547,7 @@ def _main(argv) -> int:
         lines = sys.stdin.buffer.read(MAX_PUSH_INPUT + 1)
         if len(lines) > MAX_PUSH_INPUT:
             raise Refusal("push_input")
-        revisions, tips = _push_targets(args.push, lines)
+        revisions, tips = _push_targets(lines)  # args.push, the remote, is git's argument: not needed
         return _report(_history_entries(revisions, tips), "push", "item(s)")
     if args.revisions is not None:
         return _report(_history_entries([args.revisions]), "range", "item(s)")

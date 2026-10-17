@@ -1531,11 +1531,25 @@ class HistoryTests(_RepoCase):
         _base, added, tip = self.history_only_file()
         rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {added}")  # the remote's old value
         self.assertEqual((rc, out.strip()), (0, "hygiene_scan: OK 1 item(s) scanned [push]"))
-        self.write_ref("refs/remotes/origin/main", added)  # or a tracking ref for this remote
-        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}")
+        # The old value of another ref in the same push counts too: the remote reported it for this push.
+        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}",
+                                 f"refs/heads/side {added} refs/heads/side {added}")
         self.assertEqual(rc, 0, out)
-        rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {ZERO}", remote="elsewhere")
-        self.assertEqual(rc, 1, out)
+
+    def test_a_stale_tracking_ref_hides_nothing(self):
+        # Nuance's re-review of #2, F3: the scan left out every commit reachable from refs/remotes/<remote>/*. A
+        # tracking ref can name a commit the remote no longer holds (deleted there and pruned, or rewritten away)
+        # until `git fetch --prune`, and a push that sent that commit again published it unscanned. Only the old
+        # values the remote reports in the push lines count now.
+        base, added, tip = self.history_only_file()
+        for ref in ("refs/remotes/origin/main", "refs/remotes/origin/gone"):
+            with self.subTest(tracking_ref=ref):
+                self.write_ref(ref, added)                               # stale: the remote dropped added
+                for old in (ZERO, base):                                 # a new ref, or one the remote holds at base
+                    rc, out = self.push_scan(f"refs/heads/main {tip} refs/heads/main {old}")
+                    self.assertEqual(rc, 1, out)
+                    self.assert_push_flags(out, f"FAIL market_id {WITHHELD}:1 (commit {added} entry 1)")
+                os.unlink(os.path.join(self.repo, ".git", *ref.split("/")))
 
     def test_commit_and_tag_messages(self):
         self.commit("base")
