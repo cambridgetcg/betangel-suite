@@ -17,8 +17,8 @@ clone, and is never uploaded or shared. A model context counts as an upload.
 | **git** (commits, branches, PRs, issues) | Source, docs, the pin file, synthetic fixtures *generators*, synthetic screenshots under `docs/synthetic/` | `*.bz2`, `*.tar`, any archive, `*.sqlite*`, `*.jsonl`, CSV and other exports, `run/`, `exports/`, `ledger/`, `private/` and other state directories, any file over 512 KiB (DESIGN.md is the one allowlisted file), real market, event or selection ids, runner names, prices, member paths, keys, tokens |
 | **Logs, stdout, stderr, HTTP errors** | Error codes, counts, timings, salted identifier hashes (pseudonymous, not anonymous; DESIGN.md 9.2 item 9) | Tracebacks (these go only to 0600 files under `private/`), request bodies, data rows, member paths, ids, names, prices, the bootstrap code or session token |
 | **Model context, Collab, the mailbox** (lab-Claude, Nuance, Astra) | Codes, counts, timings and salted hashes, as printed by `bin/suite selfcheck`, `catalogue`, `diagnose` and `ledger-summary`; synthetic fixtures; uisnap screenshots of synthetic markets | Real rows, runner names, prices, market ids, per-market results; anything under `~/betangel-data`, read, searched or listed (the ledger, `sessions/` and `private/` included); the install salt; screenshots of real races |
-| **Screenshots** | uisnap PNGs of synthetic-only engines, kept under `docs/synthetic/` | Any screenshot of a real market. On the lab, agents have no Screen Recording permission, and `screencapture` is never used on the lab screen. On the Air an agent's shell passes the screen-capture preflight with no prompt, so no agent captures the screen there while a suite page or an `ssh lab-suite` window is open (DESIGN.md 8.6; Nuance's PR #1 review, item 6; a line in the Air's CLAUDE.md, Q-Y10: asked of Yu on 2026-10-17, not answered) |
-| **The browser** | A Safari Private window (or a profile with no Betfair login, extensions or iCloud sync); UI preferences in `localStorage` | The session token in storage, cookies, external requests; a page title that names a race (it is always `betangel-suite`) |
+| **Screenshots** | uisnap PNGs of synthetic-only engines, kept under `docs/synthetic/` | Any screenshot of a real market. On the lab, agents have no Screen Recording permission, and `screencapture` is never used on the lab screen. On the Air an agent's shell passes the screen-capture preflight with no prompt, so no agent captures the screen there while a suite page or an `ssh lab-suite` window is open (DESIGN.md 8.6; Nuance's PR #1 review, item 6). A line saying so in the Air's CLAUDE.md (Q-Y10) was approved by Yu on 2026-10-17; Nuance adds it, in Nuance's own config, and until Nuance confirms it is in, it is conduct only |
+| **The browser** | A Safari Private window, on both machines (Q-Y11, answered by Yu on 2026-10-17); UI preferences in `localStorage` | The session token in storage, cookies, external requests; a page title that names a race (it is always `betangel-suite`) |
 | **Disk** | Derivatives under the suite root (0700); data roots are read-only to the suite | Decompressed members anywhere; any derivative outside `~/betangel-data`; temp files outside the suite's own `TMPDIR` |
 
 Phase 0 is synthetic-only, so it writes no licensed derivative. Yu agreed the suite root (R-4);
@@ -30,20 +30,21 @@ is a link, or a state root that a link puts in `~/betangel-data`, is refused bef
 written (62c39c6). The suite never writes `~/.local/state/lab-runs/`, where Nuance's run wrapper
 keeps its marker and lock.
 
-## Exceptions: not available pending Q-Y9
+## Exceptions: none until Betfair agrees in writing
 
 No agent looks at real values. When structure is not enough, Yu describes the shape, or
 lab-Claude adds a code-only check to `bin/suite diagnose` (DESIGN.md 8.7; Nuance's PR #1 review,
-item 2). Q-Y9, as reworded, was asked of Yu on 2026-10-17, not answered.
+item 2). Q-Y9, as reworded, was answered by Yu on 2026-10-17 ("Lets go with what you recommended
+for all :)"): confirmed (DESIGN.md 2.2.1).
 
 Yu's OK alone cannot make an exception. A model context counts as an upload, and the licence
 prohibits "the use of the Historical Betfair Data by, another organization or individual" unless
 "a specific agreement in writing with Betfair exists". Betfair has not ruled on model providers
-(proposal 001, sections 5.1-5.2). So real fields would reach a model context only with Betfair's
-written agreement naming the model provider, plus Yu's explicit OK each time, in Yu's own words
-in Yu's direct channel, scoped to one problem report and named fields. Yu's answer would be
+(proposal 001, sections 5.1-5.2). So real fields reach a model provider only with Betfair's
+specific written agreement naming that provider, plus Yu's explicit OK each time, in Yu's own
+words in Yu's direct channel, scoped to one problem report and named fields. Yu's answer would be
 recorded in that report's folder, and nothing beyond its scope read. A relay from another agent is
-never that OK.
+never that OK. Until such an agreement exists, exceptions are not available.
 
 No "same-shape" fixture is ever derived from a real report: it would still be licensed.
 
@@ -61,6 +62,14 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
 ## How it is enforced
 
 - **`.gitignore`** keeps the usual shapes out of `git add`.
+- **Deny rules for lab-Claude's file tools**, approved by Yu on 2026-10-16 (DESIGN.md Q-Y9):
+  Claude Code on the lab denies `Read` and `Edit` of `~/betangel-data`, of everything under it,
+  and of `~/.local/state/betangel-suite/install-salt*`. That a Read deny also covers Grep and Glob
+  is still to be verified on the lab. For Bash, Nuance's SSH shell and Astra, rule 5 is conduct
+  only. The optional `~/.ignore` with `/betangel-data/` (Nuance's suggestion) is not added:
+  lab-Claude recommended against it, because it would also hide the folder from Yu's own searches
+  and the deny rules already cover lab-Claude's file tools, and Yu accepted that on 2026-10-17
+  (DESIGN.md 2.2.1).
 - **`tools/hygiene_scan.py`** fails on archives (by name and by magic bytes), SQLite files,
   JSON-lines and data exports, keys and certificates, images outside `docs/synthetic/`, unknown
   binaries, oversize files, state and data-root directories, symbolic links, submodules,
