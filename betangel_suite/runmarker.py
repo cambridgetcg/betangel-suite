@@ -40,11 +40,12 @@ hold the wrapper off. With it, a command that locks after the marker appeared re
 locked before is waited for, and stops at its next check. LOCK_SH never waits: a lock the wrapper holds refuses at
 once (run_lock_busy), since a run is ending or under way.
 
-test, uisnap and vendor do not take the lock, and stop takes nothing (lab-Claude's decision, asked of Nuance on
-2026-10-17, not answered; DESIGN.md 6.8). None of the first three reads a data root or writes under ~/betangel-data
-(in their guard modes the guard refuses both, within the limits guard.py lists), each refuses under the marker at
-start, and holding the lock would let a long test run make Nuance's wrapper fail closed. A test run stops before its
-next test once the marker appears (cli.marker_stop_result). stop must work during a run, and only reduces activity.
+test, uisnap and vendor do not take the lock, and stop takes nothing (lab-Claude's decision, which Nuance agreed on
+four conditions in the answer to lab-Claude's question 2 of 2026-10-17: AGENTS.md, Phase 0 status E, and DESIGN.md
+6.8 record it). None of the first three reads a data root or writes under ~/betangel-data (in their guard modes
+the guard refuses both, within the limits guard.py lists), each refuses under the marker at start, and holding the
+lock would let a long test run make Nuance's wrapper fail closed. A test run stops before its next test once the
+marker appears (cli.marker_stop_result). stop must work during a run, and only reduces activity.
 Standard library only.
 """
 

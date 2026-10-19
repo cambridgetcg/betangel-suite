@@ -50,6 +50,11 @@ of the package, bin/ and tools/ (test_imports.python_sources) and refuses:
                    module; getattr, vars or __dict__ on builtins, and the string "builtins" anywhere outside a
                    docstring (vars(m)["builtins"]); `from <any module> import builtins`; and `from ... import` of
                    any of these names, which would hide later calls from this rule.
+  wildcard_import  any `from <module> import *`, absolute or relative, at any depth: it binds names that no
+                   statement in the importing module spells, so neither this rule nor CoverageTests can read
+                   them (Astra's review of #4 at 90adc64: synthetic.py holds rx, and after `from
+                   betangel_suite.synthetic import *` neither `rx._archive` nor rx.ticks.tick_offset was seen).
+                   A bare rx, sys or builtins after one is also judged as that module.
 
 ALLOWED lists the only exceptions, each with its reason, by (file, enclosing function, rule). A class statement's
 bases and keywords count as enclosed by the class, and module level, class bodies included, by None. An entry that
@@ -187,7 +192,13 @@ class _Checker:
                 # Every name these bind is checked as rx, sys or builtins, wherever it was imported from (import_from
                 # refuses rx from anything but the package itself, and sys and builtins from anything at all).
                 for alias in node.names:
-                    if alias.name == "rx":
+                    if alias.name == "*":
+                        # A wildcard may bind any of the three (synthetic.py holds rx), so a bare one is judged as
+                        # that module; import_from refuses the wildcard itself (wildcard_import).
+                        self.rx_names.add("rx")
+                        self.sys_names.add("sys")
+                        self.builtins_names.add("builtins")
+                    elif alias.name == "rx":
                         self.rx_names.add(alias.asname or "rx")
                     elif alias.name == "sys":
                         self.sys_names.add(alias.asname or "sys")
@@ -289,6 +300,8 @@ class _Checker:
 
     def import_from(self, node):
         names = [alias.name for alias in node.names]
+        if "*" in names:
+            self.add(node, "wildcard_import")           # binds names nothing here spells (Astra's review of #4)
         if node.module in ("rx", "betangel_suite.rx"):
             self.add(node, "rx_private")                # only `from . import rx`: rx.<namespace>.<name> everywhere
         if "rx" in names and node.module not in (None, SUITE):
@@ -468,7 +481,7 @@ class PlantedViolationTests(unittest.TestCase):
         "from . import rx\nrx._archive.ingest_archive(a, b)\n": {"rx_private", "test_only_name"},
         "from .. import rx as r\nnamespace = r.__dict__\n": {"rx_private"},
         "from .rx import _archive\n": {"rx_private"},
-        "from betangel_suite.rx import *\n": {"rx_private"},
+        "from betangel_suite.rx import *\n": {"rx_private", "wildcard_import"},
         "from . import rx\nmodule = getattr(rx, 'archive')\n": {"rx_private"},
         "from . import rx\nhelper(rx)\n": {"rx_private"},
         "from . import rx\nfound = getattr(rx.archive.safe_path, name)\n": {"rx_private"},
@@ -643,6 +656,24 @@ class PlantedViolationTests(unittest.TestCase):
         for text in self.ALLOWED_SOURCE:
             with self.subTest(text=text):
                 self.assertEqual(check_source(text), [])
+
+    def test_a_wildcard_import_is_refused(self):
+        # Astra's review of #4 at 90adc64 (P3): `from betangel_suite.synthetic import *` binds synthetic.py's rx, which
+        # no statement in the importing module spells, so `module = rx._archive` after it gave no finding. Every
+        # wildcard import is refused (wildcard_import), absolute or relative, and a bare rx after one is judged as rx.
+        cases = {
+            "from betangel_suite.synthetic import *\nmodule = rx._archive\n":
+                [(1, None, "wildcard_import"), (2, None, "rx_private")],
+            "from .synthetic import *\nmodule = rx._archive\n": [(1, None, "wildcard_import"), (2, None, "rx_private")],
+            "from .. import *\n": [(1, None, "wildcard_import")],
+            "from ..api.server import *\n": [(1, None, "wildcard_import")],
+            "from json import *\n": [(1, None, "wildcard_import")],
+            "def load():\n    from .synthetic import *\n": [(2, "load", "wildcard_import")],
+            "from betangel_suite.rx import *\n": [(1, None, "rx_private"), (1, None, "wildcard_import")],
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(check_source(text), expected)
 
     def test_the_allowed_literal_is_let_through_only_as_that_literal(self):
         # ALLOWED_LITERALS skips the part check for its exact value only: the same label resolved by attrgetter is

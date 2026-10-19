@@ -151,6 +151,13 @@ context. It is never Yu's instruction, consent or acceptance.
   whose diff includes a file that no other row names also waits for Yu's acceptance, and a PR
   that changes this file's rules or routing also waits for Yu's approval of those changes. A
   UI-only PR needs only Yu's acceptance. Lab-Claude merges.
+  - **Every PR in the sitting lands with `gh pr merge --merge`** (Nuance's review of #1 at
+    af960fd, F2, and of #5 at 52a9edc, N5-2; lab-Claude adopts the fix). No fast-forward,
+    rebase-merge, squash or direct push to main. `release` takes a commit only from main's
+    first-parent line (DESIGN.md 8.6), which keeps side-branch commits out only if each PR lands
+    as a merge commit; the stack is linear from main, so a fast-forward would put every interim
+    commit on that line. Allowing merge commits only in the GitHub repository's settings is Yu's
+    to set: asked of Yu, not done.
   - **Who merges (Q-Y8).** The Phase 0 packet asked: "Who merges pull requests (Q-Y8): you, or
     me after Nuance or Astra has reviewed? And may UI-only changes go in on your approval
     alone?" It gave no recommendation, so Yu's 2026-10-15 answer, "Lets go with what you
@@ -168,7 +175,8 @@ context. It is never Yu's instruction, consent or acceptance.
       2026-10-17, PR #2 re-review): "no merge with the flag True unless my agreement is recorded
       at the merge-candidate SHA". `roots.STATE_ROOT_AGREED` is True on the unmerged branches, so
       the sitting also waits for Nuance's agreement of the state root and the marker, recorded at
-      the SHA that merges (Phase 0 status A);
+      the SHA that merges (Phase 0 status A). Nuance agreed both halves as built at 52a9edc, on
+      conditions, and confirms the agreement at the merge SHA in one line (Phase 0 status A);
     - PR #5 also waits for Yu's written approval of proposal 002 (on phase0/viewing), after
       Nuance's and Astra's reviews of it;
     - #2, #4 and #5 each change this file's rules or routing, so each also waits for Yu's
@@ -339,6 +347,30 @@ reviewed PR changes them.
     re-check is open again, at the merge-candidate SHA (lab-Claude's reading); so do the other
     placement and guard changes made here since 823c194, cb40c7e among them (lab-Claude's
     reading, round 5 close).
+  - **Nuance's review of #5 at 52a9edc (2026-10-19):** "Q-N3: I agree both halves, root and
+    marker, as built at 52a9edc." Nuance's four conditions, quoted from that review (DESIGN.md
+    3.7 quotes them in full):
+    - (a) "The merge carries this SHA's Q-N3 file set unchanged. The set is: runmarker.py; the
+      roots placement and writer; the guard's placement, run-dir and run-lock checks; cli's
+      REALDATA_COMMANDS and the order in main; the launcher's marker order; the TMP lines in
+      bin/suite; config's run_marker, state_root and data_roots; and the marker checks in
+      engine, server and sshsession." Nuance's agreement then carries to the merge SHA, and
+      Nuance confirms it there in one line. "A fix that touches the set reopens only its own
+      diff. The comment-only N3-S1 fix does not reopen it."
+    - (b) "No engine runs with the real HOME on the lab until three things hold: a new C0 carries
+      416702f's L1; every runbook block has a marker step (mine to add); and Yu has settled
+      state_history (RS-13). No suite command runs between that L1 and 5a." RS-13 is in
+      proposal 003.
+    - (c) "Before 1a reads any data root, two things are needed: my identity checks (condition
+      2), and the marker and lock bound to the same home as the data."
+    - (d) "I fix N3-W1 and N3-W2 before my next wrapper job." Both are Nuance's wrappers.
+
+    Round 6's code changes on phase0/foundation (the guard's extension aliases, the engine's git
+    probe, and the test runner's working directory) are outside that set, and the edits to
+    runmarker.py, roots.py and cli.py's REALDATA_COMMANDS comment are N3-S1's comment-only fix
+    (lab-Claude's reading). phase0/http's own round 6 changes are outside the set too:
+    `engine_argv_ok` losing the git probe's link check in the merge, and the I-10 rule and the
+    contract coverage refusing wildcard imports (lab-Claude's reading).
   - Every command except `test`, `uisnap`, `release`, `vendor` and `stop` uses
     `~/betangel-data/suite.noindex/tmp` as `TMPDIR` and `SQLITE_TMPDIR` (`stop` joined the others
     in 8102f99). `cli.main` creates it 0700 only after the run-marker check and, for a real-data
@@ -353,7 +385,10 @@ reviewed PR changes them.
     (Nuance's mailbox note of 2026-10-18): it will also accept `suite.noindex/` and
     `historic-pro/` as known, optional entries, an upstream runbook change that Astra authors
     and Nuance reviews in the next tooling round. Until it lands, no engine command runs with
-    the real HOME.
+    the real HOME. It is on betangel-research's main as 416702f (PR #28) since 2026-10-19.
+    "Lands" means here that the lab's betangel-research checkout is at a C0 that includes
+    416702f, and that no suite command runs between that C0's L1 check and the runbook's 5a
+    (Nuance's review of #1 at af960fd, F4; Nuance's condition (b) above; DESIGN.md 3.7).
   - Only the engine may write the suite root. `test`, `uisnap`, `release`, `vendor` and `stop` run
     in guard modes of their own (`cli.OWN_MODE_COMMANDS`; on phase0/foundation, 8102f99 gave
     `uisnap` and `stop` theirs, where both ran in engine mode before; on this branch `uisnap` and
@@ -368,6 +403,9 @@ reviewed PR changes them.
     by text, realpath and identity, stat calls only. It does not cover `os.open` with a `dir_fd`
     and a relative path, descriptors opened before `arm()` or inherited, hard links made
     elsewhere, or stat-level calls. Engine mode is unchanged: Phase 1a reads the data roots.
+    Such a `dir_fd` name is judged against the cwd instead, so the outcome depends on the cwd:
+    run from HOME, `shutil.rmtree` of a temporary HOME's `betangel-data/` was refused (Nuance's
+    review of #2 at 4fa5835, N5-3). So `bin/suite test` runs its tests from its `TMPDIR`.
   - Every interpreter child of the test runner, whatever follows `-I -S -B`, and every
     `bin/suite` child need an explicit environment whose HOME, the roots under it and `TMPDIR`
     keep out of the runner's data home, judged by realpath and identity at spawn
@@ -477,7 +515,8 @@ reviewed PR changes them.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE` (Q-N3: agreed by Nuance in
   Nuance's PR #4 review; Nuance's PR #2 review makes the marker half conditional again, on
   Nuance's item 6; Nuance's re-review of #2 agrees it as built at 823c194, pending F4 and F5,
-  on the conditions in A).
+  on the conditions in A; Nuance's review of #5 agrees it as built at 52a9edc, on the
+  conditions in A, to be confirmed at the merge SHA).
   The config key `run_marker` accepts only that path, so no config edit can point the check at a
   file that never exists; only a reviewed change could move it. Nuance's wrapper creates the
   marker with O_EXCL, waits for `engine.lock` to be free, and takes `LOCK_EX` on
@@ -496,19 +535,19 @@ reviewed PR changes them.
     or renames `run/` (which would move the lock with it); the guard refuses each
     (`run_lock_protected`; 6aeb1d5 for `run/`). This is Nuance's PR #2 review, item 6 (596d052,
     18de53e, fbbc0c3). Nuance's re-review of #2 agrees it as built at 823c194, pending F4 and
-    F5, which are fixed on phase0/foundation; the agreement is owed at the merge-candidate SHA
-    (A). On phase0/http `serve` and `open` take it in `cli.main` and hold it until they exit:
-    for `serve`, and for an `open` that starts an engine, that is the engine's life; an `open`
-    that attaches exits once it has handed on the URL. Their I-17 tests came in round 4b. On
-    phase0/viewing `ssh-session` takes it the same way, since its merge of phase0/http in round
-    4b, and holds it until it exits, attached or hosting. Since e9729a6 (round 4b) an attached
-    `ssh-session` checks the marker before every poll and leaves (`ended reason=run_marker`, exit
-    2) once the poll under way has finished: about 25 s at worst, so it lets the lock go within
-    the 35 s bound. A session whose engine went in that poll, or whose viewer was superseded or
-    went away, leaves as before (`ended reason=engine_gone` or `ended reason=superseded`, or
-    nothing if the viewer went away; exit 0). `open`'s attach path checks the marker again
-    after the takeover's reply and hands on no URL (on phase0/http too since round 5, e9273e7).
-    Their I-17 tests came with e9729a6 (DESIGN.md 6.8).
+    F5, which are fixed on phase0/foundation; Nuance's review of #5 agrees it as built at
+    52a9edc, to be confirmed at the merge SHA (A). On phase0/http `serve` and `open` take it in
+    `cli.main` and hold it until they exit: for `serve`, and for an `open` that starts an engine,
+    that is the engine's life; an `open` that attaches exits once it has handed on the URL. Their
+    I-17 tests came in round 4b. On phase0/viewing `ssh-session` takes it the same way, since its
+    merge of phase0/http in round 4b, and holds it until it exits, attached or hosting. Since
+    e9729a6 (round 4b) an attached `ssh-session` checks the marker before every poll and leaves
+    (`ended reason=run_marker`, exit 2) once the poll under way has finished: about 25 s at worst,
+    so it lets the lock go within the 35 s bound. A session whose engine went in that poll, or
+    whose viewer was superseded or went away, leaves as before (`ended reason=engine_gone` or
+    `ended reason=superseded`, or nothing if the viewer went away; exit 0). `open`'s attach path
+    checks the marker again after the takeover's reply and hands on no URL (on phase0/http too
+    since round 5, e9273e7). Their I-17 tests came with e9729a6 (DESIGN.md 6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
     `TMPDIR` (lab-Claude's decision; DESIGN.md 6.8 gives the reasons). Nuance agreed it on four
     conditions (Nuance's answer to lab-Claude's question 2 of 2026-10-17): the guard refuses

@@ -53,18 +53,23 @@ What the hook refuses, in every mode and phase:
          refuses (call_replaced_early) unless both are the C original when it runs. The wrapper is on one module
          instance, so once it is in place the hook refuses every fresh load of the extension (import_refused):
          an import after the module was taken out of sys.modules, importlib.util.module_from_spec,
-         _imp.create_dynamic, and a load under a dotted name such as "x._posixsubprocess" (CPython finds an
-         extension's init function by the last part of the name). The import that arm() itself makes, and the
-         cached, wrapped module, are untouched; arm() refuses (module_loaded_early) a second instance already
-         in sys.modules under a dotted name (Astra's re-review of #2, finding 1; Nuance's, F4);
+         _imp.create_dynamic, and a load under any other name CPython reads as the extension's. CPython finds an
+         extension's init function as PyInit_<last part of the name>, with every "-" read as "_", and C ends the
+         name at a NUL, so "x._posixsubprocess", "x.-posixsubprocess" and "-posixsubprocess" all load it, and on
+         3.11 so does "x._posixsubprocess" followed by a NUL and more (Astra's review of #2 at 4fa5835, item 1).
+         The hook refuses every name with a NUL in it, and judges the last part with "-" read as "_". The import
+         that arm() itself makes, and the cached, wrapped module, are untouched; arm() refuses
+         (module_loaded_early) a second instance already in sys.modules under any such name (Astra's re-review
+         of #2, finding 1; Nuance's, F4);
        - importing multiprocessing (any submodule) or concurrent.futures.process, which start children through
          fork_exec, and ctypes or _ctypes (any submodule), since _ctypes reaches libc through dlsym and
          call_function with no dlopen (import_refused); and the modules that run code in a subinterpreter, whose
          audit hooks are its own, not this one: _interpreters (3.13), _xxsubinterpreters (3.11), interpreters and
          concurrent.interpreters (where present), and CPython's test modules _testcapi (run_in_subinterp) and
          _testinternalcapi. Each extension among them (_ctypes, _interpreters, _xxsubinterpreters, _testcapi,
-         _testinternalcapi) is refused under a dotted name too. arm() refuses (module_loaded_early) if one of them
-         is already loaded: the import event fires only for a module that is not loaded yet;
+         _testinternalcapi) is refused under any such name too. arm() refuses (module_loaded_early) if one of
+         them is already loaded, under any such name: the import event fires only for a module that is not
+         loaded yet;
        - ctypes.dlopen, plus ctypes.dlsym and ctypes.call_function as a backstop, and SQLite extension loading.
        Threads are unaffected;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
@@ -132,15 +137,19 @@ st_ino), stat calls only (roots.lies_in_for_read). A relative path is judged aga
 before: Phase 1a reads the data roots there. Not covered: os.open with a dir_fd and a relative path (the open event
 carries no dir_fd, so the path is judged against the cwd; a listing of that descriptor is refused), a descriptor
 opened before arm() or inherited, a hard link made elsewhere to a file in the data home, and stat-level calls
-(os.stat, os.lstat, os.readlink), which raise no audit event and which the guard's own checks use.
+(os.stat, os.lstat, os.readlink), which raise no audit event and which the guard's own checks use. Because such a
+name is judged against the cwd, the outcome depends on it: run from HOME, shutil.rmtree of a temporary HOME holding
+a betangel-data/ was refused (data_home_read_refused), since that name, read against the cwd, is the runner's own
+data home (Nuance's review of #2 at 4fa5835, N5-3). So cli._test runs the tests from its TMPDIR.
 
 Subprocesses by mode (the launcher picks the mode from the command name; nothing else can):
 
-  engine  before seal(), exactly two argv shapes: git -C <dir in the write roots> rev-parse
-          --is-inside-work-tree (paths.is_inside_git_worktree, used by config.validate_config), its dir in a
-          root as text and, links resolved, in that root's real path from arm(), and
-          /usr/bin/open http://127.0.0.1:<permitted port>/#c=<code>; after seal(), none. A bare "git"
-          must come through subprocess with a search path of /usr/bin and /bin only.
+  engine  before seal(), exactly one argv shape: /usr/bin/open http://127.0.0.1:<permitted port>/#c=<code>;
+          after seal(), none. The git probe of upstream's paths.is_inside_git_worktree (git -C <dir>
+          rev-parse --is-inside-work-tree, for config.validate_config) is refused: no Phase 0 path runs it,
+          and the guard never judged its environment (Nuance's review of #2 at 4fa5835, N5-1; the limits
+          below). A bare program name may only be found through /usr/bin and /bin, though no mode now
+          permits one.
   vendor  before seal(), exactly the five git argvs tools/vendor_research.py runs, each with exactly the
           environment VENDOR_GIT_ENV plus HOME, and a partial clone path that is not in the deploy clone by
           name or identity (roots.lies_in); after, none. Its writes may
@@ -191,15 +200,22 @@ mode, an isolated interpreter the runner starts is unguarded unless it imports b
 checks only the environment it is started with), a file
 descriptor or hard link made before a check, a reference to os.mkfifo or _posixsubprocess.fork_exec taken
 before arm(), subprocess's private _fork_exec or _socket.socket.listen called directly, or
-sqlite3.Connection.setlimit called on a connection directly. Nor does it close check-then-use gaps on the
-paths in a child's argv (lab-Claude's reading, not a reviewer's finding): engine_argv_ok, runner_git_ok,
-vendor_argv_ok and release_argv_ok judge a path, links resolved, when the child is started, and git resolves
-it again when it runs, so a process of this user that changes a link on that path in between is not covered. Also
-left, as same-process routes: a fresh instance of the built-in posix module (importlib.util.module_from_spec on its
-spec), whose mkfifo and mknod are the unwrapped originals, since a built-in module raises no import event and
-the hook never sees the load (Astra's re-review of #2); and an extension module refused above that was loaded
-before arm() and then taken out of sys.modules, since CPython then serves a single-phase one (_ctypes on
-3.11, _testcapi) from its extension cache with no import event (lab-Claude's probe, round 5). Refusals raise
+sqlite3.Connection.setlimit called on a connection directly. Nor does it close check-then-use gaps on the paths in
+a child's argv (lab-Claude's reading, not a reviewer's finding): runner_git_ok, vendor_argv_ok and release_argv_ok
+judge a path, links resolved, when the child is started, and git resolves it again when it runs, so a process of
+this user that changes a link on that path in between is not covered. Also left, as same-process routes: a fresh
+instance of the built-in posix module (importlib.util.module_from_spec on its spec), whose mkfifo and mknod are
+the unwrapped originals, since a built-in module raises no import event and the hook never sees the load (Astra's
+re-review of #2); and an extension module refused above that was loaded before arm() and then taken out of
+sys.modules, since CPython then serves a single-phase one (_ctypes on 3.11, _testcapi) from its extension cache
+with no import event (lab-Claude's probe, round 5). In engine mode the guard judges a child's argv, not its
+environment: /usr/bin/open runs with whatever environment it is handed, env None included, and os.putenv is
+refused only for the pinned keys and stray BETFAIR ones, so DEVELOPER_DIR or GIT_TRACE can still be set (Nuance's
+review of #2 at 4fa5835, N5-1: through the git probe this mode then allowed, they ran a planted xcrun and wrote a
+file outside the roots). If Phase 1b needs that probe, it comes back with an exact environment, with env None and
+any other putenv refused in engine mode, with its directory judged as text and with its links resolved against the
+roots' real paths from arm(), as runner_git_ok judges its -C directory (Astra's re-review of #4, which this mode
+checked until round 6), and with an engine-mode test like the test runner's DEVELOPER_DIR test. Refusals raise
 GuardRefusal, whose str() is the code only, never the path or address.
 Standard library only.
 """
@@ -321,10 +337,12 @@ _SPAWN = frozenset({"subprocess.Popen", "os.posix_spawn", "os.system", "os.exec"
 # on both interpreters by lab-Claude) and _testinternalcapi.
 _REFUSED_IMPORTS = ("multiprocessing", "concurrent.futures.process", "ctypes", "_ctypes", "_interpreters",
                     "_xxsubinterpreters", "interpreters", "concurrent.interpreters", "_testcapi", "_testinternalcapi")
-# Extension modules refused under any name whose last part is theirs: CPython finds an extension's init function as
-# PyInit_<last part of the name>, so ExtensionFileLoader("x._ctypes", <the _ctypes file>) loads _ctypes itself
-# (Nuance's re-review of #2, F4). _posixsubprocess is here too, but only for loads after arm(): arm() imports it and
-# wraps fork_exec on that instance, and any fresh instance would carry the C original (Astra's re-review, finding 1).
+# Extension modules refused under any name whose last part CPython reads as theirs: it finds an extension's init
+# function as PyInit_<last part of the name>, with every "-" read as "_" and the name ended at a NUL, so
+# ExtensionFileLoader("x._ctypes", <the _ctypes file>) loads _ctypes itself (Nuance's re-review of #2, F4), and so do
+# "x.-ctypes" and, on 3.11, "x._ctypes" followed by a NUL (Astra's review of #2 at 4fa5835, item 1; _extension_part).
+# _posixsubprocess is here too, but only for loads after arm(): arm() imports it and wraps fork_exec on that
+# instance, and any fresh instance would carry the C original (Astra's re-review, finding 1).
 _REFUSED_EXTENSIONS = frozenset({"_posixsubprocess", "_ctypes", "_interpreters", "_xxsubinterpreters", "_testcapi",
                                  "_testinternalcapi"})
 _FORK_EXEC_MODULE = "_posixsubprocess"
@@ -649,23 +667,31 @@ def _no_link_below(root, path):
 
 
 def _import_refused(name):
-    """True for a module in _REFUSED_IMPORTS or a submodule of one, and for any name whose last part names an
-    extension in _REFUSED_EXTENSIONS ("_posixsubprocess" itself included: the hook sees only loads after arm()).
+    """True for a module in _REFUSED_IMPORTS or a submodule of one; for any name whose last part, read as CPython
+    reads it, names an extension in _REFUSED_EXTENSIONS ("_posixsubprocess" itself included: the hook sees only loads
+    after arm()); and for any name with a NUL in it, which no module needs and which C would end early.
 
-    The name is judged as an exact str: a str subclass could answer startswith or rpartition for itself, while
-    CPython loads by the characters it holds."""
+    The name is judged as an exact str: a str subclass could answer startswith, rpartition or replace for itself,
+    while CPython loads by the characters it holds."""
     if not isinstance(name, str):
         return False
     name = str.__str__(name)
-    return (any(name == top or name.startswith(top + ".") for top in _REFUSED_IMPORTS)
-            or name.rpartition(".")[2] in _REFUSED_EXTENSIONS)
+    return ("\0" in name or any(name == top or name.startswith(top + ".") for top in _REFUSED_IMPORTS)
+            or _extension_part(name) in _REFUSED_EXTENSIONS)
+
+
+def _extension_part(name):
+    """The last part of an exact str module name as CPython reads it to find an extension's init function,
+    PyInit_<part>: with every "-" read as "_" (Python/importdl.c; Astra's review of #2 at 4fa5835, item 1)."""
+    return name.rpartition(".")[2].replace("-", "_")
 
 
 def _refuse_loaded_modules():
     """module_loaded_early if a refused module is already loaded: the import event fires only for a module that is
     not in sys.modules yet, so the hook could not stop it, and fail closed is the only safe answer. The one module
     that may be loaded is _posixsubprocess under its own name, whose fork_exec arm() wraps next; a second instance
-    under a dotted name would keep the C original."""
+    under any other name CPython reads as its own (a dotted name, a "-" for its "_", a NUL) would keep the C
+    original."""
     if any(_import_refused(name) and str.__str__(name) != _FORK_EXEC_MODULE for name in list(sys.modules)):
         raise SuiteError("module_loaded_early")
 
@@ -765,11 +791,12 @@ def _wrap_fork_exec():
     is imported (subprocess._fork_exec). So subprocess is imported here first, and arm() refuses
     (call_replaced_early) unless that reference and _posixsubprocess.fork_exec are both the C original; only the
     module attribute is then replaced. Imported after this, subprocess would bind the wrapper and every Popen,
-    the startup git included, would be refused. The wrapper's event carries no arguments: there is no argv the
-    hook could judge, and nothing the suite or the pinned closure runs calls fork_exec directly.
+    the test runner's git and interpreter children included, would be refused. The wrapper's event carries no
+    arguments: there is no argv the hook could judge, and nothing the suite or the pinned closure runs calls
+    fork_exec directly.
 
     The wrapper sits on this one module instance. A fresh instance (the module taken out of sys.modules and
-    imported again, module_from_spec, _imp.create_dynamic, or a dotted name ending in _posixsubprocess) would
+    imported again, module_from_spec, _imp.create_dynamic, or any other name CPython reads as its own) would
     carry the C original, so the hook refuses every such load (_REFUSED_EXTENSIONS; Astra's re-review of #2,
     finding 1). importlib.reload of this instance raises no import event and keeps the wrapper: the extension
     sets its functions when the module is made, not when it is executed again.
@@ -980,7 +1007,7 @@ def _check_spawn(state, event, args):
                 not state.sealed or _uisnap_binary_ok(state, argv[0])):
             return
     elif not state.sealed:
-        if state.mode == "engine" and engine_argv_ok(argv, state.roots, state.ports, state.real_roots):
+        if state.mode == "engine" and engine_argv_ok(argv, state.roots, state.ports):
             return
         if state.mode == "vendor" and vendor_argv_ok(argv, names, state.research, state.deps_root, state.home):
             return
@@ -1026,21 +1053,13 @@ def _child_env_ok(names):
     return not any(_stray(key) for key in names) and names.get(FORBID_NETWORK_ENV) == "1"
 
 
-def engine_argv_ok(argv, write_roots, ports, real_roots=None):
-    """The two argvs an engine may start before seal() (DESIGN.md I-5).
+def engine_argv_ok(argv, write_roots, ports):
+    """The one argv an engine may start before seal() (DESIGN.md I-5): /usr/bin/open with the bootstrap URL.
 
-    The git probe's directory must lie in a write root as text and, with its links resolved, in that root's
-    real path, as runner_git_ok checks its -C directory: git -C follows links, so the text alone would let a
-    link inside a root point the probe elsewhere (Astra's re-review of #4). real_roots are the roots' real
-    paths; the hook passes the ones fixed at arm(), and None resolves them now.
-    """
-    if len(argv) == 5 and argv[:2] == ["git", "-C"] and argv[3:] == ["rev-parse", "--is-inside-work-tree"]:
-        directory = argv[2]
-        if real_roots is None:
-            real_roots = tuple(os.path.realpath(root) for root in write_roots)
-        return (os.path.isabs(directory) and os.path.normpath(directory) == directory
-                and any(roots.within(directory, root) and roots.within(os.path.realpath(directory), real)
-                        for root, real in zip(write_roots, real_roots)))
+    The git probe that upstream's paths.is_inside_git_worktree runs (git -C <dir> rev-parse --is-inside-work-tree)
+    was allowed here until round 6, with no check of its environment: with DEVELOPER_DIR set it ran a planted xcrun,
+    and with GIT_TRACE it wrote a file outside the roots (Nuance's review of #2 at 4fa5835, N5-1). No Phase 0 path
+    runs it, so it is refused. write_roots stays in the signature for the callers on the later branches."""
     if len(argv) == 2 and argv[0] == OPEN:
         match = _URL_RE.fullmatch(argv[1])
         return bool(match) and int(match.group(1)) != 0 and int(match.group(1)) in ports
