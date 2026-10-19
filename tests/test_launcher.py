@@ -9,6 +9,7 @@ import ast
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import types
 import unittest
@@ -19,6 +20,7 @@ from betangel_suite.errors import SuiteError
 from tests import PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_relayed, run_suite, tree_listing
 
 LAUNCH_PY = os.path.join(ROOT, "bin", "_launch.py")
+CWD_PROBE_SENTINEL = "cwd-probe"               # made only in a temporary HOME, by LauncherTests
 SSH = "192.0.2.10 50000 192.0.2.20 22"         # TEST-NET addresses: the checks only test presence
 
 
@@ -208,11 +210,35 @@ class LauncherTests(unittest.TestCase):
             listing = [(path, mode) for path, mode in tree_listing(roots.data_home(home))]
             self.assertEqual(listing, [("suite.noindex", 0o700), ("suite.noindex/tmp", 0o700)] if agreed else [], agreed)
 
+    def test_bin_suite_test_runs_its_tests_from_tmpdir(self):
+        # Nuance's review of #2 at 4fa5835, N5-3: run from cwd=HOME, bin/suite test -k test_roots gave 10 errors
+        # (data_home_read_refused). shutil.rmtree opens a temporary HOME's betangel-data/ relative to a dir_fd, and the
+        # guard judges that name against the cwd, where it named the runner's own data home. A non-interactive ssh
+        # starts in HOME. Here a nested bin/suite test runs CwdProbe from its own temporary HOME, as run_suite always
+        # does; the probe removes a tree holding a betangel-data/ under its TMPDIR.
+        home = make_home(self, deps=True)
+        open(os.path.join(home, CWD_PROBE_SENTINEL), "w").close()
+        result = run_suite(["test", "-k", "cwd_probe"], home, timeout=300)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertIn("\nRan 1 test in ", result.stderr)
+        self.assertEqual(os.listdir(roots.tmp_dir("test", home)), [])
+
     def test_vendor_creates_no_tmpdir(self):
         home = make_home(self)
         os.rmdir(roots.tmp_dir("vendor", home))
         self.assertEqual(run_suite(["vendor"], home).stderr, "refused:bad_arguments\n")
         self.assertFalse(os.path.lexists(roots.tmp_dir("vendor", home)))
+
+
+class CwdProbe(unittest.TestCase):
+    """The nested `bin/suite test -k cwd_probe` of LauncherTests. It acts only under a HOME that holds
+    CWD_PROBE_SENTINEL, which only LauncherTests makes, in a temporary HOME; anywhere else it passes at once."""
+
+    def test_cwd_probe_removes_a_tree_that_holds_a_betangel_data_directory(self):
+        if os.path.exists(os.path.join(os.environ["HOME"], CWD_PROBE_SENTINEL)):
+            tree = os.path.join(os.environ["TMPDIR"], "cwd-probe")
+            os.makedirs(os.path.join(tree, "betangel-data", "x"))
+            shutil.rmtree(tree)        # opens betangel-data relative to a dir_fd
 
 
 class StateRootFlagTests(unittest.TestCase):

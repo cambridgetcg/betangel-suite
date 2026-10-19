@@ -11,6 +11,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -35,6 +36,12 @@ def attempt(name, fn):
     except Exception as exc:
         results[name] = "other:" + type(exc).__name__
 """
+
+
+# Loads extension `name` under `alias` and puts that second instance in sys.modules as `key`, before arm().
+EARLY_ALIAS = ("import importlib.machinery, importlib.util, sys\n"
+               "loader = importlib.machinery.ExtensionFileLoader(%r, importlib.util.find_spec(%r).origin)\n"
+               "sys.modules[%r] = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))\n")
 
 
 def checks(case, home, body, *, setup="", mode="engine", env=None):
@@ -602,7 +609,7 @@ def fork():
     pid = os.fork()
     if pid == 0:
         os._exit(0)
-attempt("git_probe_in_roots", lambda: run(["git", "-C", state, "rev-parse", "--is-inside-work-tree"]))
+attempt("git_probe_in_roots", lambda: run(["git", "-C", state, "rev-parse", "--is-inside-work-tree"]))   # N5-1
 attempt("git_probe_outside_roots", lambda: run(["git", "-C", os.environ["HOME"], "rev-parse", "--is-inside-work-tree"]))
 attempt("git_other_argv", lambda: run(["git", "-C", state, "status"]))
 attempt("shell", lambda: subprocess.run("true", shell=True))
@@ -617,17 +624,27 @@ results["sealed"] = guard.is_sealed()
 print(json.dumps(results))
 attempt("execv", lambda: os.execv("/usr/bin/true", ["/usr/bin/true"]))
 """)
-        self.assertEqual(results["git_probe_in_roots"], "ok")
-        for name in ("git_probe_outside_roots", "git_other_argv", "shell", "os_system", "posix_spawn", "fork",
+        for name in ("git_probe_in_roots", "git_probe_outside_roots", "git_other_argv", "shell", "os_system",
+                     "posix_spawn", "fork",
                      "git_probe_after_seal", "security_cli", "execv"):
             self.assertEqual(results[name], "subprocess_refused", name)
         self.assertEqual(results["ctypes"], "import_refused")
         self.assertTrue(results["sealed"])
 
-    def test_engine_bare_git_needs_the_system_search_path(self):
-        # engine_argv_ok matches the shape upstream uses (a bare "git"); the hook also requires that the name
-        # resolve through /usr/bin and /bin only, so a planted program called git never starts.
+    def test_engine_git_probe_refuses_developer_dir(self):
+        # Nuance's review of #2 at 4fa5835, N5-1: engine mode allowed git -C <dir in the roots> rev-parse
+        # --is-inside-work-tree and never judged the environment it was handed. With DEVELOPER_DIR=<fake>, /usr/bin/git
+        # ran <fake>/usr/bin/xcrun, and with GIT_TRACE=<file> git wrote that file, both outside the roots. No Phase 0
+        # path runs the probe, so engine mode now refuses it in every environment: the engine-mode twin of
+        # test_test_runner_git_refuses_developer_dir. A planted program called git on the search path, which the
+        # search-path rule refused before, stays refused.
         home = make_home(self)
+        fake = os.path.join(home, "developer", "usr", "bin")
+        os.makedirs(fake)
+        os.makedirs(os.path.join(home, "outside"))
+        with open(os.path.join(fake, "xcrun"), "w") as handle:
+            handle.write("#!/bin/sh\n/usr/bin/touch %s\nexit 1\n" % os.path.join(home, "outside", "xcrun-ran"))
+        os.chmod(os.path.join(fake, "xcrun"), 0o755)
         setup = """
 os.makedirs(roots.state_dir(), exist_ok=True)
 stub = os.path.join(os.environ["HOME"], "stub")
@@ -638,21 +655,27 @@ os.chmod(os.path.join(stub, "git"), 0o755)
 """
         results = checks(self, home, setup=setup, body="""
 import subprocess
+home = os.environ["HOME"]
 argv = ["git", "-C", roots.state_dir(), "rev-parse", "--is-inside-work-tree"]
 base = {key: os.environ[key] for key in ("HOME", "TMPDIR", "SQLITE_TMPDIR", guard.FORBID_NETWORK_ENV)}
+system = dict(base, PATH="/usr/bin:/bin")
 def run(env):
     subprocess.run(argv, env=env, capture_output=True, timeout=30)
-attempt("system_path", lambda: run(dict(base, PATH="/usr/bin:/bin")))
+attempt("developer_dir", lambda: run(dict(system, DEVELOPER_DIR=os.path.join(home, "developer"))))
+attempt("git_trace", lambda: run(dict(system, GIT_TRACE=os.path.join(home, "outside", "trace"))))
+attempt("system_path", lambda: run(system))
 attempt("default_path", lambda: run(dict(base)))
 attempt("stub_path", lambda: run(dict(base, PATH=stub)))
 attempt("stub_first", lambda: run(dict(base, PATH=stub + ":/usr/bin:/bin")))
-attempt("posix_spawn_relative", lambda: os.posix_spawn("git", argv, dict(base, PATH="/usr/bin:/bin")))
+attempt("posix_spawn_relative", lambda: os.posix_spawn("git", argv, system))
+attempt("inherited", lambda: run(None))
 os.environ["PATH"] = stub
 attempt("inherited_stub_path", lambda: run(None))
+results["outside"] = sorted(os.listdir(os.path.join(home, "outside")))
 """)
-        self.assertEqual((results["system_path"], results["default_path"]), ("ok", "ok"))
-        for name in ("stub_path", "stub_first", "posix_spawn_relative", "inherited_stub_path"):
-            self.assertEqual(results[name], "subprocess_refused", name)
+        refused = ("developer_dir", "git_trace", "system_path", "default_path", "stub_path", "stub_first",
+                   "posix_spawn_relative", "inherited", "inherited_stub_path")
+        self.assertEqual(results, dict({name: "subprocess_refused" for name in refused}, outside=[]))
 
     # Routes to a child process that raise no audit event of their own (Nuance's PR #2 review, item 3). Each would
     # leave a name in outside/ if its child ran: fork_exec with the arguments multiprocessing.util.spawnv_passfds
@@ -700,7 +723,9 @@ def thread_pool_runs():
     def test_children_without_an_audit_event_are_refused(self):
         # A sealed engine refused subprocess.run, but multiprocessing (spawn, the macOS default),
         # ProcessPoolExecutor and _posixsubprocess.fork_exec all started unguarded children that wrote outside the
-        # roots. Startup git, which goes through subprocess, and threads must keep working.
+        # roots. Threads must keep working. Startup git, which went through subprocess here, is refused in engine mode
+        # since round 6 (test_engine_git_probe_refuses_developer_dir); subprocess still starts children through its own
+        # reference to fork_exec in test mode (test_test_runner_git_refuses_developer_dir, "plain").
         home = make_home(self)
         results = checks(self, home, setup=self.CHILDREN_SETUP, body=self.CHILDREN + """
 state = roots.state_dir()
@@ -719,9 +744,9 @@ attempt("thread_pool", thread_pool_runs)
 results["subprocess_keeps_its_own"] = subprocess._fork_exec is not _posixsubprocess.fork_exec
 results["outside"] = sorted(os.listdir(outside))
 """)
-        for name in ("git_before_seal", "thread_before_seal", "thread", "thread_pool"):
+        for name in ("thread_before_seal", "thread", "thread_pool"):
             self.assertEqual(results[name], "ok", name)
-        for name in ("fork_exec_before_seal", "fork_exec"):
+        for name in ("git_before_seal", "fork_exec_before_seal", "fork_exec"):
             self.assertEqual(results[name], "subprocess_refused", name)
         for name in ("process_start_before_seal", "pool_submit_before_seal", "process_start", "pool_submit"):
             self.assertEqual(results[name], "import_refused", name)
@@ -783,7 +808,7 @@ results["outside"] = sorted(os.listdir(outside))
     # /usr/bin/touch outside the roots after seal(). A dotted "x._ctypes" loads _ctypes, and a subinterpreter (its own
     # audit hooks, none of ours) ran os.mkdir outside the roots. Each helper uses what it loaded, so a load that got
     # through leaves a name in outside/.
-    FRESH = """
+    FRESH_HELPERS = """
 import _imp, importlib, importlib.machinery, importlib.util, subprocess, sys
 outside = os.path.join(os.environ["HOME"], "outside")
 SUBINTERPRETERS = [name for name in ("_interpreters", "_xxsubinterpreters") if importlib.util.find_spec(name)]
@@ -834,6 +859,8 @@ def run_inside(module, name):
         module.run_in_subinterp(code)
     else:
         module.run_string(module.create(), code)
+"""
+    FRESH = FRESH_HELPERS + """
 def phase(suffix):
     for label, load in (("reimport", reimport), ("from_spec", from_spec), ("create_dynamic", create_dynamic),
                         ("dotted", lambda: dotted("_posixsubprocess", "zz._posixsubprocess")),
@@ -874,6 +901,52 @@ results["outside"] = sorted(os.listdir(outside))
                     self.assertEqual(results.pop("cached_import" + suffix), "ok", suffix)
                 self.assertEqual(results, {"still_wrapped": True, "loaded": [], "outside": []})
 
+    # Names the dotted-name check missed (Astra's review of #2 at 4fa5835, item 1). CPython finds an extension's init
+    # function as PyInit_<last part of the name> with every "-" read as "_", and C ends the name at a NUL. So
+    # "zz.-posixsubprocess" and "-posixsubprocess" gave a _posixsubprocess whose fork_exec started /usr/bin/touch
+    # outside the roots after arm() and seal(), in every mode, 3.11 did the same for "zz._posixsubprocess" followed by a
+    # NUL, and the _ctypes, subinterpreter and test-module aliases got through too. As in FRESH, each helper uses what
+    # it loaded, so a load that got through leaves a name in outside/.
+    ALIASES = FRESH_HELPERS + r"""
+def spellings(name):
+    return (("dash", "zz.-" + name[1:]), ("bare_dash", "-" + name[1:]), ("nul", "zz." + name + "\0x"))
+def phase(suffix):
+    for spelling, alias in spellings("_posixsubprocess"):
+        label = "_posixsubprocess_" + spelling + suffix
+        attempt(label, lambda: spawn_with(dotted("_posixsubprocess", alias), label))
+    for spelling, alias in spellings("_ctypes"):
+        attempt("_ctypes_" + spelling + suffix, lambda: dotted("_ctypes", alias).dlsym)
+    for name in SUBINTERPRETERS + ["_testcapi"]:
+        for spelling, alias in spellings(name):
+            label = name + "_" + spelling + suffix
+            attempt(label, lambda: run_inside(dotted(name, alias), label))
+    for spelling, alias in spellings("_testinternalcapi"):
+        attempt("_testinternalcapi_" + spelling + suffix, lambda: dotted("_testinternalcapi", alias))
+phase("")
+guard.seal()
+phase("_sealed")
+results["still_wrapped"] = type(sys.modules["_posixsubprocess"].fork_exec) is not type(len)
+results["loaded"] = sorted(name for name in sys.modules if name.startswith(("zz", "-")))
+results["outside"] = sorted(os.listdir(outside))
+"""
+
+    def test_extension_aliases_with_a_dash_or_a_nul_are_refused_in_every_mode(self):
+        self.maxDiff = None
+        home = make_home(self)
+        for mode in MODES:
+            results = checks(self, home, setup=self.CHILDREN_SETUP, mode=mode, body=self.ALIASES)
+            with self.subTest(mode=mode):
+                names = [name for name in ("_interpreters", "_xxsubinterpreters") if name + "_dash" in results]
+                self.assertEqual(len(names), 1)             # _interpreters (3.13) or _xxsubinterpreters (3.11)
+                # 3.13 itself refuses a NUL in the name (ValueError) before any import event; 3.11 loads the
+                # extension, so there the hook must refuse it.
+                nul = "import_refused" if sys.version_info[:2] == (3, 11) else "other:ValueError"
+                expected = {name + "_" + spelling + suffix: nul if spelling == "nul" else "import_refused"
+                            for suffix in ("", "_sealed")
+                            for name in ["_posixsubprocess", "_ctypes", "_testcapi", "_testinternalcapi"] + names
+                            for spelling in ("dash", "bare_dash", "nul")}
+                self.assertEqual(results, dict(expected, still_wrapped=True, loaded=[], outside=[]))
+
     def test_arm_fails_closed_when_a_child_route_is_already_open(self):
         # The import event fires only for a module not loaded yet, and subprocess binds fork_exec when it is
         # imported, so arm() refuses rather than trust either.
@@ -896,6 +969,20 @@ results["outside"] = sorted(os.listdir(outside))
                  " importlib.util.find_spec('_posixsubprocess').origin)\n"
                  "sys.modules['zz._posixsubprocess'] = importlib.util.module_from_spec("
                  "importlib.util.spec_from_loader('zz._posixsubprocess', loader))\n", "module_loaded_early"),
+                # The same under a name CPython reads as the extension's, with a "-" for its "_" or a NUL after it
+                # (Astra's review of #2 at 4fa5835, item 1).
+                (EARLY_ALIAS % ("zz.-posixsubprocess", "_posixsubprocess", "zz.-posixsubprocess"),
+                 "module_loaded_early"),
+                (EARLY_ALIAS % ("-posixsubprocess", "_posixsubprocess", "-posixsubprocess"), "module_loaded_early"),
+                (EARLY_ALIAS % ("zz.-posixsubprocess", "_posixsubprocess", "zz._posixsubprocess\0x"),
+                 "module_loaded_early"),
+                (EARLY_ALIAS % ("zz.-ctypes", "_ctypes", "zz.-ctypes"), "module_loaded_early"),
+                (EARLY_ALIAS % ("zz.-testcapi", "_testcapi", "zz.-testcapi"), "module_loaded_early"),
+                ("import importlib.machinery, importlib.util, sys\n"
+                 "NAME = next(name for name in ('_interpreters', '_xxsubinterpreters') if importlib.util.find_spec(name))\n"
+                 "loader = importlib.machinery.ExtensionFileLoader('zz.-' + NAME[1:], importlib.util.find_spec(NAME).origin)\n"
+                 "sys.modules[loader.name] = importlib.util.module_from_spec("
+                 "importlib.util.spec_from_loader(loader.name, loader))\n", "module_loaded_early"),
                 ("import _posixsubprocess\n", "ok"),
                 ("import subprocess, concurrent.futures\n", "ok")):
             code = ATTEMPT + setup + "attempt('arm', lambda: guard.arm('engine'))\nprint(json.dumps(results))\n"
@@ -907,7 +994,8 @@ results["outside"] = sorted(os.listdir(outside))
         state = "/h/.local/state/betangel-suite"
         code = "#c=" + "a" * 22
         ok = guard.engine_argv_ok
-        self.assertTrue(ok(["git", "-C", state + "/x", "rev-parse", "--is-inside-work-tree"], (state,), set()))
+        self.assertFalse(ok(["git", "-C", state + "/x", "rev-parse", "--is-inside-work-tree"], (state,), set()))
+        self.assertFalse(ok(["git", "-C", state, "rev-parse", "--is-inside-work-tree"], (state,), set()))
         self.assertFalse(ok(["git", "-C", state + "/../x", "rev-parse", "--is-inside-work-tree"], (state,), set()))
         self.assertFalse(ok(["git", "-C", "/elsewhere", "rev-parse", "--is-inside-work-tree"], (state,), set()))
         self.assertFalse(ok(["/usr/bin/git", "-C", state, "rev-parse", "--is-inside-work-tree"], (state,), set()))
@@ -920,32 +1008,28 @@ results["outside"] = sorted(os.listdir(outside))
         self.assertFalse(ok(["/usr/bin/open", "-a", "Safari", "http://127.0.0.1:8765/" + code], (state,), {8765}))
 
     def test_engine_git_probe_containment_follows_links(self):
-        # Astra's re-review of #4: the git probe's directory must lie in a root as text and with its links resolved,
-        # as runner_git_ok checks, because git -C follows links. Pure predicate, on real links in a temporary HOME.
+        # Astra's re-review of #4 made the git probe's directory lie in a root as text and with its links resolved,
+        # as runner_git_ok checks, because git -C follows links. Since round 6 engine mode refuses the probe wherever
+        # it points (Nuance's review of #2 at 4fa5835, N5-1; test_engine_git_probe_refuses_developer_dir), so the
+        # directories that check accepted are refused now, as are those it refused. Pure predicate, on real links in a
+        # temporary HOME.
         home = make_home(self)
         root = os.path.join(home, "root")
         os.makedirs(os.path.join(root, "real"))
         os.makedirs(os.path.join(home, "outside", "sub"))
         os.symlink(os.path.join(home, "outside"), os.path.join(root, "link"))
-        os.symlink(home, os.path.join(home, "via"))            # a linked ancestor of a root is fine
-
-        def ok(directory, write_roots=(root,), real_roots=None):
-            argv = ["git", "-C", directory, "rev-parse", "--is-inside-work-tree"]
-            return guard.engine_argv_ok(argv, write_roots, set(), real_roots)
-
-        self.assertTrue(ok(os.path.join(root, "real")))
-        self.assertTrue(ok(root))
-        self.assertFalse(ok(os.path.join(root, "link")))
-        self.assertFalse(ok(os.path.join(root, "link", "sub")))
-        self.assertFalse(ok(os.path.join(home, "via", "outside")))  # text outside the root
+        os.symlink(home, os.path.join(home, "via"))
         via_root = os.path.join(home, "via", "root")
-        self.assertTrue(ok(os.path.join(via_root, "real"), (via_root,)))
-        self.assertFalse(ok(os.path.join(via_root, "link"), (via_root,)))
-        # The hook passes the real roots fixed at arm(); they are what the resolved directory is compared with.
-        self.assertTrue(ok(os.path.join(root, "real"), (root,), (root,)))
-        self.assertFalse(ok(os.path.join(root, "real"), (root,), (os.path.join(home, "outside"),)))
+        for directory, write_roots in (
+                (os.path.join(root, "real"), (root,)), (root, (root,)),                      # accepted until round 6
+                (os.path.join(via_root, "real"), (via_root,)),                                 # accepted until round 6
+                (os.path.join(root, "link"), (root,)), (os.path.join(root, "link", "sub"), (root,)),
+                (os.path.join(home, "via", "outside"), (root,)), (os.path.join(via_root, "link"), (via_root,))):
+            argv = ["git", "-C", directory, "rev-parse", "--is-inside-work-tree"]
+            self.assertFalse(guard.engine_argv_ok(argv, write_roots, set()), directory)
 
     def test_engine_git_probe_through_a_link_is_refused(self):
+        # "real", a directory in the state root, was allowed until round 6 and is refused now with the rest (N5-1).
         home = make_home(self)
         setup = """
 state = roots.state_dir()
@@ -966,8 +1050,7 @@ attempt("link", lambda: probe(state, "link"))
 attempt("through_link", lambda: probe(state, "link", "sub"))
 attempt("alias_into_root", lambda: probe(os.environ["HOME"], "alias", "real"))
 """)
-        self.assertEqual(results["real"], "ok")
-        for name in ("link", "through_link", "alias_into_root"):
+        for name in ("real", "link", "through_link", "alias_into_root"):
             self.assertEqual(results[name], "subprocess_refused", name)
 
     def test_vendor_argv_shapes(self):

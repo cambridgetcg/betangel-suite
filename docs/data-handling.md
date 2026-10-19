@@ -14,7 +14,7 @@ clone, and is never uploaded or shared. A model context counts as an upload.
 
 | Destination | Allowed | Never |
 |---|---|---|
-| **git** (commits, branches, PRs, issues) | Source, docs, the pin file, synthetic fixtures *generators*, synthetic screenshots under `docs/synthetic/` | `*.bz2`, `*.tar`, any archive, `*.sqlite*`, `*.jsonl`, CSV and other exports, `run/`, `exports/`, `ledger/`, `private/` and other state directories, any file over 512 KiB (DESIGN.md is the one allowlisted file), real market, event or selection ids, runner names, prices, member paths, keys, tokens |
+| **git** (commits, branches, PRs, issues) | Source, docs, the pin file, synthetic fixtures *generators*, synthetic screenshots under `docs/synthetic/` | `*.bz2`, `*.tar`, any archive, `*.sqlite*`, `*.jsonl`, CSV and other exports, `run/`, `exports/`, `ledger/`, `private/` and other state directories, any file over 512 KiB (DESIGN.md is the scanner's one allowlisted file, up to 2 MiB and still scanned; that the rule allows it is asked of Yu on 2026-10-19 (Astra's and Nuance's PR #1 reviews)), real market, event or selection ids, runner names, prices, member paths, keys, tokens |
 | **Logs, stdout, stderr, HTTP errors** | Error codes, counts, timings, salted identifier hashes (pseudonymous, not anonymous; DESIGN.md 9.2 item 9) | Tracebacks (Phase 0 writes none anywhere; later, only 0600 files under `private/`, which agents never read), request bodies, data rows, member paths, ids, names, prices, the bootstrap code or session token |
 | **Model context, Collab, the mailbox** (lab-Claude, Nuance, Astra) | Codes, counts, timings and salted hashes, as printed by `bin/suite selfcheck`, `catalogue`, `diagnose` and `ledger-summary`; synthetic fixtures; uisnap screenshots of synthetic markets | Real rows, runner names, prices, market ids, per-market results; anything under `~/betangel-data`, read, searched or listed (the ledger, `sessions/` and `private/` included); the install salt; screenshots of real races |
 | **Screenshots** | uisnap PNGs of synthetic-only engines, kept under `docs/synthetic/` | Any screenshot of a real market. On the lab, agents have no Screen Recording permission, and `screencapture` is never used on the lab screen. On the Air an agent's shell passes the screen-capture preflight with no prompt, so no agent captures the screen there while a suite page or an `ssh lab-suite` window is open (DESIGN.md 8.6; Nuance's PR #1 review, item 6). A line saying so in the Air's CLAUDE.md (Q-Y10) was approved by Yu on 2026-10-17 and is in (Nuance confirmed it on 2026-10-17): a CLAUDE.md rule for Claude Code sessions on the Air; for Astra and other tools it is conduct only |
@@ -22,14 +22,16 @@ clone, and is never uploaded or shared. A model context counts as an upload.
 | **Disk** | Derivatives under the suite root (0700); data roots are read-only to the suite | Decompressed members anywhere; any derivative outside `~/betangel-data`; temp files outside the suite's own `TMPDIR` |
 
 Phase 0 is synthetic-only, so it writes no licensed derivative. Yu agreed the suite root (R-4).
-Nuance's re-review of #2 agrees it as built at 823c194, pending two findings now fixed on this
-branch, to be recorded at the merge-candidate SHA, and accepts `roots.STATE_ROOT_AGREED` staying
-True meanwhile, on conditions (lab-Claude's call; AGENTS.md, Phase 0 status A). An engine command
-creates `~/betangel-data/suite.noindex/` and its `tmp/` (both 0700), and only the engine may write
-there. No engine command runs with the real HOME before the runbook's L1 layout check accepts
-that root, which Nuance has chosen to widen upstream (lab-Claude's decision of 2026-10-19;
-AGENTS.md, Phase 0 status A; DESIGN.md 3.7). A `suite.noindex` that is a link, or a state root that
-a link puts in `~/betangel-data`, is refused before anything is written (62c39c6).
+Nuance's review of #5 agrees it as built at 52a9edc, on conditions, to be confirmed at the merge
+SHA; Nuance's re-review of #2 accepted `roots.STATE_ROOT_AGREED` staying True meanwhile, on
+conditions (lab-Claude's call; AGENTS.md, Phase 0 status A). An engine command creates
+`~/betangel-data/suite.noindex/` and its `tmp/` (both 0700), and only the engine may write there.
+No engine command runs with the real HOME before the runbook's widened L1 layout check, which
+accepts that root, lands on the lab: the lab's betangel-research checkout at a C0 that includes
+416702f, with no suite command between that C0's L1 check and the runbook's 5a (lab-Claude's
+decision of 2026-10-19; Nuance's condition (b); AGENTS.md, Phase 0 status A; DESIGN.md 3.7). A
+`suite.noindex` that is a link, or a state root that a link puts in `~/betangel-data`, is refused
+before anything is written (62c39c6).
 
 The test runner itself is confined: its guard mode refuses writes under `~/betangel-data`, and
 reads there too, as `vendor`'s, `uisnap`'s and `stop`'s do (0a3ed65). Every interpreter child it

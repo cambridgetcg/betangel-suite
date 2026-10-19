@@ -40,7 +40,8 @@ NO_RUN_MARKER_CHECK = ("stop",)
 # (Nuance's PR #2 review, item 6; PR #1 review, item 5; the wording is Nuance's re-review of #2). test, uisnap and
 # vendor read no data root and write nothing under ~/betangel-data (in their guard modes the guard refuses both,
 # within the limits guard.py lists) and do not take it; stop must work during a run and takes nothing (runmarker.py
-# says why; lab-Claude's decision, asked of Nuance on 2026-10-17, not answered).
+# says why; lab-Claude's decision, which Nuance agreed on four conditions in the answer to lab-Claude's question 2 of
+# 2026-10-17: AGENTS.md, Phase 0 status E, and DESIGN.md 6.8 record it).
 # main() refuses (run_lock_not_held) any other command whose TMPDIR would be made under ~/betangel-data.
 REALDATA_COMMANDS = ("serve", "open", "ssh-session", "catalogue", "selfcheck", "diagnose", "ledger-summary")
 # They create no temporary files and must not need upstream, so main() makes no TMPDIR for them and never asks them
@@ -156,6 +157,11 @@ def parse_test_args(args, version):
 def _test(args):
     import unittest
     from . import config, runmarker
+    # The tests run from TMPDIR, whatever the caller's cwd. The guard judges a name opened relative to a dir_fd
+    # against the cwd (a limit guard.py names), so run from HOME, as a non-interactive ssh is, shutil.rmtree of a
+    # temporary HOME's betangel-data/ was refused as a read in the runner's own data home (Nuance's review of #2 at
+    # 4fa5835, N5-3). main() has made TMPDIR by now.
+    os.chdir(roots.tmp_dir("test"))
     verbosity, pattern = parse_test_args(args, sys.version_info)
     from . import rx    # noqa: F401  (verifies the pin and imports upstream under the armed guard)
     marker = runmarker.marker_path(config.load())
