@@ -28,8 +28,8 @@ True meanwhile, on conditions (lab-Claude's call; AGENTS.md, Phase 0 status A). 
 creates `~/betangel-data/suite.noindex/` and its `tmp/` (both 0700), and only the engine may write
 there. No engine command runs with the real HOME before the runbook's L1 layout check accepts
 that root, which Nuance has chosen to widen upstream (lab-Claude's decision of 2026-10-19;
-AGENTS.md, Phase 0 status A; DESIGN.md 3.7). A `suite.noindex` that is a link, or a state root that a link puts in `~/betangel-data`, is
-refused before anything is written (62c39c6).
+AGENTS.md, Phase 0 status A; DESIGN.md 3.7). A `suite.noindex` that is a link, or a state root that
+a link puts in `~/betangel-data`, is refused before anything is written (62c39c6).
 
 The test runner itself is confined: its guard mode refuses writes under `~/betangel-data`, and
 reads there too, as `vendor`'s, `uisnap`'s and `stop`'s do (0a3ed65). Every interpreter child it

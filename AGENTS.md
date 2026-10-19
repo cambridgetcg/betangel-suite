@@ -95,8 +95,8 @@ context. It is never Yu's instruction, consent or acceptance.
   historicdata.betfair.com there, and deleting saved betfair.com passwords and betfair.com site
   data, was agreed by Yu on 2026-10-17, for Yu to do by hand, and is done: Yu's words of
   2026-10-18, as relayed by Nuance, are "Pw deleted too", which Nuance reads as Yu having done
-  the clean-up (DESIGN.md 2.2.1 and 8.6; confirmation in Yu's own hand asked of Yu on
-  2026-10-19). Agents never touch browser data or passwords.
+  the clean-up (DESIGN.md 2.2.1 and 8.6; confirmed by Yu in Yu's own hand on 2026-10-19). Agents
+  never touch browser data or passwords.
 - Keep load modest on the shared 8 GB M1: tests run under `nice -n 10`, and no test tier starts
   during an announced Nuance run. `bin/suite test` refuses while the run marker exists, and a run
   already going stops before its next test once the marker appears; the test then running
@@ -345,12 +345,12 @@ reviewed PR changes them.
     keep out of the runner's data home, judged by realpath and identity at spawn
     (`subprocess_refused`; Nuance's re-review of #2, F2; 96f8a90). The environment is judged
     item by item, as `subprocess` hands it to the child: one that is not exactly a `dict`, a key
-    that is not exactly a `str`, or two keys equal once encoded are refused (cb40c7e). Lab-Claude's round-5 review
-    found only launcher children checked, so `-c` code that arms the guard itself, the shape F2
-    reported, still armed engine mode with the runner's HOME; every such child is checked now
-    (8e751d6). A child that never arms the guard is unguarded: conduct. The runner's git
-    gets an exact environment allowlist; `DEVELOPER_DIR` and any other key outside it are refused
-    (dd95582).
+    that is not exactly a `str`, two keys equal once encoded, or a value that is not exactly a `str`
+    or `bytes` are refused (cb40c7e). Lab-Claude's round-5 review found only launcher children
+    checked, so `-c` code that arms the guard itself, the shape F2 reported, still armed engine mode
+    with the runner's HOME; every such child is checked now (8e751d6). A child that never arms the
+    guard is unguarded: conduct. The runner's git gets an exact environment allowlist;
+    `DEVELOPER_DIR` and any other key outside it are refused (dd95582).
   - `guard.arm` refuses at start a write root or `TMPDIR` that the file system puts in, around or
     onto `~/betangel-data` (`root_overlaps_data_home`), and an engine suite root that is not a
     real directory, or missing, at exactly `realpath(~/betangel-data)/suite.noindex`
