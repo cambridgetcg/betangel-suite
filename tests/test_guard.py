@@ -2002,6 +2002,7 @@ class ReleaseModeTests(unittest.TestCase):
                      ["rev-parse", "--verify", "--quiet", self.COMMIT + "^{tree}"],
                      ["rev-parse", "--verify", "--quiet", "e" * 64 + "^{tree}"],
                      ["merge-base", "--is-ancestor", self.COMMIT, self.TREE],
+                     ["rev-list", "--first-parent", self.COMMIT], ["rev-list", "--first-parent", "e" * 64],
                      ["archive", "--format=tar", self.COMMIT],
                      ["config", "--includes", "--null", "--get-regexp", "^filter\\."]):
             self.assertTrue(self.ok(rest), rest)
@@ -2036,6 +2037,16 @@ class ReleaseModeTests(unittest.TestCase):
                      ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"],
                      ["rev-parse", "refs/heads/main^{commit}"],
                      ["merge-base", "--is-ancestor", "v1", "main"],
+                     # main's first-parent line (Nuance's answer of 2026-10-18): exactly one full object id, the id
+                     # refs/remotes/origin/main gave, never a name, a range, an exclusion or another option
+                     ["rev-list", "--first-parent", "refs/remotes/origin/main"], ["rev-list", "--first-parent", "main"],
+                     ["rev-list", "--first-parent", "HEAD"], ["rev-list", "--first-parent", self.COMMIT[:12]],
+                     ["rev-list", "--first-parent", self.COMMIT.upper()], ["rev-list", self.COMMIT],
+                     ["rev-list", "--first-parent", "^" + self.COMMIT], ["rev-list", "--first-parent", "--all"],
+                     ["rev-list", "--first-parent", self.COMMIT + ".." + self.TREE],
+                     ["rev-list", "--first-parent", self.COMMIT, self.TREE],
+                     ["rev-list", "--first-parent", "--objects", self.COMMIT],
+                     ["rev-list", "--first-parent", "--", self.COMMIT], ["rev-list", "--first-parent"],
                      ["archive", "--format=tar", "v1"], ["archive", "--format=zip", self.COMMIT],
                      ["archive", "--remote=https://example.invalid/x", "--format=tar", self.COMMIT],
                      ["archive", "--format=tar", "--output=/h/x.tar", self.COMMIT],

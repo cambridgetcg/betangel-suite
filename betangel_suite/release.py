@@ -21,11 +21,17 @@ make(commit), the release command (guard mode "release"), in this order:
      tracked or untracked (release_dirty_tree); an id that names no commit here, the id of an annotated tag
      or of a tree included: <id>^{commit} must give the id itself (release_commit_unknown); no
      refs/remotes/origin/main (release_main_missing); a commit that refs/remotes/origin/main does not contain
-     (release_not_on_main). That ref is GitHub's main as of the last `git fetch`, which the operator runs in the
-     checkout first; the suite never fetches (the guard allows no transport). It is named in full, never as main:
+     (release_not_on_main), or one off its first-parent line (release_not_first_parent; below). That ref is
+     GitHub's main as of the last `git fetch`, which the operator runs in the checkout first; the suite never
+     fetches (the guard allows no transport). It is named in full, never as main:
      the local main can hold merges nobody has reviewed yet (lab-Claude's own, before a push), and a tag or a
      local branch named main or origin/main would shadow a short name (Nuance's re-review of PR #1, finding 13;
-     lab-Claude's decision in round 5). Main's first-parent line is not checked (asked of Nuance in round 5);
+     lab-Claude's decision in round 5). Both checks read the one id that ref gave: merge-base --is-ancestor
+     <commit> <main>, then rev-list --first-parent <main> must list the commit. Ancestry alone passes a commit
+     inside a branch merged into main, which main never pointed at; in Nuance's words (answer of 2026-10-18 to
+     lab-Claude's round-5 question, which lab-Claude adopts), "Ancestry alone admits side-branch commits inside a
+     merge, which were never a reviewed main tip", and first-parent membership is the closest proxy for "main
+     pointed at it" that history alone can show;
   3. git archive of that commit into app/.<sha12>.partial, regular files and directories only; then
      guard.seal(): no subprocess from here on;
   4. the git tree id is recomputed from the copied bytes and must equal the commit's tree
@@ -369,6 +375,8 @@ def make(commit, home_dir=None, *, out=None):
         raise SuiteError("release_main_missing")
     if not git.is_ancestor(commit, main_commit):
         raise SuiteError("release_not_on_main")
+    if not git.on_first_parent_line(commit, main_commit):
+        raise SuiteError("release_not_first_parent")
     tree = git.object_id(commit + "^{tree}")
     if tree is None or len(tree) != len(commit):
         raise SuiteError("git_failed")
@@ -477,6 +485,17 @@ class _Git:
         if returncode not in (0, 1):
             raise SuiteError("git_failed")
         return returncode == 0
+
+    def on_first_parent_line(self, commit, tip):
+        """True when rev-list --first-parent <tip> lists commit: tip itself, or a commit tip reaches through first
+        parents only. A commit that only a merge's other parent reaches is not on it (Nuance's answer of 2026-10-18).
+        Every line must be one full object id, else git_failed."""
+        listed = self.output("rev-list", "--first-parent", tip).decode("ascii", "replace").split("\n")
+        if listed[-1:] == [""]:
+            listed.pop()
+        if not listed or not all(_OBJECT_ID_RE.fullmatch(item) for item in listed):
+            raise SuiteError("git_failed")
+        return commit in listed
 
     def archive(self, commit, dest):
         """git archive --format=tar <commit>, unpacked into dest; returns (files, bytes)."""

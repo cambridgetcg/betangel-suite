@@ -149,11 +149,11 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
   release (bin/suite release, betangel_suite/release.py; I-18) before seal(), only git with RELEASE_GIT_PREFIX
           and -C this checkout's own root (never the deploy clone or a release copy): the filter-driver
           config query, the index listing, status (never entering a submodule), rev-parse of <id>^{commit},
-          refs/remotes/origin/main^{commit} or <id>^{tree}, merge-base --is-ancestor and archive --format=tar <id>, with
-          no user or system git config and no replace refs or grafts (RELEASE_GIT_ENV, release_argv_ok); after,
-          none. A release names its commit by full object id, never a tag or other name (release.py). Its
-          writes may also go under ~/.local/share/betangel-suite/app (the release copies) and nowhere else
-          in the share dir.
+          refs/remotes/origin/main^{commit} or <id>^{tree}, merge-base --is-ancestor, rev-list --first-parent <id>
+          and archive --format=tar <id>, with no user or system git config and no replace refs or grafts
+          (RELEASE_GIT_ENV, release_argv_ok); after, none. A release names its commit by full object id, never
+          a tag or other name (release.py). Its writes may also go under ~/.local/share/betangel-suite/app (the
+          release copies) and nowhere else in the share dir.
   uisnap  (bin/suite uisnap, DESIGN.md 11) before seal(), exactly one argv: the Command Line Tools' swiftc with
           the fixed build flags of uisnap_build_argv, compiling <state>/uisnap/build/<sha256>/uisnap.swift to
           uisnap in the same directory; after seal(), exactly one: the binary registered before seal() with
@@ -284,9 +284,9 @@ RELEASE_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "core.hooksPath=/
 # The whole GIT_* part of every release git child's environment, exactly (release_argv_ok): no user or system config,
 # no prompt, and neither replace refs nor grafts. A refs/replace/ entry or an info/grafts line in this checkout would
 # make git archive copy another commit's tree under the id given, rev-parse <id>^{tree} name that tree (so the tree
-# check passes and RELEASE.json records it beside the id), and merge-base --is-ancestor count a commit main does not
-# contain as on main. GIT_NO_REPLACE_OBJECTS=1 and GIT_GRAFT_FILE=/dev/null switch both off, as for vendor (round 4b,
-# after phase0/foundation's fix for vendor).
+# check passes and RELEASE.json records it beside the id), and merge-base --is-ancestor and rev-list --first-parent
+# count a commit main does not contain as on main. GIT_NO_REPLACE_OBJECTS=1 and GIT_GRAFT_FILE=/dev/null switch both
+# off, as for vendor (round 4b, after phase0/foundation's fix for vendor).
 RELEASE_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
                    "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": "/dev/null"}
 # release.py refuses a repository whose own config (includes too) defines a filter driver: git status would run its
@@ -1161,10 +1161,11 @@ def release_argv_ok(argv, env, repo, research, app_root):
     never --recurse-submodules);
     rev-parse --verify --quiet <id>^{commit} | refs/remotes/origin/main^{commit} | <id>^{tree}, <id> a full object
     id;
-    merge-base --is-ancestor <id> <id>; archive --format=tar <id>. Every subcommand is local (no fetch, no
-    remote archive). The environment must be explicit, and its GIT_* variables exactly RELEASE_GIT_ENV: no user or
-    system git config, no replace refs or grafts, nothing else. repo must not lie in the deploy clone or the app
-    root (a release copy is never a source).
+    merge-base --is-ancestor <id> <id>; rev-list --first-parent <id> (main's first-parent line, which release
+    needs as well as ancestry: Nuance's answer of 2026-10-18); archive --format=tar <id>. Every subcommand is local
+    (no fetch, no remote archive). The environment must be explicit, and its GIT_* variables exactly
+    RELEASE_GIT_ENV: no user or system git config, no replace refs or grafts, nothing else. repo must not lie in the
+    deploy clone or the app root (a release copy is never a source).
     """
     if env is None or {key: value for key, value in env.items() if key.startswith("GIT_")} != RELEASE_GIT_ENV:
         return False
@@ -1189,6 +1190,8 @@ def release_argv_ok(argv, env, repo, research, app_root):
         return False
     if len(rest) == 4 and rest[:2] == ["merge-base", "--is-ancestor"]:
         return all(_OBJECT_ID_RE.fullmatch(item) for item in rest[2:])
+    if len(rest) == 3 and rest[:2] == ["rev-list", "--first-parent"]:
+        return bool(_OBJECT_ID_RE.fullmatch(rest[2]))
     if len(rest) == 3 and rest[:2] == ["archive", "--format=tar"]:
         return bool(_OBJECT_ID_RE.fullmatch(rest[2]))
     return False

@@ -9,7 +9,9 @@ re-review of PR #1, finding 13). The runner's git cannot fetch, so the tests wri
 would leave it (Repo.fetched). The class repository has c1 and, after it on main, c3, which is also the checkout's
 HEAD and origin/main; c2 (side) is a commit main does not contain (main is pointed back at c1 before c3 is made).
 v1 is an annotated tag of c1, a loose tag object written by hand (the runner's git has no tag subcommand), whose own
-id names no commit. OriginMainTests has its own repository, whose local main is ahead of origin/main.
+id names no commit. OriginMainTests has its own repository, whose local main is ahead of origin/main, and
+FirstParentTests one whose main merges a side branch, the merge commits written by hand as loose objects (the
+runner's git has no merge either).
 
 bin/suite release runs as this interpreter on the temporary repository's bin/_launch.py, so the child's guard
 (mode release) holds that repository as its own checkout. Launches from a copy go through the copy's own
@@ -74,18 +76,30 @@ class Repo:
         """refs/remotes/origin/main naming commit, as `git fetch` from GitHub leaves it."""
         self.write_ref(ORIGIN_MAIN, commit)
 
-    def annotated_tag(self, name, commit):
-        """A loose annotated tag object for commit, and refs/tags/<name> naming it (as `git tag -a` would)."""
-        body = ("object %s\ntype commit\ntag %s\ntagger Synthetic Tester <tester@example.invalid> 86400 +0000\n\n"
-                "synthetic release\n" % (commit, name)).encode("ascii")
-        data = b"tag %d\0" % len(body) + body
+    def loose_object(self, kind, body):
+        """Write a loose object of kind with body (bytes) into the repository; returns its id."""
+        data = kind.encode("ascii") + b" %d\0" % len(body) + body
         object_id = hashlib.sha1(data).hexdigest()
         path = os.path.join(self.path, ".git", "objects", object_id[:2], object_id[2:])
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as handle:
             handle.write(zlib.compress(data))
+        return object_id
+
+    def annotated_tag(self, name, commit):
+        """A loose annotated tag object for commit, and refs/tags/<name> naming it (as `git tag -a` would)."""
+        body = ("object %s\ntype commit\ntag %s\ntagger Synthetic Tester <tester@example.invalid> 86400 +0000\n\n"
+                "synthetic release\n" % (commit, name)).encode("ascii")
+        object_id = self.loose_object("tag", body)
         self.write_ref("refs/tags/" + name, object_id)
         return object_id
+
+    def merge_commit(self, tree, parents, message):
+        """A loose commit object with tree and these parents, first parent first, as `git merge` leaves one."""
+        lines = ["tree " + tree] + ["parent " + parent for parent in parents]
+        lines += ["author Synthetic Tester <tester@example.invalid> 86400 +0000",
+                  "committer Synthetic Tester <tester@example.invalid> 86400 +0000", "", message, ""]
+        return self.loose_object("commit", "\n".join(lines).encode("ascii"))
 
     def files(self):
         """{relpath: (sha256, executable)} of the working tree, .git excluded."""
@@ -570,6 +584,90 @@ class OriginMainTests(unittest.TestCase):
         self.assertEqual(outcome, (2, "", "refused:release_main_missing\n"))
         self.assertEqual(tree_listing(home), before)
         self.assertFalse(os.path.lexists(os.path.join(self.repo.path, ".git", "FETCH_HEAD")))
+
+
+class FirstParentTests(unittest.TestCase):
+    """release also takes a commit only on refs/remotes/origin/main's first-parent line (Nuance's answer of 2026-10-18
+    to lab-Claude's round-5 question, which lab-Claude adopts): "Ancestry alone admits side-branch commits inside a
+    merge, which were never a reviewed main tip." After the ancestry check, rev-list --first-parent of the id that
+    ref gave must list the commit, else release_not_first_parent.
+
+    Here c1 is the base; side is a commit on a side branch off c1, and m1 the main line's next commit after c1. merge
+    has the parents m1 and side, in that order: the main line merging the side branch. HEAD, local main and
+    origin/main name it, and its tree is m1's, so the checkout is clean. back has the same parents the other way
+    round, side first, as when main is moved to a branch that merged main in; origin/main names it only in the test
+    of that case."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.base = tempfile.mkdtemp(prefix="rel-first-parent-")
+        cls.addClassCleanup(rmtree, cls.base)
+        cls.repo = Repo(os.path.join(cls.base, "repo"))
+        copy_sources(cls.repo.path)
+        cls.c1 = cls.repo.commit("base")
+        with open(os.path.join(cls.repo.path, "side.txt"), "w", encoding="ascii") as handle:
+            handle.write("synthetic side branch\n")
+        cls.side = cls.repo.commit("side")
+        cls.repo.write_ref("refs/heads/main", cls.c1)       # back to c1 for the main line
+        os.remove(os.path.join(cls.repo.path, "side.txt"))
+        cls.repo.git("add", "-A")                            # the index matches c1 again
+        with open(os.path.join(cls.repo.path, "later.txt"), "w", encoding="ascii") as handle:
+            handle.write("synthetic main line\n")
+        cls.m1 = cls.repo.commit("main line")
+        tree = cls.repo.git("rev-parse", "--verify", "-q", cls.m1 + "^{tree}")
+        cls.merge = cls.repo.merge_commit(tree, (cls.m1, cls.side), "merge the side branch")
+        cls.back = cls.repo.merge_commit(tree, (cls.side, cls.m1), "merge main into the side branch")
+        cls.repo.write_ref("refs/heads/main", cls.merge)     # local main and HEAD; m1's tree, so a clean checkout
+        cls.repo.fetched(cls.merge)                          # and origin/main, as fetched
+
+    def release(self, commit):
+        base = tempfile.mkdtemp(prefix="h-", dir=self.base)
+        home = new_home(base, "home")
+        before = tree_listing(home)
+        outcome = launch(home, self.repo.path, "release", commit)
+        return home, before, outcome
+
+    def assertReleased(self, commit, outcome, home):
+        code, out, err = outcome
+        self.assertEqual((code, err), (0, ""), err)
+        self.assertRegex(out, RELEASED_RE)
+        self.assertEqual(release.verify_copy(os.path.join(roots.app_dir(home), commit[:12]))["commit"], commit)
+
+    def test_commits_are_set_up_as_intended(self):
+        git = self.repo.git
+        self.assertEqual(git("rev-parse", "--verify", "-q", ORIGIN_MAIN), self.merge)
+        self.assertEqual(git("rev-parse", "--verify", "-q", "HEAD"), self.merge)
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.merge + "^1"), self.m1)
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.merge + "^2"), self.side)
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.back + "^1"), self.side)
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.back + "^2"), self.m1)
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.m1 + "^1"), self.c1)
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.side + "^1"), self.c1)
+
+    def test_a_commit_inside_a_merged_branch_is_refused(self):
+        # side is an ancestor of origin/main, so the ancestry check alone released it (before round 5 close)
+        home, before, outcome = self.release(self.side)
+        self.assertEqual(outcome, (2, "", "refused:release_not_first_parent\n"))
+        self.assertEqual(tree_listing(home), before)
+
+    def test_the_first_parent_line_is_released(self):
+        for commit in (self.merge, self.m1, self.c1):        # origin/main itself, then its first parents
+            with self.subTest(commit=commit):
+                home, _before, outcome = self.release(commit)
+                self.assertReleased(commit, outcome, home)
+
+    def test_the_first_parent_decides_not_ancestry_or_the_tree(self):
+        self.addCleanup(self.repo.fetched, self.merge)
+        self.repo.fetched(self.back)                         # side first: m1 is now the merged-in branch
+        home, before, outcome = self.release(self.m1)
+        self.assertEqual(outcome, (2, "", "refused:release_not_first_parent\n"))
+        self.assertEqual(tree_listing(home), before)
+        home, _before, outcome = self.release(self.side)
+        self.assertReleased(self.side, outcome, home)
+        self.repo.fetched(self.m1)                           # ancestry is checked first, and keeps its own code
+        home, before, outcome = self.release(self.side)
+        self.assertEqual(outcome, (2, "", "refused:release_not_on_main\n"))
+        self.assertEqual(tree_listing(home), before)
 
 
 class VerifyCopyTests(ReleaseTestCase):
