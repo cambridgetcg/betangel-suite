@@ -99,7 +99,7 @@ A possible split (lab-Claude's proposal, for Nuance to answer; RS-5): upstream (
 **Hard lines.**
 
 - Lab-Claude never starts a real-data run or reads `~/betangel-data`; real runs are Nuance's or Yu's, under the run marker.
-- 2026 recordings, delayed-key or live, stay on the Air and never reach the lab (lab rule 4).
+- 2026 recordings, delayed-key or live, stay on the Air and never reach the lab (lab rule 4). Upstream, betangel-research's archive byte scan at 416702f misses escaped `marketTime` keys: ingest stores such a member and only the index refuses it. No real Betfair file is known to escape keys, but the month gate behind the sealed-2026 rule rests on that scan, so the fix is Nuance's, before any new ingest (Nuance's PR #4 review, round 6).
 - Agents see real-data results only through the report tool.
 - Strategy code never runs in the engine process, which may read the data home and runs the guard in-process (Nuance's PR #2 review, round 6).
 - Unattended stop and recovery, and the precedence of pending-order cancellation, get their own reviewed contract before any strategy runs on real data; the trainer's STOP design is moot under RS-1a (Astra's and Nuance's round 6 reviews).
