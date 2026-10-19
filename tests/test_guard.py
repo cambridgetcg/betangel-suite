@@ -226,8 +226,8 @@ class NoOffSwitchTests(unittest.TestCase):
     """I-2: no environment or config read can disable the guard, and the guard has no off function."""
 
     PUBLIC = {"GuardRefusal", "arm", "seal", "armed_mode", "is_sealed", "require_armed", "require_mode",
-              "permit_loopback_port", "permit_unix_socket", "engine_argv_ok", "vendor_argv_ok", "runner_argv_ok",
-              "runner_git_ok"}
+              "permit_loopback_port", "permit_unix_socket", "permit_unix_connect", "engine_argv_ok", "vendor_argv_ok",
+              "runner_argv_ok", "runner_git_ok"}
 
     def test_guard_public_callables_are_exactly_these(self):
         public = {name for name, value in vars(guard).items()
@@ -1006,6 +1006,52 @@ results["outside"] = sorted(os.listdir(outside))
         self.assertFalse(ok(["/usr/bin/open", "https://127.0.0.1:8765/" + code], (state,), {8765}))
         self.assertFalse(ok(["/usr/bin/open", "http://127.0.0.1:8765/x" + code], (state,), {8765}))
         self.assertFalse(ok(["/usr/bin/open", "-a", "Safari", "http://127.0.0.1:8765/" + code], (state,), {8765}))
+
+    def test_engine_git_probe_containment_follows_links(self):
+        # Astra's re-review of #4 made the git probe's directory lie in a root as text and with its links resolved,
+        # as runner_git_ok checks, because git -C follows links. Since round 6 engine mode refuses the probe wherever
+        # it points (Nuance's review of #2 at 4fa5835, N5-1; test_engine_git_probe_refuses_developer_dir), so the
+        # directories that check accepted are refused now, as are those it refused. Pure predicate, on real links in a
+        # temporary HOME.
+        home = make_home(self)
+        root = os.path.join(home, "root")
+        os.makedirs(os.path.join(root, "real"))
+        os.makedirs(os.path.join(home, "outside", "sub"))
+        os.symlink(os.path.join(home, "outside"), os.path.join(root, "link"))
+        os.symlink(home, os.path.join(home, "via"))
+        via_root = os.path.join(home, "via", "root")
+        for directory, write_roots in (
+                (os.path.join(root, "real"), (root,)), (root, (root,)),                      # accepted until round 6
+                (os.path.join(via_root, "real"), (via_root,)),                                 # accepted until round 6
+                (os.path.join(root, "link"), (root,)), (os.path.join(root, "link", "sub"), (root,)),
+                (os.path.join(home, "via", "outside"), (root,)), (os.path.join(via_root, "link"), (via_root,))):
+            argv = ["git", "-C", directory, "rev-parse", "--is-inside-work-tree"]
+            self.assertFalse(guard.engine_argv_ok(argv, write_roots, set()), directory)
+
+    def test_engine_git_probe_through_a_link_is_refused(self):
+        # "real", a directory in the state root, was allowed until round 6 and is refused now with the rest (N5-1).
+        home = make_home(self)
+        setup = """
+state = roots.state_dir()
+os.makedirs(os.path.join(state, "real"), exist_ok=True)
+outside = os.path.join(os.environ["HOME"], "outside")
+os.makedirs(os.path.join(outside, "sub"))
+os.symlink(outside, os.path.join(state, "link"))
+os.symlink(state, os.path.join(os.environ["HOME"], "alias"))
+"""
+        results = checks(self, home, setup=setup, body="""
+import subprocess
+state = roots.state_dir()
+def probe(*parts):
+    subprocess.run(["git", "-C", os.path.join(*parts), "rev-parse", "--is-inside-work-tree"], capture_output=True,
+                   timeout=30)
+attempt("real", lambda: probe(state, "real"))
+attempt("link", lambda: probe(state, "link"))
+attempt("through_link", lambda: probe(state, "link", "sub"))
+attempt("alias_into_root", lambda: probe(os.environ["HOME"], "alias", "real"))
+""")
+        for name in ("real", "link", "through_link", "alias_into_root"):
+            self.assertEqual(results[name], "subprocess_refused", name)
 
     def test_vendor_argv_shapes(self):
         research, deps = "/h/betangel-research", "/h/.local/share/betangel-suite/deps"
@@ -1921,15 +1967,16 @@ results["mode"] = guard.armed_mode()
                                            "git_after_seal": "subprocess_refused", "mode": mode})
                 self.assertEqual(os.listdir(roots.data_home(home)), [])
         # Through bin/suite: with the suite root a link to a data root, which engine mode refuses at arm, stop and uisnap
-        # arm their own modes and reach cli.main (their handlers are not built on this branch).
+        # arm their own modes and reach cli.main. On phase0/http stop is built, and with no engine it prints
+        # not_running; uisnap's handler is not built on this branch.
         home = make_home(self)
         historic = os.path.join(roots.data_home(home), "historic-pro")
         os.makedirs(historic, mode=0o700)
         os.symlink(historic, roots.suite_root(home))
-        for command, expected in (("stop", "refused:not_implemented\n"), ("uisnap", "refused:not_implemented\n"),
-                                  ("selfcheck", "refused:suite_root_misplaced\n")):
+        for command, expected in (("stop", (0, "not_running\n", "")), ("uisnap", (2, "", "refused:not_implemented\n")),
+                                  ("selfcheck", (2, "", "refused:suite_root_misplaced\n"))):
             result = run_suite([command], home)
-            self.assertEqual((result.returncode, result.stderr), (2, expected), command)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), expected, command)
         self.assertEqual(os.listdir(historic), [])
 
 

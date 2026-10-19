@@ -375,6 +375,42 @@ class ClosureTests(unittest.TestCase):
             self.assertNotIn(name.rsplit(".", 1)[-1], FORBIDDEN_MODULES)
 
 
+    def test_fresh_engine_with_the_server_loads_exactly_the_closure(self):
+        # serve and open load the Phase 0b engine, the synthetic generator and the HTTP server too (they may load
+        # socket and http, so the network-module check above is for the other commands' imports only). A
+        # synthetic market with suspension, removal and non-finite SP replays through the cache and the engine's
+        # frame conversions; the upstream modules loaded are still exactly the closure.
+        home = make_home(self, deps=True)
+        code = ARM_ENGINE + (
+            "import json\n"
+            "from betangel_suite import rx\n"
+            "after_rx = sorted(m for m in sys.modules if m.startswith('betangel_research'))\n"
+            "from betangel_suite import cli, config, engine, synthetic\n"
+            "from betangel_suite.api import auth, control, routes, server, static, stream\n"
+            "market = synthetic.generate(synthetic.Spec(seed=31, runners=4, pre_off_s=60, inplay_s=10,\n"
+            "    options=frozenset({'suspension', 'removal', 'nonfinite_sp'})))\n"
+            "frames = 0\n"
+            "cache = rx.book.MarketBookCache(key_type='historical', app_key_slot=None, source='recording')\n"
+            "for message in market.messages():\n"
+            "    rx.call(cache.apply, message)\n"
+            "    snapshot = rx.call(cache.snapshot, market.market_id, unreliable_ok=True)\n"
+            "    for entry in snapshot['runners'].values():\n"
+            "        engine.ladder(entry.get('back')), engine.ladder(entry.get('lay')), engine.price_h(entry.get('ltp'))\n"
+            "    frames += 1\n"
+            "guard.seal()\n"
+            "after_all = sorted(m for m in sys.modules if m.startswith('betangel_research'))\n"
+            "print(json.dumps({'after_rx': after_rx, 'after_all': after_all, 'frames': frames}))\n"
+        )
+        result = run_python(code, home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertGreater(report["frames"], 0)
+        self.assertEqual(set(report["after_rx"]), EXPECTED_CLOSURE)
+        self.assertEqual(set(report["after_all"]), EXPECTED_CLOSURE)
+        for name in report["after_all"]:
+            self.assertNotIn(name.rsplit(".", 1)[-1], FORBIDDEN_MODULES)
+
+
 class StaticScanTests(unittest.TestCase):
 
     def test_suite_sources_hold_no_credential_host_or_order_strings(self):

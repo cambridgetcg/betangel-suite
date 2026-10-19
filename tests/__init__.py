@@ -16,6 +16,12 @@ a temporary HOME (child_env); one that needs a HOME the runner refuses goes thro
 Every audit-hook test runs in a fresh subprocess, because a hook cannot be removed. Each test makes its own
 temporary HOME (make_home) under TMPDIR and removes it afterwards; bin/suite test fails the run if anything
 in the real state root outside tmp/ changed (cli.state_listing).
+
+bin/suite test refuses to start while the run marker exists (DESIGN.md 6.8). The engines that tests start run
+under temporary HOMEs, where no marker ever exists, so their own checks never see a real run. So every
+helper that starts an engine (run_suite here; serve and run_child in test_http_support; the in-process
+actor in test_engine) first checks the real marker with require_no_run_marker(), and a run announced
+mid-way starts no further engine (Nuance's PR #4 review, item 14).
 """
 
 import os
@@ -25,7 +31,7 @@ import subprocess
 import sys
 import tempfile
 
-from betangel_suite import guard, pin, roots
+from betangel_suite import cli, guard, pin, roots, runmarker
 
 guard.arm("test")
 DEPS = pin.activate()
@@ -37,6 +43,15 @@ PYTHON = sys.executable
 FORBID = guard.FORBID_NETWORK_ENV
 PRELUDE = "import sys\nsys.path.append(%r)\n" % ROOT
 ARM_ENGINE = PRELUDE + "from betangel_suite import guard\nguard.arm('engine')\n"
+RUN_MARKER = runmarker.marker_path()        # the runner's own HOME: the real marker under bin/suite test
+
+
+def require_no_run_marker():
+    """SuiteError(run_marker_present or run_marker_unreadable) unless the runner's marker is absent.
+
+    Called before each engine a test starts, because that engine checks only its temporary HOME's marker.
+    """
+    runmarker.require_absent(RUN_MARKER)
 
 
 def rmtree(path):
@@ -110,13 +125,24 @@ def run_relayed(argv, env, home, *, timeout=60, relay_home=None):
 
 
 def run_suite(args, home, *, env=None, timeout=120):
-    """Run bin/suite through /bin/sh with this HOME (the launcher applies env -i itself)."""
+    """Run bin/suite through /bin/sh with this HOME (the launcher applies env -i itself).
+
+    Every command the launcher checks the marker for is first checked against the runner's real marker too.
+    """
+    if not args or args[0] not in cli.NO_RUN_MARKER_CHECK:
+        require_no_run_marker()
     return subprocess.run(["/bin/sh", LAUNCHER, *args], env=child_env(home) if env is None else env, cwd=home,
                           capture_output=True, text=True, timeout=timeout)
 
 
 def start_suite(args, home, *, env=None):
-    """bin/suite started as run_suite runs it, but not waited for: a Popen with text pipes for stdout and stderr."""
+    """bin/suite started as run_suite runs it, but not waited for: a Popen with text pipes for stdout and stderr.
+
+    As in run_suite, every command the launcher checks the marker for is first checked against the runner's real
+    marker too.
+    """
+    if not args or args[0] not in cli.NO_RUN_MARKER_CHECK:
+        require_no_run_marker()
     return subprocess.Popen(["/bin/sh", LAUNCHER, *args], env=child_env(home) if env is None else env, cwd=home,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 

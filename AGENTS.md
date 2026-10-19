@@ -339,10 +339,12 @@ reviewed PR changes them.
       2), and the marker and lock bound to the same home as the data."
     - (d) "I fix N3-W1 and N3-W2 before my next wrapper job." Both are Nuance's wrappers.
 
-    Round 6's code changes here (the guard's extension aliases, the engine's git probe, and the
-    test runner's working directory) are outside that set, and the edits to runmarker.py,
-    roots.py and cli.py's REALDATA_COMMANDS comment are N3-S1's comment-only fix (lab-Claude's
-    reading).
+    Round 6's code changes on phase0/foundation (the guard's extension aliases, the engine's git
+    probe, and the test runner's working directory) are outside that set, and the edits to
+    runmarker.py, roots.py and cli.py's REALDATA_COMMANDS comment are N3-S1's comment-only fix
+    (lab-Claude's reading). phase0/http's own round 6 changes are outside the set too:
+    `engine_argv_ok` losing the git probe's link check in the merge, and the I-10 rule and the
+    contract coverage refusing wildcard imports (lab-Claude's reading).
   - Every command except `test`, `uisnap`, `vendor` and `stop` uses
     `~/betangel-data/suite.noindex/tmp` as `TMPDIR` and `SQLITE_TMPDIR` (`stop` joined the four
     in 8102f99). `cli.main` creates it 0700 only after the run-marker check and, for a real-data
@@ -441,7 +443,8 @@ reviewed PR changes them.
   `~/.local/share/betangel-suite/deps/betangel-research-76f71dc94588/`, made by
   `bin/suite vendor` exactly as DESIGN.md 3.5 describes; `tools/vendor_research.py` run
   directly refuses (`launcher_required`; 9e6dfce). Nuance answered Q-N2: keep this
-  pin, and bump only when a closure module the suite needs, or the month roles, change.
+  pin, and bump only when a closure module the suite needs, or the month roles, change. Every bump
+  is gated on the contract test, `tests/test_upstream_contract.py` (Q-N1; DESIGN.md 4.5).
   - Nuance's PR #2 review adds: "Lab-Claude bumps in its own PR only to a sha Nuance names on main",
     and "Nuance reviews every bump; Astra reviews pin and vendor code. Routing is proposed until
     Yu rules (Q-Y8)." So `vendor` pins only a commit on the research main branch
@@ -454,9 +457,11 @@ reviewed PR changes them.
     closure finder gives each of the 25 its spec at its pinned file, by name, so no other
     deps-tree name is found. `pin` judges the clone and every `sys.path` entry through
     `roots.lies_in`, an empty entry as the cwd, and refuses what it cannot judge (c00461c; F11).
-- **D. Synthetic only.** No data-root reading, no paper trading, no HTTP server yet (Phase 0b),
-  and no release copies or `ssh-session` yet (Phase 0c). `cli.py` commands that are not built
-  yet refuse with code `not_implemented` and exit 2.
+- **D. Synthetic only.** Phase 0b built the loopback HTTP server and `serve`, `open` and `stop`;
+  the engine replays synthetic markets only and refuses every configured data root
+  (`synthetic_only`). No data-root reading, no paper trading, and no release copies or
+  `ssh-session` yet (Phase 0c). `cli.py` commands that are not built yet refuse with code
+  `not_implemented` and exit 2.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE` (Q-N3: agreed by Nuance in
   Nuance's PR #4 review; Nuance's PR #2 review makes the marker half conditional again, on
   Nuance's item 6; Nuance's re-review of #2 agrees it as built at 823c194, pending F4 and F5,
@@ -480,9 +485,12 @@ reviewed PR changes them.
     or renames `run/` (which would move the lock with it); the guard refuses each
     (`run_lock_protected`; 6aeb1d5 for `run/`). This is Nuance's PR #2 review, item 6 (596d052,
     18de53e, fbbc0c3). Nuance's re-review of #2 agrees it as built at 823c194, pending F4 and
-    F5, which are fixed here; Nuance's review of #5 agrees it as built at 52a9edc, to be
-    confirmed at the merge SHA (A). The wiring of `serve`, `open` and `ssh-session` on
-    phase0/http and phase0/viewing is owed (DESIGN.md 6.8).
+    F5, which are fixed on phase0/foundation; Nuance's review of #5 agrees it as built at
+    52a9edc, to be confirmed at the merge SHA (A). On phase0/http `serve` and `open` take it in
+    `cli.main` and hold it until they exit: for `serve`, and for an `open` that starts an engine,
+    that is the engine's life; an `open` that attaches exits once it has handed on the URL. Their
+    I-17 tests came in round 4b. `ssh-session` is wired on phase0/viewing, since round 4b
+    (DESIGN.md 6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
     `TMPDIR` (lab-Claude's decision; DESIGN.md 6.8 gives the reasons). Nuance agreed it on four
     conditions (Nuance's answer to lab-Claude's question 2 of 2026-10-17): the guard refuses
@@ -494,9 +502,13 @@ reviewed PR changes them.
     exists too; stop stays exempt".
   - A test run checks the marker again after every test, and stops before the next one if the
     marker is present or cannot be checked (`refused:run_marker_present` or `_unreadable`, exit
-    2). The test then running is not stopped: it finishes first. Nuance's PR #4 review, item 14,
-    also asks for a check "before each engine launch". Tests on this branch start no engine; that
-    check is owed with `engine.py` on phase0/http.
+    2). The test then running is not stopped: it finishes first.
+  - The engines that tests start run under temporary HOMEs, so their own marker checks never
+    see a real run. The test helpers check the real marker before each engine they start
+    (`tests.require_no_run_marker`; Nuance's PR #4 review, item 14: "check it before each engine
+    launch"), so a run announced mid-way starts no further engine. An engine a test has already
+    started runs until its test ends. Nuance's wrapper waits on the real `run/engine.lock` and
+    cannot see it, because its lock is under the temporary HOME.
   - `stop` is exempt because it only reduces activity (DESIGN.md 3.9 rule 6).
   - `vendor` refuses too. Nuance's PR #1 review: "test and vendor refuse under the marker;
     stop stays exempt". It was first exempt by lab-Claude's own choice, on a reason that left out

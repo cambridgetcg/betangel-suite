@@ -1,13 +1,23 @@
-"""bin/suite commands (DESIGN.md 3.4). Phase 0a implements test and vendor; every other command refuses.
+"""bin/suite commands (DESIGN.md 3.4). Built: test and vendor (Phase 0a), serve, open and stop (Phase 0b);
+every other command refuses with not_implemented.
 
-bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop, checked
-the run marker before main() is called. main() then, for a command that may touch real data (REALDATA_COMMANDS),
-takes the realdata lock shared and checks the marker again under it (runmarker.hold_shared; DESIGN.md 6.8), and
-only then creates TMPDIR (0700, through the writer helper) before any handler runs (DESIGN.md 3.6), so SQLite
-never falls back to a system temp directory. stop and vendor (NO_TMPDIR) are the exceptions: neither makes
-temporary files. stop must work during a run, so it needs neither TMPDIR nor the lock; vendor must work before the
-deps clone exists and never imports upstream (which the writer helper's path_guard needs). Output is codes and
-counts only.
+bin/_launch.py has already armed the guard, checked TMPDIR and, for every command except stop, checked the run
+marker before main() is called (test and vendor are checked too: Nuance's answers to Q-N14). main() checks the
+command's arguments first; then, for a command that may touch real data (REALDATA_COMMANDS), it takes the realdata
+lock shared and checks the marker again under it (runmarker.hold_shared; DESIGN.md 6.8), and only then creates
+TMPDIR (0700, through the writer helper) before any handler runs (DESIGN.md 3.6), so SQLite never falls back to a
+system temp directory. stop and vendor (NO_TMPDIR) are the exceptions: neither makes temporary files. stop must
+work during a run and only talks to the control socket, so it needs neither TMPDIR nor the lock; vendor must work
+before the deps clone exists and never imports upstream (which the writer helper's path_guard needs). Output is
+codes and counts only.
+
+    serve [--port N]   the engine in synthetic mode on 127.0.0.1 (config port; N = 0 picks a free port);
+                       prints "serving port=<n>", never a bootstrap code or token
+    open [--port N]    start the engine and hand one bootstrap URL to /usr/bin/open (the URL is never
+                       printed), or, with an engine running, take it over through the control socket
+    stop               ask a running engine to stop through the control socket; prints stopped or not_running
+
+serve, open and stop import socket and http only inside their handlers, so no other command loads them.
 """
 
 import importlib.util
@@ -34,10 +44,10 @@ NO_RUN_MARKER_CHECK = ("stop",)
 # 2026-10-17: AGENTS.md, Phase 0 status E, and DESIGN.md 6.8 record it).
 # main() refuses (run_lock_not_held) any other command whose TMPDIR would be made under ~/betangel-data.
 REALDATA_COMMANDS = ("serve", "open", "ssh-session", "catalogue", "selfcheck", "diagnose", "ledger-summary")
-# They create no temporary files, so main() makes no TMPDIR for them and never asks them for the lock. stop must work
-# during a run (DESIGN.md 6.8); without this, its TMPDIR under ~/betangel-data made main() refuse it with
-# run_lock_not_held (round-4 review). phase0/http has the same tuple and phase0/viewing adds release: merged into
-# them, the run_lock_not_held check stays inside the `not in NO_TMPDIR` branch.
+# They create no temporary files and must not need upstream, so main() makes no TMPDIR for them and never asks them
+# for the lock. stop must work during a run (DESIGN.md 6.8); without this, its TMPDIR under ~/betangel-data made
+# main() refuse it with run_lock_not_held (round-4 review). phase0/viewing adds release: merged there, the
+# run_lock_not_held check stays inside the `not in NO_TMPDIR` branch.
 NO_TMPDIR = ("stop", "vendor")
 REPO_ROOT = guard.REPO_ROOT
 
@@ -65,6 +75,9 @@ def main(argv):
     if handler is None:
         raise SuiteError("not_implemented")
     guard.require_mode(guard_mode(command))
+    parser = _PARSERS.get(command)
+    if parser is not None:
+        args = parser(args)                     # argument errors refuse before anything is created
     from . import runmarker
     if command in REALDATA_COMMANDS:
         from . import config
@@ -75,6 +88,46 @@ def main(argv):
             raise SuiteError("run_lock_not_held")       # nothing is made under ~/betangel-data without the lock
         roots.ensure_dir(tmp)
     return handler(args)
+
+
+def parse_port_args(args):
+    """{"port": None or int} for `[--port N]`: N is 0 (a free port, for tests) or 1024-65535."""
+    args = list(args)
+    port = None
+    if args:
+        if len(args) != 2 or args[0] != "--port" or not args[1].isascii() or not args[1].isdigit() or len(args[1]) > 5:
+            raise SuiteError("bad_arguments")
+        port = int(args[1])
+        if port != 0 and not 1024 <= port <= 65535:
+            raise SuiteError("bad_arguments")
+    return {"port": port}
+
+
+def parse_no_args(args):
+    if args:
+        raise SuiteError("bad_arguments")
+    return {}
+
+
+def _serve(options):
+    return _run_engine("serve", options)
+
+
+def _open(options):
+    return _run_engine("open", options)
+
+
+def _run_engine(command, options):
+    from . import config
+    from .api import server         # here, not at the top: no other command loads socket or http
+    cfg = config.load()
+    port = cfg["port"] if options["port"] is None else options["port"]
+    return server.run(cfg, command=command, port=port)
+
+
+def _stop(options):
+    from .api import control        # here, not at the top: no other command loads socket
+    return control.stop_main()
 
 
 def parse_test_args(args, version):
@@ -178,4 +231,5 @@ def _vendor(args):
     return module.main(args)
 
 
-_HANDLERS = {"test": _test, "vendor": _vendor}
+_HANDLERS = {"test": _test, "vendor": _vendor, "serve": _serve, "open": _open, "stop": _stop}
+_PARSERS = {"serve": parse_port_args, "open": parse_port_args, "stop": parse_no_args}

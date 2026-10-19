@@ -19,7 +19,18 @@ What the hook refuses, in every mode and phase:
        it differs from its normalised text at most by a redundant or final "/", and that normalised text lies
        inside a write root with no link from that root down to it, so that, with its links resolved, it lies
        inside that root's real path where its text says);
-  I-3  socket connect, sendto and sendmsg, and every name or address lookup;
+  I-3  socket connect, sendto and sendmsg, and every name or address lookup; the one exception is a connect
+       to an absolute, normalised Unix socket path in the run directory permitted before seal() with
+       permit_unix_connect (the control socket, which stop and open use to reach a running engine;
+       DESIGN.md 9.1), matched exactly while the run directory still resolves where it did at arm() and the
+       socket path is not itself a link (connect follows one); a path with a NUL in it (the kernel ends the
+       socket name at the first NUL) is never permitted. TCP connects and every other address stay refused.
+       The check reads the name, not the socket behind it, so a hard link at the permitted name to a socket
+       that another process of this user made passes. Astra's re-review of #4 keeps that residual, in
+       Astra's terms "acceptable within the documented same-uid/pre-existing-hard-link limit. The 0700 run
+       directory and guarded hard-link operations address ordinary planting; the guard does not
+       authenticate a socket's provenance. Rejecting st_nlink > 1 would catch ordinary aliases, but would
+       not prove provenance after another link was removed";
   I-4  socket bind, except to ("127.0.0.1", port) for a port permitted before seal() and to an absolute,
        normalised Unix socket path in the run directory permitted the same way, matched exactly while the
        run directory still resolves where it did at arm() and the socket path is not itself a link (bind
@@ -167,18 +178,23 @@ mode, an isolated interpreter the runner starts is unguarded unless it imports b
 checks only the environment it is started with), a file
 descriptor or hard link made before a check, a reference to os.mkfifo or _posixsubprocess.fork_exec taken
 before arm(), subprocess's private _fork_exec or _socket.socket.listen called directly, or
-sqlite3.Connection.setlimit called on a connection directly. Also left, as same-process routes: a fresh
-instance of the built-in posix module (importlib.util.module_from_spec on its spec), whose mkfifo and mknod
-are the unwrapped originals, since a built-in module raises no import event and the hook never sees the load
-(Astra's re-review of #2); and an extension module refused above that was loaded before arm() and then taken
-out of sys.modules, since CPython then serves a single-phase one (_ctypes on 3.11, _testcapi) from its
+sqlite3.Connection.setlimit called on a connection directly. Nor does it close check-then-use gaps on the
+paths in a child's argv (lab-Claude's reading, not a reviewer's finding): runner_git_ok and vendor_argv_ok
+judge a path, links resolved, when the child is started, and git resolves it again when it runs, so a process
+of this user that changes a link on that path in between is not covered. Also left, as same-process routes: a
+fresh instance of the built-in posix module (importlib.util.module_from_spec on its spec), whose mkfifo and
+mknod are the unwrapped originals, since a built-in module raises no import event and the hook never sees the
+load (Astra's re-review of #2); and an extension module refused above that was loaded before arm() and then
+taken out of sys.modules, since CPython then serves a single-phase one (_ctypes on 3.11, _testcapi) from its
 extension cache with no import event (lab-Claude's probe, round 5). In engine mode the guard judges a child's
 argv, not its environment: /usr/bin/open runs with whatever environment it is handed, env None included, and
 os.putenv is refused only for the pinned keys and stray BETFAIR ones, so DEVELOPER_DIR or GIT_TRACE can still be
 set (Nuance's review of #2 at 4fa5835, N5-1: through the git probe this mode then allowed, they ran a planted
 xcrun and wrote a file outside the roots). If Phase 1b needs that probe, it comes back with an exact environment,
-with env None and any other putenv refused in engine mode, and with an engine-mode test like the test runner's
-DEVELOPER_DIR test. Refusals raise GuardRefusal, whose str() is the code only, never the path or address.
+with env None and any other putenv refused in engine mode, with its directory judged as text and with its links
+resolved against the roots' real paths from arm(), as runner_git_ok judges its -C directory (Astra's re-review
+of #4, which this mode checked until round 6), and with an engine-mode test like the test runner's DEVELOPER_DIR
+test. Refusals raise GuardRefusal, whose str() is the code only, never the path or address.
 Standard library only.
 """
 
@@ -358,6 +374,7 @@ class _State:
         self.interpreters = frozenset(TEST_INTERPRETERS + (sys.executable,))
         self.ports = set()
         self.unix_paths = set()
+        self.unix_connects = set()
         self.connecting = threading.local()     # the sqlite3.connect wrapper's token (_wrap_sqlite_connect)
 
 
@@ -397,7 +414,10 @@ def arm(mode):
 
 
 def seal():
-    """End the startup phase: from now on no subprocess and no new bind permit (engine, vendor)."""
+    """End the startup phase: from now on no subprocess and no new bind or connect permit (engine, vendor).
+
+    Permits given before seal() stay in force. The test runner never seals.
+    """
     with _LOCK:
         _require_armed().sealed = True
 
@@ -443,6 +463,22 @@ def permit_unix_socket(path):
                 or os.path.normpath(path) != path or os.path.dirname(path) != state.run_dir):
             raise SuiteError("bind_permit_invalid")
         state.unix_paths.add(path)
+
+
+def permit_unix_connect(path):
+    """Allow connecting to the Unix socket at path: normalised, directly in the run directory. Only before seal().
+
+    This is how stop and open reach a running engine's control socket (DESIGN.md 9.1); the engine itself never
+    asks for it. A relative path is never permitted, and nothing but socket.connect on an AF_UNIX socket uses it.
+    Nor is a path with a NUL in it: the kernel ends sun_path at the first NUL, so the connect would reach a
+    different name from the one permitted, and os.path.islink cannot look at such a path (it says False).
+    """
+    with _LOCK:
+        state = _require_unsealed()
+        if (not isinstance(path, str) or "\0" in path or not os.path.isabs(path)
+                or os.path.normpath(path) != path or os.path.dirname(path) != state.run_dir):
+            raise SuiteError("connect_permit_invalid")
+        state.unix_connects.add(path)
 
 
 def _require_armed():
@@ -746,6 +782,8 @@ def _make_hook(state):
 def _check(state, event, args):
     code = _NETWORK.get(event)
     if code is not None:
+        if event == "socket.connect" and _unix_connect_ok(state, args[0], args[1]):
+            return
         raise GuardRefusal(code)
     if event == "socket.bind":
         _check_bind(state, args[0], args[1])
@@ -802,6 +840,21 @@ def _check_bind(state, sock, address):
                     and os.path.realpath(os.path.dirname(text)) == state.real_run_dir and not os.path.islink(text)):
                 return
     raise GuardRefusal("bind_refused")
+
+
+def _unix_connect_ok(state, sock, address):
+    """True only for an AF_UNIX connect to a path permitted with permit_unix_connect."""
+    sockets = sys.modules.get("socket")     # loaded by whoever made the socket; never imported here
+    if sockets is None or getattr(sock, "family", None) != sockets.AF_UNIX or not isinstance(address, (str, bytes)):
+        return False
+    # As for bind: the exact permitted text (normpath would fold "link/.." that the OS resolves through the
+    # link), in a run directory that still resolves where it did at arm() (not replaced by a link), and not
+    # itself a link: connect follows a final link to whatever socket it names, outside the run directory. No
+    # NUL either, whatever was permitted: the kernel ends the name at the first one, and islink cannot see the
+    # name before it.
+    text = os.fsdecode(address)
+    return ("\0" not in text and text in state.unix_connects
+            and os.path.realpath(os.path.dirname(text)) == state.real_run_dir and not os.path.islink(text))
 
 
 def _check_listen(sock):

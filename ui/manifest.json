@@ -1,0 +1,13 @@
+{
+  "files": [
+    {"path": "index.html", "type": "text/html; charset=utf-8"},
+    {"path": "app.js", "type": "text/javascript; charset=utf-8"},
+    {"path": "stream.js", "type": "text/javascript; charset=utf-8"},
+    {"path": "grid.js", "type": "text/javascript; charset=utf-8"},
+    {"path": "ladder.js", "type": "text/javascript; charset=utf-8"},
+    {"path": "format.js", "type": "text/javascript; charset=utf-8"},
+    {"path": "style.css", "type": "text/css; charset=utf-8"},
+    {"path": "ticks.json", "type": "application/json"},
+    {"path": "manifest.json", "type": "application/json"}
+  ]
+}

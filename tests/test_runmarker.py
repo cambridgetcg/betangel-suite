@@ -20,7 +20,7 @@ import subprocess
 import time
 import unittest
 
-from betangel_suite import cli, config, roots, runmarker
+from betangel_suite import cli, config, pin, roots, runmarker
 from betangel_suite.errors import SuiteError
 from tests import ARM_ENGINE, PYTHON, ROOT, child_env, make_home, run_python, run_suite, start_suite, tree_listing
 
@@ -106,6 +106,9 @@ class StartTimeTests(unittest.TestCase):
 
     def test_marker_refuses_engine_commands_before_any_write(self):
         home = make_home(self)
+        # open runs below; with no deps clone in this HOME, a marker check that let it through would stop
+        # at deps_missing before the engine or /usr/bin/open.
+        self.assertFalse(os.path.lexists(pin.deps_dir(pin.load(), home)))
         path = marker(home)
         os.makedirs(os.path.dirname(path))
         open(path, "w").close()
@@ -145,7 +148,7 @@ class StartTimeTests(unittest.TestCase):
         path = marker(home)
         os.makedirs(os.path.dirname(path))
         open(path, "w").close()
-        self.assertEqual(self.suite(home, "stop"), (2, "refused:not_implemented\n"))
+        self.assertEqual(self.suite(home, "stop"), (0, ""))          # no engine running: prints not_running
 
     def test_test_refuses_while_the_marker_exists(self):
         # Q-N14, Nuance: "no". Both interpreters refuse, before the arguments are read, any test is loaded or
@@ -218,7 +221,6 @@ class StartTimeTests(unittest.TestCase):
                 self.assertEqual((result.returncode, result.stdout, result.stderr),
                                  (2, "", "refused:launcher_required\n"))
                 self.assertEqual(tree_listing(home), before)
-
 
 
 class RunnerStopTests(unittest.TestCase):
