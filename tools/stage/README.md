@@ -20,8 +20,9 @@ does after its review (DESIGN.md Q-Y18: your words of 2026-10-18, as relayed by 
 on 2026-10-19), in the clean main checkout: `cd /Users/user/betangel-suite && git fetch origin`, then
 `bin/suite release <merge-sha>`, with
 the full SHA of the reviewed merge commit on main (the merged PR's page shows it; a tag or short id is refused,
-and so is a commit that GitHub's main, as just fetched, does not contain, or one inside a branch merged into it
-rather than on main's own first-parent line; the suite never fetches), creates
+and so is a commit that GitHub's main, as just fetched, does not contain, one inside a branch merged into it
+rather than on main's own first-parent line, or one that is not a merge commit, since every PR lands with
+`gh pr merge --merge`; the suite never fetches), creates
 `~/.local/share/betangel-suite/app/current/` (the `suite` alias from step 1 works only once it exists, and a
 release copy cannot make releases itself). The setup script refuses without one, because the key's forced
 command runs that copy. Use the lab files from the release copy, which is reviewed and read-only against
@@ -29,16 +30,26 @@ accidents (any process running as `user` can still change it), not from a workin
 come only from GitHub (step 5). Below, `R` means `~/.local/share/betangel-suite/app/current/tools/stage` on
 the lab.
 
-One more check comes before each `ssh lab-suite` (DESIGN.md 8.6; Nuance's PR #1 review, item 7), scoped to
-the viewer port. Nuance runs it on the Air (agreed by Nuance on 2026-10-18):
-`lsof -nP -iTCP:8765 -sTCP:LISTEN`, since macOS `netstat` does not show the owning process. Before the
-forward, nothing listens on port 8765 at any address; once `ssh lab-suite` is up, there is exactly one
-listener, `ssh` on `127.0.0.1:8765`, and none on `[::1]` or `*`. A whole-machine check is not used: the Air
-has unrelated listeners on other ports, so it would never pass (Nuance). During R-2 the suite's only listener
-on the Air is the `ssh -L` forward on `127.0.0.1:8765`, behind the token and the Host and Origin checks
-(Nuance's PR #1 re-review, finding 7), but a tampered page at `127.0.0.1:8765` could still send blind
-requests to other Air services that listen on loopback: the port check does not clear those (DESIGN.md 8.6,
-9.4).
+Two checks, both run by Nuance on the Air; neither clears the residual (DESIGN.md 8.6; Nuance's N-r5-002-1
+and N-r5-002-2, in Nuance's review of PR #5 at 52a9edc, adapted to this file; they answer item 2 of Astra's
+review of PR #2 at 4fa5835, which found that round 5 had dropped the inspection of the Air's other loopback
+listeners).
+
+1. **The port check, a gate before each `ssh lab-suite`.** It began as Nuance's PR #1 review, item 7, and its
+   port-scoped pass test is in Nuance's words of 2026-10-18: "Before the forward, nothing listens on port 8765
+   at any address." "After it, there is exactly one listener: `ssh` on `127.0.0.1:8765`, with none on `[::1]`
+   or `*`." The gate is `netstat -anv -p tcp | awk '$6=="LISTEN" && $4 ~ /\.8765$/'` on the Air. (Run without
+   root, `lsof` sees only the caller's own sockets, so it cannot show that nothing listens at any address.)
+2. **A loopback inventory: a review, not a must-be-empty test,** run before the first R-2 viewing and whenever
+   the list changes. `netstat -anv -p tcp` lists every TCP listener on 127.0.0.1, ::1 or a wildcard address,
+   from every owner. Nuance records process, address and port on the Air, not in the repo. A listener that a
+   blind request or WebSocket handshake could drive without authentication goes to Yu before viewing.
+
+During R-2 the suite's only listener on the Air is the `ssh -L` forward on `127.0.0.1:8765`, behind the token
+and the Host and Origin checks (Nuance's PR #1 re-review, finding 7), but a tampered page at `127.0.0.1:8765`
+could still send blind requests and WebSocket handshakes to other Air services that listen on loopback. That
+residual stays open until a reviewed deny-all content rule exists: L1's, which RS-1a of proposal 003 cancels
+(DESIGN.md 2.2.1), or a replacement (DESIGN.md 8.6, 9.4).
 
 ## Step 1 (lab): the `suite` alias
 

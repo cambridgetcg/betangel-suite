@@ -157,7 +157,8 @@ context. It is never Yu's instruction, consent or acceptance.
     first-parent line (DESIGN.md 8.6), which keeps side-branch commits out only if each PR lands
     as a merge commit; the stack is linear from main, so a fast-forward would put every interim
     commit on that line. Allowing merge commits only in the GitHub repository's settings is Yu's
-    to set: asked of Yu, not done.
+    to set: asked of Yu, not done. On this branch `release` also refuses a commit with no second
+    parent (`release_not_merge_commit`; round 6, DESIGN.md 8.6).
   - **Who merges (Q-Y8).** The Phase 0 packet asked: "Who merges pull requests (Q-Y8): you, or
     me after Nuance or Astra has reviewed? And may UI-only changes go in on your approval
     alone?" It gave no recommendation, so Yu's 2026-10-15 answer, "Lets go with what you
@@ -370,7 +371,10 @@ reviewed PR changes them.
     runmarker.py, roots.py and cli.py's REALDATA_COMMANDS comment are N3-S1's comment-only fix
     (lab-Claude's reading). phase0/http's own round 6 changes are outside the set too:
     `engine_argv_ok` losing the git probe's link check in the merge, and the I-10 rule and the
-    contract coverage refusing wildcard imports (lab-Claude's reading).
+    contract coverage refusing wildcard imports (lab-Claude's reading). So are phase0/viewing's:
+    release's exact git environment and its merge-commit check (`guard.release_argv_ok`,
+    `release.py`, `errors.py`), the release tests' git shim, and a comment in
+    `tests/test_runmarker.py` (N3-S1) (lab-Claude's reading).
   - Every command except `test`, `uisnap`, `release`, `vendor` and `stop` uses
     `~/betangel-data/suite.noindex/tmp` as `TMPDIR` and `SQLITE_TMPDIR` (`stop` joined the others
     in 8102f99). `cli.main` creates it 0700 only after the run-marker check and, for a real-data
@@ -495,8 +499,9 @@ reviewed PR changes them.
   - `bin/suite release <merge-sha>`, and the `RELEASE.json` check at every launch from a release
     copy (Phase 0c's first build took a tag; the merge commit's full SHA since round 4b, cdda336;
     since round 5 only a commit that `refs/remotes/origin/main` contains, and since round 5 close
-    only one on its first-parent line too, as Nuance answered on 2026-10-18, 51426ee; the operator
-    runs a `git fetch` first, and the suite never fetches);
+    only one on its first-parent line too, as Nuance answered on 2026-10-18, 51426ee; since round
+    6 only a merge commit, and its git gets exactly `guard.release_git_env`, no other key; the
+    operator runs a `git fetch` first, and the suite never fetches);
   - `bin/suite uisnap`;
   - the staged viewer-key and sshd drop-in script and the Air self-test under `tools/stage/`. Yu
     runs them. Nuance may start the Air self-test, but only Yu types the key's passphrase. Tests

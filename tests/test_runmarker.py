@@ -559,7 +559,8 @@ sys.exit(run(["stop"]))
         self.assertEqual(os.listdir(roots.data_home(self.home)), [])        # no suite root, no tmp/
 
     def test_test_and_uisnap_neither_take_nor_wait_for_the_lock(self):
-        # lab-Claude's decision, asked of Nuance on 2026-10-17, not answered (DESIGN.md 6.8): test and uisnap refuse
+        # lab-Claude's decision, which Nuance agreed on four conditions in the answer to lab-Claude's question 2 of
+        # 2026-10-17 (AGENTS.md, Phase 0 status E, and DESIGN.md 6.8 record it): test and uisnap refuse
         # under the marker at start (StartTimeTests) but never take run/realdata.lock. So while the wrapper holds
         # LOCK_EX (with no marker), both still start: bin/suite test runs and finds no test, and bin/suite uisnap gets
         # past cli.main to its own refusal of a configured data root. Neither makes anything under ~/betangel-data.
