@@ -159,8 +159,10 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           and -C this checkout's own root (never the deploy clone or a release copy): the filter-driver
           config query, the index listing, status (never entering a submodule), rev-parse of <id>^{commit},
           refs/remotes/origin/main^{commit} or <id>^{tree}, merge-base --is-ancestor, rev-list --first-parent <id>
-          and archive --format=tar <id>, with no user or system git config and no replace refs or grafts
-          (RELEASE_GIT_ENV, release_argv_ok); after, none. A release names its commit by full object id, never
+          and archive --format=tar <id>, with no user or system git config and no replace refs or grafts, and
+          an environment of exactly release_git_env (RELEASE_GIT_ENV, HOME and TMPDIR the armed ones, PATH, LANG
+          and the network switch; no DEVELOPER_DIR, SDKROOT or other key: Astra's review of #5 at 52a9edc,
+          item 1) (release_argv_ok); after, none. A release names its commit by full object id, never
           a tag or other name (release.py). Its writes may also go under ~/.local/share/betangel-suite/app (the
           release copies) and nowhere else in the share dir.
   uisnap  (bin/suite uisnap, DESIGN.md 11) before seal(), exactly one argv: the Command Line Tools' swiftc with
@@ -305,6 +307,11 @@ RELEASE_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "core.hooksPath=/
 # off, as for vendor (round 4b, after phase0/foundation's fix for vendor).
 RELEASE_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
                    "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": "/dev/null"}
+# And the rest of it, exactly too (release_git_env): until round 6 only the GIT_* part was judged, so an allowed argv
+# with DEVELOPER_DIR=<dir> made /usr/bin/git run <dir>/usr/bin/xcrun outside the hook (Astra's review of #5 at
+# 52a9edc, item 1), as SDKROOT, TOOLCHAINS or a DYLD_* key could steer it. As for vendor and the test runner, every
+# key and value is fixed, and HOME and TMPDIR are the ones the guard was armed with.
+RELEASE_CHILD_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C", FORBID_NETWORK_ENV: "1"}
 # release.py refuses a repository whose own config (includes too) defines a filter driver: git status would run its
 # clean command and git archive its smudge command, as this user and outside the guard (release_git_filter).
 RELEASE_FILTER_QUERY = ("config", "--includes", "--null", "--get-regexp", r"^filter\.")
@@ -1011,7 +1018,8 @@ def _check_spawn(state, event, args):
             return
         if state.mode == "vendor" and vendor_argv_ok(argv, names, state.research, state.deps_root, state.home):
             return
-        if state.mode == "release" and release_argv_ok(argv, names, REPO_ROOT, state.research, state.app_root):
+        if state.mode == "release" and release_argv_ok(argv, names, REPO_ROOT, state.research, state.app_root,
+                                                       state.home, state.tmp_root):
             return
     raise GuardRefusal("subprocess_refused")
 
@@ -1171,7 +1179,15 @@ def vendor_argv_ok(argv, env, research, deps_root, home):
     return False
 
 
-def release_argv_ok(argv, env, repo, research, app_root):
+def release_git_env(home, tmp_root):
+    """The whole environment of every release git child: RELEASE_GIT_ENV, RELEASE_CHILD_ENV, HOME and TMPDIR.
+
+    release._Git builds it with its HOME and TMPDIR, and release_argv_ok accepts nothing else, with the HOME and
+    TMPDIR the guard was armed with (TMPDIR is where /usr/bin/git's xcrun shim may keep its cache)."""
+    return dict(RELEASE_GIT_ENV, **RELEASE_CHILD_ENV, HOME=home, TMPDIR=tmp_root)
+
+
+def release_argv_ok(argv, env, repo, research, app_root, home, tmp_root):
     """The git argvs of bin/suite release (release.py), on repo (this checkout's own root) only.
 
     RELEASE_GIT_PREFIX -C <repo>, then exactly one of: RELEASE_STATUS (status --porcelain=v1 -z
@@ -1182,11 +1198,13 @@ def release_argv_ok(argv, env, repo, research, app_root):
     id;
     merge-base --is-ancestor <id> <id>; rev-list --first-parent <id> (main's first-parent line, which release
     needs as well as ancestry: Nuance's answer of 2026-10-18); archive --format=tar <id>. Every subcommand is local
-    (no fetch, no remote archive). The environment must be explicit, and its GIT_* variables exactly
-    RELEASE_GIT_ENV: no user or system git config, no replace refs or grafts, nothing else. repo must not lie in the
-    deploy clone or the app root (a release copy is never a source).
+    (no fetch, no remote archive). The environment must be explicit and exactly release_git_env(home, tmp_root), home
+    and tmp_root the guard's own: its GIT_* variables RELEASE_GIT_ENV (no user or system git config, no replace refs
+    or grafts), and no other key, so no DEVELOPER_DIR, SDKROOT or TOOLCHAINS, which pick what /usr/bin/git runs
+    (Astra's review of #5 at 52a9edc, item 1). repo must not lie in the deploy clone or the app root (a release copy
+    is never a source).
     """
-    if env is None or {key: value for key, value in env.items() if key.startswith("GIT_")} != RELEASE_GIT_ENV:
+    if env is None or not tmp_root or env != release_git_env(home, tmp_root):
         return False
     if not (isinstance(repo, str) and os.path.isabs(repo) and os.path.normpath(repo) == repo):
         return False

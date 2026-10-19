@@ -265,8 +265,8 @@ class NoOffSwitchTests(unittest.TestCase):
 
     PUBLIC = {"GuardRefusal", "arm", "seal", "armed_mode", "is_sealed", "require_armed", "require_mode",
               "permit_loopback_port", "permit_unix_socket", "permit_unix_connect", "engine_argv_ok", "vendor_argv_ok",
-              "runner_argv_ok", "runner_git_ok", "release_argv_ok", "uisnap_build_argv", "uisnap_argv_ok",
-              "permit_uisnap_binary"}
+              "runner_argv_ok", "runner_git_ok", "release_git_env", "release_argv_ok", "uisnap_build_argv",
+              "uisnap_argv_ok", "permit_uisnap_binary"}
 
     def test_guard_public_callables_are_exactly_these(self):
         public = {name for name, value in vars(guard).items()
@@ -2066,15 +2066,19 @@ class ReleaseModeTests(unittest.TestCase):
     REPO = "/h/betangel-suite"
     RESEARCH = "/h/betangel-research"
     APP = "/h/.local/share/betangel-suite/app"
+    HOME = "/h"
+    TMP = "/h/.local/state/betangel-suite/tmp"
     ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
-           "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": "/dev/null", FORBID: "1", "PATH": "/usr/bin:/bin"}
+           "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": "/dev/null", FORBID: "1", "PATH": "/usr/bin:/bin",
+           "LANG": "C", "HOME": HOME, "TMPDIR": TMP}
     COMMIT = "0a1b2c3d4e5f" * 3 + "0a1b"
     TREE = "f" * 40
 
     def ok(self, rest, env=None, repo=None):
         repo = self.REPO if repo is None else repo
         argv = list(guard.RELEASE_GIT_PREFIX) + ["-C", repo] + list(rest)
-        return guard.release_argv_ok(argv, self.ENV if env is None else env, repo, self.RESEARCH, self.APP)
+        return guard.release_argv_ok(argv, self.ENV if env is None else env, repo, self.RESEARCH, self.APP, self.HOME,
+                                     self.TMP)
 
     def test_release_argv_shapes(self):
         for rest in (["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty"],
@@ -2147,13 +2151,13 @@ class ReleaseModeTests(unittest.TestCase):
         for repo in (self.RESEARCH, self.RESEARCH + "/sub", self.APP + "/v1", "relative", "/h/x/../betangel-suite"):
             self.assertFalse(self.ok(status, repo=repo), repo)
         argv = list(guard.RELEASE_GIT_PREFIX) + ["-C", "/h/other"] + status
-        self.assertFalse(guard.release_argv_ok(argv, self.ENV, self.REPO, self.RESEARCH, self.APP))
-        self.assertFalse(guard.release_argv_ok(["/usr/bin/git", "-C", self.REPO] + status, self.ENV, self.REPO,
-                                               self.RESEARCH, self.APP))
+        places = (self.REPO, self.RESEARCH, self.APP, self.HOME, self.TMP)
+        self.assertFalse(guard.release_argv_ok(argv, self.ENV, *places))
+        self.assertFalse(guard.release_argv_ok(["/usr/bin/git", "-C", self.REPO] + status, self.ENV, *places))
         self.assertFalse(guard.release_argv_ok(["git"] + list(guard.RELEASE_GIT_PREFIX[1:]) + ["-C", self.REPO] + status,
-                                               self.ENV, self.REPO, self.RESEARCH, self.APP))
+                                               self.ENV, *places))
         self.assertFalse(guard.release_argv_ok(list(guard.RELEASE_GIT_PREFIX) + ["-C", self.REPO] + status, None,
-                                               self.REPO, self.RESEARCH, self.APP))      # an inherited environment
+                                               *places))                                 # an inherited environment
         # The GIT_* part of the environment is exactly guard.RELEASE_GIT_ENV: replace refs and grafts off too (a
         # replace ref or a graft would let another commit's tree, or a commit main does not contain, pass).
         self.assertEqual({key: value for key, value in self.ENV.items() if key.startswith("GIT_")},
@@ -2167,7 +2171,60 @@ class ReleaseModeTests(unittest.TestCase):
                        {"GIT_REPLACE_REF_BASE": "refs/other/"}):
             env = {key: value for key, value in dict(self.ENV, **change).items() if value is not None}
             self.assertFalse(self.ok(status, env=env), change)
-        self.assertTrue(self.ok(status, env=dict(self.ENV, HOME="/h", TMPDIR="/h/tmp", LANG="C")))
+        self.assertTrue(self.ok(status, env=dict(self.ENV)))
+
+    def test_release_environment_is_an_exact_allowlist(self):
+        # Astra's review of #5 at 52a9edc, item 1 (P1): beyond its GIT_* part, a release git child's environment is
+        # exactly guard.release_git_env, as release._Git builds it: HOME and TMPDIR the guard's own, PATH, LANG and the
+        # network switch, and no other key, since DEVELOPER_DIR, SDKROOT, TOOLCHAINS or a DYLD_* key steer what
+        # /usr/bin/git runs (test_release_git_refuses_developer_dir is the live case).
+        status = list(guard.RELEASE_STATUS)
+        self.assertEqual(guard.release_git_env(self.HOME, self.TMP), self.ENV)
+        self.assertTrue(self.ok(status))
+        for change in ({"DEVELOPER_DIR": "/h/developer"}, {"SDKROOT": "/h/developer"}, {"TOOLCHAINS": "x"},
+                       {"DYLD_INSERT_LIBRARIES": "/h/x.dylib"}, {"DYLD_LIBRARY_PATH": "/h"}, {"XDG_CONFIG_HOME": "/h"},
+                       {"EDITOR": "/bin/sh"}, {"HOME": "/h/other"}, {"HOME": "/h/"}, {"HOME": None},
+                       {"TMPDIR": "/h/other"}, {"TMPDIR": self.TMP + "/"}, {"TMPDIR": None}, {"PATH": "/usr/bin"},
+                       {"PATH": "/h/bin:/usr/bin:/bin"}, {"PATH": None}, {"LANG": "en_GB.UTF-8"}, {"LANG": None},
+                       {FORBID: None}, {FORBID: "0"}):
+            env = {key: value for key, value in dict(self.ENV, **change).items() if value is not None}
+            self.assertFalse(self.ok(status, env=env), change)
+        argv = list(guard.RELEASE_GIT_PREFIX) + ["-C", self.REPO] + status
+        for home, tmp in (("/h/other", self.TMP), (self.HOME, "/h/other"), (self.HOME, "")):
+            self.assertFalse(guard.release_argv_ok(argv, self.ENV, self.REPO, self.RESEARCH, self.APP, home, tmp),
+                             (home, tmp))
+
+    def test_release_git_refuses_developer_dir(self):
+        # Astra's review of #5 at 52a9edc, item 1 (P1): release_argv_ok checked only the GIT_* part of a git child's
+        # environment, so an allowed argv with DEVELOPER_DIR=<fake> made /usr/bin/git run <fake>/usr/bin/xcrun outside
+        # the audit hook, and it wrote outside the release write roots. The release-mode twin of
+        # test_test_runner_git_refuses_developer_dir: every other key is what release._Git gives, and the fake xcrun
+        # would leave a name in outside/. Each attempt names the fake, so git itself never runs on this checkout.
+        home = make_home(self)
+        fake = os.path.join(home, "developer", "usr", "bin")
+        os.makedirs(fake)
+        os.makedirs(os.path.join(home, "outside"))
+        with open(os.path.join(fake, "xcrun"), "w") as handle:
+            handle.write("#!/bin/sh\n/usr/bin/touch %s\nexit 1\n" % os.path.join(home, "outside", "xcrun-ran"))
+        os.chmod(os.path.join(fake, "xcrun"), 0o755)
+        results = checks(self, home, mode="release", setup="os.makedirs(roots.state_dir(), exist_ok=True)\n", body="""
+import subprocess
+home = os.environ["HOME"]
+developer = os.path.join(home, "developer")
+env = dict(guard.RELEASE_GIT_ENV, HOME=home, PATH="/usr/bin:/bin", LANG="C", TMPDIR=os.environ["TMPDIR"])
+env[guard.FORBID_NETWORK_ENV] = "1"
+argv = list(guard.RELEASE_GIT_PREFIX) + ["-C", guard.REPO_ROOT] + list(guard.RELEASE_FILTER_QUERY)
+def git(run_env):
+    subprocess.run(argv, env=run_env, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+attempt("developer_dir", lambda: git(dict(env, DEVELOPER_DIR=developer)))
+attempt("developer_dir_and_sdkroot", lambda: git(dict(env, DEVELOPER_DIR=developer, SDKROOT=developer)))
+attempt("developer_dir_posix_spawn",
+        lambda: os.waitpid(os.posix_spawn(guard.GIT, argv, dict(env, DEVELOPER_DIR=developer)), 0))
+results["outside"] = sorted(os.listdir(os.path.join(home, "outside")))
+""")
+        self.assertEqual(results, {"developer_dir": "subprocess_refused",
+                                   "developer_dir_and_sdkroot": "subprocess_refused",
+                                   "developer_dir_posix_spawn": "subprocess_refused", "outside": []})
 
     def test_release_is_its_own_mode(self):
         from betangel_suite import cli
