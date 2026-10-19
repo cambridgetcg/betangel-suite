@@ -9,12 +9,13 @@ Roots, under the home directory taken from $HOME (bin/suite passes the caller's 
 
 STATE_ROOT_AGREED is True: Yu agreed the suite root (R-4), and Nuance agreed it on three conditions in Nuance's
 PR #4 review (Q-N3; DESIGN.md 3.7). Nuance's PR #2 review makes the root half conditional again, on Nuance's
-item 1, which check_placement answers; its re-check was asked of Nuance on 2026-10-17, not answered, and the
-flag stays True meanwhile (lab-Claude's call). So the suite root is writable (by the engine only: guard.py gives
-it to no other mode), and its tmp/ is the TMPDIR of every command except test, uisnap, vendor and stop, whose guard
-modes have only the state root (cli.OWN_MODE_COMMANDS). The flag and
-bin/suite's default TMP branch, which a shell script cannot read from here, change together. The launcher refuses
-any mismatch between them (tmpdir_mismatch), so a half-done change fails closed.
+item 1, which check_placement answers. Nuance's re-review of #2 agreed both halves as built at 823c194, pending two
+findings, and Nuance's review of #5 agrees them as built at 52a9edc, on conditions, to be confirmed at the merge SHA
+(AGENTS.md, Phase 0 status A; DESIGN.md 3.7). The flag stays True meanwhile (lab-Claude's call). So the suite root
+is writable (by the engine only: guard.py gives it to no other mode), and its tmp/ is the TMPDIR of every command
+except test, uisnap, vendor and stop, whose guard modes have only the state root (cli.OWN_MODE_COMMANDS). The flag
+and bin/suite's default TMP branch, which a shell script cannot read from here, change together. The launcher
+refuses any mismatch between them (tmpdir_mismatch), so a half-done change fails closed.
 
 With the flag False (tests still cover it, under temporary HOMEs) nothing may be created or written
 anywhere under ~/betangel-data: the writer helper refuses with state_root_not_agreed on the path text
