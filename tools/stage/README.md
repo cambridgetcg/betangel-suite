@@ -47,9 +47,9 @@ listeners).
 
 During R-2 the suite's only listener on the Air is the `ssh -L` forward on `127.0.0.1:8765`, behind the token
 and the Host and Origin checks (Nuance's PR #1 re-review, finding 7), but a tampered page at `127.0.0.1:8765`
-could still send blind requests and WebSocket handshakes to other Air services that listen on loopback. That
-residual stays open until a reviewed deny-all content rule exists: L1's, which RS-1a of proposal 003 cancels
-(DESIGN.md 2.2.1), or a replacement (DESIGN.md 8.6, 9.4).
+could still send blind requests and WebSocket handshakes to other Air services that listen on loopback. The
+residual stays open until a reviewed deny-all content rule exists: L1's, which RS-1a cancelled, or a
+replacement. RS-1a is proposal 003's (DESIGN.md 2.2.1); DESIGN.md 8.6 has the full text, and 9.4 a summary.
 
 ## Step 1 (lab): the `suite` alias
 
