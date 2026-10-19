@@ -1,0 +1,46 @@
+#!/bin/sh
+# betangel-suite pre-push hook (docs/DESIGN.md I-9, sections 5.6 and 9.4).
+# Blocks a push that would publish anything `tools/hygiene_scan.py --push`
+# flags. git passes the remote's name (or URL) and, on stdin, one line per
+# ref; the scanner reads those lines and scans every commit the push would
+# publish that is not reachable from an old value the remote reported for a
+# ref this push updates: each commit's message and each path it adds or
+# changes, so a file one commit adds and a later one deletes is still found,
+# and the message of each annotated tag pushed. This clone's tracking refs
+# (refs/remotes/<remote>/*) are never trusted: they can be stale. A push
+# that creates a ref scans all the history behind it. Findings name the
+# commit and the entry number there, never a path or the matched text.
+#
+# Install once per clone, from the repository root, beside tools/pre-commit:
+#   ln -s ../../tools/pre-push .git/hooks/pre-push
+# Never bypass it with `git push --no-verify`.
+set -u
+
+PY=/opt/homebrew/bin/python3.13
+
+ROOT=$(git rev-parse --show-toplevel) || {
+  echo "pre-push: refused:no_toplevel" >&2
+  exit 1
+}
+SCAN="$ROOT/tools/hygiene_scan.py"
+
+if [ ! -x "$PY" ]; then
+  echo "pre-push: refused:python3.13_missing" >&2
+  exit 1
+fi
+if [ ! -f "$SCAN" ]; then
+  echo "pre-push: refused:scanner_missing" >&2
+  exit 1
+fi
+if [ -z "${1:-}" ]; then
+  echo "pre-push: refused:no_remote" >&2
+  exit 1
+fi
+
+"$PY" -I -S -B "$SCAN" --root "$ROOT" --push "$1"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "pre-push: push blocked by hygiene_scan (exit $rc); fix the listed codes in those commits before pushing" >&2
+  exit 1
+fi
+exit 0

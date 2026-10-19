@@ -1,0 +1,37 @@
+#!/bin/sh
+# betangel-suite pre-commit hook (docs/DESIGN.md I-9, sections 5.6 and 9.4).
+# Blocks a commit whose staged tree fails tools/hygiene_scan.py. The scanner
+# prints rule codes, line numbers and entry numbers only, never a path or
+# the matched text.
+#
+# Install once per clone, from the repository root:
+#   ln -s ../../tools/pre-commit .git/hooks/pre-commit
+# tools/commit-msg, tools/pre-merge-commit and tools/pre-push go in beside it
+# the same way; each says what it scans.
+# Never bypass it with `git commit --no-verify`.
+set -u
+
+PY=/opt/homebrew/bin/python3.13
+
+ROOT=$(git rev-parse --show-toplevel) || {
+  echo "pre-commit: refused:no_toplevel" >&2
+  exit 1
+}
+SCAN="$ROOT/tools/hygiene_scan.py"
+
+if [ ! -x "$PY" ]; then
+  echo "pre-commit: refused:python3.13_missing" >&2
+  exit 1
+fi
+if [ ! -f "$SCAN" ]; then
+  echo "pre-commit: refused:scanner_missing" >&2
+  exit 1
+fi
+
+"$PY" -I -S -B "$SCAN" --root "$ROOT" --staged
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "pre-commit: commit blocked by hygiene_scan (exit $rc); fix the listed codes" >&2
+  exit 1
+fi
+exit 0

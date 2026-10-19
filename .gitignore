@@ -1,0 +1,112 @@
+# betangel-suite .gitignore (docs/DESIGN.md sections 3.4 and 5.6).
+#
+# Licensed Betfair data and everything derived from it stay under
+# ~/betangel-data, outside every clone. This file is the first line only:
+# tools/hygiene_scan.py checks the staged tree for the same things (and more),
+# so a forced `git add -f` is still caught by tools/pre-commit.
+
+# Archives and compressed members
+*.bz2
+*.tar
+*.gz
+*.tgz
+*.tbz
+*.tbz2
+*.txz
+*.xz
+*.zst
+*.zip
+*.7z
+*.lz4
+*.lzma
+*.rar
+
+# SQLite databases, journals and their sidecars
+*.sqlite*
+*.sqlite3
+*.db
+*.db3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Line-oriented data, exports and serialised data
+*.jsonl
+*.ndjson
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.numbers
+*.parquet
+*.feather
+*.arrow
+*.pkl
+*.pickle
+*.npy
+*.npz
+
+# State-root, run and data-root directories, at any depth
+exports/
+run/
+screenshots/
+private/
+ledger/
+sessions/
+catalogue/
+reports/
+logs/
+tmp/
+*.noindex/
+*.partial/
+betangel-data/
+incoming/
+historic/
+historic-pro/
+
+# Screenshots and video: synthetic ones only, under docs/synthetic/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.heic
+*.heif
+*.tif
+*.tiff
+*.webp
+*.bmp
+*.mov
+*.mp4
+*.m4v
+!/docs/synthetic/**/screenshots/
+!/docs/synthetic/**/*.png
+!/docs/synthetic/**/*.jpg
+!/docs/synthetic/**/*.jpeg
+
+# Keys, certificates and secrets (none belong on the lab at all)
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.p8
+*.jks
+*.keychain
+*.keychain-db
+.env
+.env.*
+.netrc
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+
+# Python, editor and OS noise
+__pycache__/
+*.py[cod]
+*.log
+*.swp
+*~
+.DS_Store

@@ -1,0 +1,44 @@
+#!/bin/sh
+# betangel-suite commit-msg hook (docs/DESIGN.md I-9, sections 5.6 and 9.4).
+# Blocks a commit whose message fails `tools/hygiene_scan.py --message`: the
+# text rules a file gets (ids, runner tables and records, secrets, encoded
+# data), plus binary and oversize. git runs it for `git commit` and for the
+# commit `git merge` makes. It reads the message file as git hands it over:
+# with an editor that includes git's comment lines, and with `git commit -v`
+# the diff below the scissors line, so a removed file's lines can trip it;
+# commit with -m or -F then. The scanner prints rule codes and line numbers
+# only, never the message text.
+#
+# Install once per clone, from the repository root, beside tools/pre-commit:
+#   ln -s ../../tools/commit-msg .git/hooks/commit-msg
+# Never bypass it with `git commit --no-verify`.
+set -u
+
+PY=/opt/homebrew/bin/python3.13
+
+ROOT=$(git rev-parse --show-toplevel) || {
+  echo "commit-msg: refused:no_toplevel" >&2
+  exit 1
+}
+SCAN="$ROOT/tools/hygiene_scan.py"
+
+if [ ! -x "$PY" ]; then
+  echo "commit-msg: refused:python3.13_missing" >&2
+  exit 1
+fi
+if [ ! -f "$SCAN" ]; then
+  echo "commit-msg: refused:scanner_missing" >&2
+  exit 1
+fi
+if [ "$#" -lt 1 ]; then
+  echo "commit-msg: refused:no_message_file" >&2
+  exit 1
+fi
+
+"$PY" -I -S -B "$SCAN" --root "$ROOT" --message "$1"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "commit-msg: commit blocked by hygiene_scan (exit $rc); fix the listed codes in the message" >&2
+  exit 1
+fi
+exit 0
