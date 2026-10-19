@@ -16,8 +16,9 @@ Lab-Claude staged these files and never runs them. **Yu runs every step.** The l
 | `suite-alias.zsh` | lab | The `suite` alias, which points at the release copy |
 
 **Before you start.** A reviewed release must be installed on the lab. You make the first one, or lab-Claude
-does after its review (DESIGN.md Q-Y18: your words of 2026-10-18, as relayed by Nuance), in the clean main
-checkout: `cd /Users/user/betangel-suite && git fetch origin`, then `bin/suite release <merge-sha>`, with
+does after its review (DESIGN.md Q-Y18: your words of 2026-10-18, as relayed by Nuance, which you confirmed
+on 2026-10-19), in the clean main checkout: `cd /Users/user/betangel-suite && git fetch origin`, then
+`bin/suite release <merge-sha>`, with
 the full SHA of the reviewed merge commit on main (the merged PR's page shows it; a tag or short id is refused,
 and so is a commit that GitHub's main, as just fetched, does not contain, or one inside a branch merged into it
 rather than on main's own first-parent line; the suite never fetches), creates
