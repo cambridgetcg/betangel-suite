@@ -55,6 +55,11 @@ of the package, bin/ and tools/ (test_imports.python_sources) and refuses:
                    them (Astra's review of #4 at 90adc64: synthetic.py holds rx, and after `from
                    betangel_suite.synthetic import *` neither `rx._archive` nor rx.ticks.tick_offset was seen).
                    A bare rx, sys or builtins after one is also judged as that module.
+                   Not refused, a named residual beside it (lab-Claude's recheck of round 6): a bulk write to a
+                   module's namespace, such as globals().update(...), vars().update(...) or an assignment
+                   through a module's __dict__, binds names that no statement spells in the same way, and a
+                   bare rx after one is not judged as rx. No production module makes such a write (DESIGN.md
+                   4.5 and I-10 record it).
 
 ALLOWED lists the only exceptions, each with its reason, by (file, enclosing function, rule). A class statement's
 bases and keywords count as enclosed by the class, and module level, class bodies included, by None. An entry that
