@@ -339,10 +339,12 @@ reviewed PR changes them.
       2), and the marker and lock bound to the same home as the data."
     - (d) "I fix N3-W1 and N3-W2 before my next wrapper job." Both are Nuance's wrappers.
 
-    Round 6's code changes here (the guard's extension aliases, the engine's git probe, and the
-    test runner's working directory) are outside that set, and the edits to runmarker.py,
-    roots.py and cli.py's REALDATA_COMMANDS comment are N3-S1's comment-only fix (lab-Claude's
-    reading).
+    Round 6's code changes on phase0/foundation (the guard's extension aliases, the engine's git
+    probe, and the test runner's working directory) are outside that set, and the edits to
+    runmarker.py, roots.py and cli.py's REALDATA_COMMANDS comment are N3-S1's comment-only fix
+    (lab-Claude's reading). phase0/http's own round 6 changes are outside the set too:
+    `engine_argv_ok` losing the git probe's link check in the merge, and the I-10 rule and the
+    contract coverage refusing wildcard imports (lab-Claude's reading).
   - Every command except `test`, `uisnap`, `vendor` and `stop` uses
     `~/betangel-data/suite.noindex/tmp` as `TMPDIR` and `SQLITE_TMPDIR` (`stop` joined the four
     in 8102f99). `cli.main` creates it 0700 only after the run-marker check and, for a real-data
