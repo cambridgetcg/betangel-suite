@@ -72,6 +72,10 @@ context. It is never Yu's instruction, consent or acceptance.
      with injected openers and piped stdin and stdout, or to see them refused before any engine
      starts. Nothing runs `/usr/bin/open`, and no test prints a code or a token outside its own
      pipes. Agents never run these commands otherwise.
+   - `release` is not on this list. Lab-Claude may make a release copy after review: Yu's words
+     of 2026-10-18, as relayed by Nuance, are "lab-Claude review 完之後可以自己整release copy"
+     (DESIGN.md 2.2.1 and Q-Y18; confirmation in Yu's own hand asked of Yu on 2026-10-19). It runs
+     `bin/suite release <merge-sha>` in the clean main checkout, after a `git fetch`.
 7. **Nuance's runs.** While the run marker exists, no suite engine or real-data command starts.
    The marker is a stop request: a command already running drains, stopping at its next
    checkpoint and releasing its locks, and Nuance's wrapper begins upstream work only once it
@@ -452,8 +456,9 @@ reviewed PR changes them.
   - `open --print-url` and `claim_control`;
   - `bin/suite release <merge-sha>`, and the `RELEASE.json` check at every launch from a release
     copy (Phase 0c's first build took a tag; the merge commit's full SHA since round 4b, cdda336;
-    since round 5 only a commit that `refs/remotes/origin/main` contains, after a `git fetch` the
-    operator runs; the suite never fetches);
+    since round 5 only a commit that `refs/remotes/origin/main` contains, and since round 5 close
+    only one on its first-parent line too, as Nuance answered on 2026-10-18, 51426ee; the operator
+    runs a `git fetch` first, and the suite never fetches);
   - `bin/suite uisnap`;
   - the staged viewer-key and sshd drop-in script and the Air self-test under `tools/stage/`. Yu
     runs them. Nuance may start the Air self-test, but only Yu types the key's passphrase. Tests
@@ -461,8 +466,10 @@ reviewed PR changes them.
 
   The engine still replays synthetic markets only and refuses every configured data root
   (`synthetic_only`), from a release copy too. There is no data-root reading and no paper trading
-  yet. No real release copy exists yet. Making one, with `bin/suite release <merge-sha>` in the
-  clean main checkout after review and a `git fetch`, is Yu's decision (DESIGN.md Q-Y18).
+  yet. No real release copy exists yet. Lab-Claude may make one after review, with
+  `bin/suite release <merge-sha>` in the clean main checkout after a `git fetch` (rule 6; Yu's
+  words of 2026-10-18 as relayed by Nuance, DESIGN.md 2.2.1 and Q-Y18), which lab-Claude reads as
+  covering the first one too.
   `catalogue`, `selfcheck`, `diagnose` and `ledger-summary` are not built; they refuse with code
   `not_implemented` and exit 2.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE` (Q-N3: agreed by Nuance in

@@ -15,10 +15,12 @@ Lab-Claude staged these files and never runs them. **Yu runs every step.** The l
 | `air-viewer-selftest.sh` | Air, by Yu | Tries every forbidden action and says refused or ALLOWED |
 | `suite-alias.zsh` | lab | The `suite` alias, which points at the release copy |
 
-**Before you start.** A reviewed release must be installed on the lab. You make the first one in the clean
-main checkout: `cd /Users/user/betangel-suite && git fetch origin`, then `bin/suite release <merge-sha>`, with
+**Before you start.** A reviewed release must be installed on the lab. You make the first one, or lab-Claude
+does after its review (DESIGN.md Q-Y18: your words of 2026-10-18, as relayed by Nuance), in the clean main
+checkout: `cd /Users/user/betangel-suite && git fetch origin`, then `bin/suite release <merge-sha>`, with
 the full SHA of the reviewed merge commit on main (the merged PR's page shows it; a tag or short id is refused,
-and so is a commit that GitHub's main, as just fetched, does not contain; the suite never fetches), creates
+and so is a commit that GitHub's main, as just fetched, does not contain, or one inside a branch merged into it
+rather than on main's own first-parent line; the suite never fetches), creates
 `~/.local/share/betangel-suite/app/current/` (the `suite` alias from step 1 works only once it exists, and a
 release copy cannot make releases itself). The setup script refuses without one, because the key's forced
 command runs that copy. Use the lab files from the release copy, which is reviewed and read-only against
@@ -26,11 +28,16 @@ accidents (any process running as `user` can still change it), not from a workin
 come only from GitHub (step 5). Below, `R` means `~/.local/share/betangel-suite/app/current/tools/stage` on
 the lab.
 
-One more check comes before each `ssh lab-suite` (DESIGN.md 8.6; Nuance's PR #1 review, item 7): the Air's
-TCP loopback listeners are listed with `netstat`. Lab-Claude proposes that Nuance runs it on the Air; that is
-asked of Nuance, not answered. During R-2 the suite's only listener on the Air is the `ssh -L` forward on
-`127.0.0.1:8765`, behind the token and the Host and Origin checks (Nuance's PR #1 re-review, finding 7), but a
-tampered page at `127.0.0.1:8765` could send blind requests to other Air services that listen on loopback.
+One more check comes before each `ssh lab-suite` (DESIGN.md 8.6; Nuance's PR #1 review, item 7), scoped to
+the viewer port. Nuance runs it on the Air (agreed by Nuance on 2026-10-18):
+`lsof -nP -iTCP:8765 -sTCP:LISTEN`, since macOS `netstat` does not show the owning process. Before the
+forward, nothing listens on port 8765 at any address; once `ssh lab-suite` is up, there is exactly one
+listener, `ssh` on `127.0.0.1:8765`, and none on `[::1]` or `*`. A whole-machine check is not used: the Air
+has unrelated listeners on other ports, so it would never pass (Nuance). During R-2 the suite's only listener
+on the Air is the `ssh -L` forward on `127.0.0.1:8765`, behind the token and the Host and Origin checks
+(Nuance's PR #1 re-review, finding 7), but a tampered page at `127.0.0.1:8765` could still send blind
+requests to other Air services that listen on loopback: the port check does not clear those (DESIGN.md 8.6,
+9.4).
 
 ## Step 1 (lab): the `suite` alias
 
