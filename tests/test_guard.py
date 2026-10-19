@@ -609,7 +609,7 @@ def fork():
     pid = os.fork()
     if pid == 0:
         os._exit(0)
-attempt("git_probe_in_roots", lambda: run(["git", "-C", state, "rev-parse", "--is-inside-work-tree"]))
+attempt("git_probe_in_roots", lambda: run(["git", "-C", state, "rev-parse", "--is-inside-work-tree"]))   # N5-1
 attempt("git_probe_outside_roots", lambda: run(["git", "-C", os.environ["HOME"], "rev-parse", "--is-inside-work-tree"]))
 attempt("git_other_argv", lambda: run(["git", "-C", state, "status"]))
 attempt("shell", lambda: subprocess.run("true", shell=True))
@@ -624,17 +624,27 @@ results["sealed"] = guard.is_sealed()
 print(json.dumps(results))
 attempt("execv", lambda: os.execv("/usr/bin/true", ["/usr/bin/true"]))
 """)
-        self.assertEqual(results["git_probe_in_roots"], "ok")
-        for name in ("git_probe_outside_roots", "git_other_argv", "shell", "os_system", "posix_spawn", "fork",
+        for name in ("git_probe_in_roots", "git_probe_outside_roots", "git_other_argv", "shell", "os_system",
+                     "posix_spawn", "fork",
                      "git_probe_after_seal", "security_cli", "execv"):
             self.assertEqual(results[name], "subprocess_refused", name)
         self.assertEqual(results["ctypes"], "import_refused")
         self.assertTrue(results["sealed"])
 
-    def test_engine_bare_git_needs_the_system_search_path(self):
-        # engine_argv_ok matches the shape upstream uses (a bare "git"); the hook also requires that the name
-        # resolve through /usr/bin and /bin only, so a planted program called git never starts.
+    def test_engine_git_probe_refuses_developer_dir(self):
+        # Nuance's review of #2 at 4fa5835, N5-1: engine mode allowed git -C <dir in the roots> rev-parse
+        # --is-inside-work-tree and never judged the environment it was handed. With DEVELOPER_DIR=<fake>, /usr/bin/git
+        # ran <fake>/usr/bin/xcrun, and with GIT_TRACE=<file> git wrote that file, both outside the roots. No Phase 0
+        # path runs the probe, so engine mode now refuses it in every environment: the engine-mode twin of
+        # test_test_runner_git_refuses_developer_dir. A planted program called git on the search path, which the
+        # search-path rule refused before, stays refused.
         home = make_home(self)
+        fake = os.path.join(home, "developer", "usr", "bin")
+        os.makedirs(fake)
+        os.makedirs(os.path.join(home, "outside"))
+        with open(os.path.join(fake, "xcrun"), "w") as handle:
+            handle.write("#!/bin/sh\n/usr/bin/touch %s\nexit 1\n" % os.path.join(home, "outside", "xcrun-ran"))
+        os.chmod(os.path.join(fake, "xcrun"), 0o755)
         setup = """
 os.makedirs(roots.state_dir(), exist_ok=True)
 stub = os.path.join(os.environ["HOME"], "stub")
@@ -645,21 +655,27 @@ os.chmod(os.path.join(stub, "git"), 0o755)
 """
         results = checks(self, home, setup=setup, body="""
 import subprocess
+home = os.environ["HOME"]
 argv = ["git", "-C", roots.state_dir(), "rev-parse", "--is-inside-work-tree"]
 base = {key: os.environ[key] for key in ("HOME", "TMPDIR", "SQLITE_TMPDIR", guard.FORBID_NETWORK_ENV)}
+system = dict(base, PATH="/usr/bin:/bin")
 def run(env):
     subprocess.run(argv, env=env, capture_output=True, timeout=30)
-attempt("system_path", lambda: run(dict(base, PATH="/usr/bin:/bin")))
+attempt("developer_dir", lambda: run(dict(system, DEVELOPER_DIR=os.path.join(home, "developer"))))
+attempt("git_trace", lambda: run(dict(system, GIT_TRACE=os.path.join(home, "outside", "trace"))))
+attempt("system_path", lambda: run(system))
 attempt("default_path", lambda: run(dict(base)))
 attempt("stub_path", lambda: run(dict(base, PATH=stub)))
 attempt("stub_first", lambda: run(dict(base, PATH=stub + ":/usr/bin:/bin")))
-attempt("posix_spawn_relative", lambda: os.posix_spawn("git", argv, dict(base, PATH="/usr/bin:/bin")))
+attempt("posix_spawn_relative", lambda: os.posix_spawn("git", argv, system))
+attempt("inherited", lambda: run(None))
 os.environ["PATH"] = stub
 attempt("inherited_stub_path", lambda: run(None))
+results["outside"] = sorted(os.listdir(os.path.join(home, "outside")))
 """)
-        self.assertEqual((results["system_path"], results["default_path"]), ("ok", "ok"))
-        for name in ("stub_path", "stub_first", "posix_spawn_relative", "inherited_stub_path"):
-            self.assertEqual(results[name], "subprocess_refused", name)
+        refused = ("developer_dir", "git_trace", "system_path", "default_path", "stub_path", "stub_first",
+                   "posix_spawn_relative", "inherited", "inherited_stub_path")
+        self.assertEqual(results, dict({name: "subprocess_refused" for name in refused}, outside=[]))
 
     # Routes to a child process that raise no audit event of their own (Nuance's PR #2 review, item 3). Each would
     # leave a name in outside/ if its child ran: fork_exec with the arguments multiprocessing.util.spawnv_passfds
@@ -707,7 +723,9 @@ def thread_pool_runs():
     def test_children_without_an_audit_event_are_refused(self):
         # A sealed engine refused subprocess.run, but multiprocessing (spawn, the macOS default),
         # ProcessPoolExecutor and _posixsubprocess.fork_exec all started unguarded children that wrote outside the
-        # roots. Startup git, which goes through subprocess, and threads must keep working.
+        # roots. Threads must keep working. Startup git, which went through subprocess here, is refused in engine mode
+        # since round 6 (test_engine_git_probe_refuses_developer_dir); subprocess still starts children through its own
+        # reference to fork_exec in test mode (test_test_runner_git_refuses_developer_dir, "plain").
         home = make_home(self)
         results = checks(self, home, setup=self.CHILDREN_SETUP, body=self.CHILDREN + """
 state = roots.state_dir()
@@ -726,9 +744,9 @@ attempt("thread_pool", thread_pool_runs)
 results["subprocess_keeps_its_own"] = subprocess._fork_exec is not _posixsubprocess.fork_exec
 results["outside"] = sorted(os.listdir(outside))
 """)
-        for name in ("git_before_seal", "thread_before_seal", "thread", "thread_pool"):
+        for name in ("thread_before_seal", "thread", "thread_pool"):
             self.assertEqual(results[name], "ok", name)
-        for name in ("fork_exec_before_seal", "fork_exec"):
+        for name in ("git_before_seal", "fork_exec_before_seal", "fork_exec"):
             self.assertEqual(results[name], "subprocess_refused", name)
         for name in ("process_start_before_seal", "pool_submit_before_seal", "process_start", "pool_submit"):
             self.assertEqual(results[name], "import_refused", name)
@@ -976,7 +994,8 @@ results["outside"] = sorted(os.listdir(outside))
         state = "/h/.local/state/betangel-suite"
         code = "#c=" + "a" * 22
         ok = guard.engine_argv_ok
-        self.assertTrue(ok(["git", "-C", state + "/x", "rev-parse", "--is-inside-work-tree"], (state,), set()))
+        self.assertFalse(ok(["git", "-C", state + "/x", "rev-parse", "--is-inside-work-tree"], (state,), set()))
+        self.assertFalse(ok(["git", "-C", state, "rev-parse", "--is-inside-work-tree"], (state,), set()))
         self.assertFalse(ok(["git", "-C", state + "/../x", "rev-parse", "--is-inside-work-tree"], (state,), set()))
         self.assertFalse(ok(["git", "-C", "/elsewhere", "rev-parse", "--is-inside-work-tree"], (state,), set()))
         self.assertFalse(ok(["/usr/bin/git", "-C", state, "rev-parse", "--is-inside-work-tree"], (state,), set()))

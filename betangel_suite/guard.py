@@ -126,10 +126,12 @@ os.readlink), which raise no audit event and which the guard's own checks use.
 
 Subprocesses by mode (the launcher picks the mode from the command name; nothing else can):
 
-  engine  before seal(), exactly two argv shapes: git -C <dir in the write roots> rev-parse
-          --is-inside-work-tree (paths.is_inside_git_worktree, used by config.validate_config) and
-          /usr/bin/open http://127.0.0.1:<permitted port>/#c=<code>; after seal(), none. A bare "git"
-          must come through subprocess with a search path of /usr/bin and /bin only.
+  engine  before seal(), exactly one argv shape: /usr/bin/open http://127.0.0.1:<permitted port>/#c=<code>;
+          after seal(), none. The git probe of upstream's paths.is_inside_git_worktree (git -C <dir>
+          rev-parse --is-inside-work-tree, for config.validate_config) is refused: no Phase 0 path runs it,
+          and the guard never judged its environment (Nuance's review of #2 at 4fa5835, N5-1; the limits
+          below). A bare program name may only be found through /usr/bin and /bin, though no mode now
+          permits one.
   vendor  before seal(), exactly the five git argvs tools/vendor_research.py runs, each with exactly the
           environment VENDOR_GIT_ENV plus HOME, and a partial clone path that is not in the deploy clone by
           name or identity (roots.lies_in); after, none.
@@ -167,8 +169,13 @@ instance of the built-in posix module (importlib.util.module_from_spec on its sp
 are the unwrapped originals, since a built-in module raises no import event and the hook never sees the load
 (Astra's re-review of #2); and an extension module refused above that was loaded before arm() and then taken
 out of sys.modules, since CPython then serves a single-phase one (_ctypes on 3.11, _testcapi) from its
-extension cache with no import event (lab-Claude's probe, round 5). Refusals raise GuardRefusal, whose str()
-is the code only, never the path or address.
+extension cache with no import event (lab-Claude's probe, round 5). In engine mode the guard judges a child's
+argv, not its environment: /usr/bin/open runs with whatever environment it is handed, env None included, and
+os.putenv is refused only for the pinned keys and stray BETFAIR ones, so DEVELOPER_DIR or GIT_TRACE can still be
+set (Nuance's review of #2 at 4fa5835, N5-1: through the git probe this mode then allowed, they ran a planted
+xcrun and wrote a file outside the roots). If Phase 1b needs that probe, it comes back with an exact environment,
+with env None and any other putenv refused in engine mode, and with an engine-mode test like the test runner's
+DEVELOPER_DIR test. Refusals raise GuardRefusal, whose str() is the code only, never the path or address.
 Standard library only.
 """
 
@@ -650,8 +657,9 @@ def _wrap_fork_exec():
     is imported (subprocess._fork_exec). So subprocess is imported here first, and arm() refuses
     (call_replaced_early) unless that reference and _posixsubprocess.fork_exec are both the C original; only the
     module attribute is then replaced. Imported after this, subprocess would bind the wrapper and every Popen,
-    the startup git included, would be refused. The wrapper's event carries no arguments: there is no argv the
-    hook could judge, and nothing the suite or the pinned closure runs calls fork_exec directly.
+    the test runner's git and interpreter children included, would be refused. The wrapper's event carries no
+    arguments: there is no argv the hook could judge, and nothing the suite or the pinned closure runs calls
+    fork_exec directly.
 
     The wrapper sits on this one module instance. A fresh instance (the module taken out of sys.modules and
     imported again, module_from_spec, _imp.create_dynamic, or any other name CPython reads as its own) would
@@ -887,11 +895,12 @@ def _child_env_ok(names):
 
 
 def engine_argv_ok(argv, write_roots, ports):
-    """The two argvs an engine may start before seal() (DESIGN.md I-5)."""
-    if len(argv) == 5 and argv[:2] == ["git", "-C"] and argv[3:] == ["rev-parse", "--is-inside-work-tree"]:
-        directory = argv[2]
-        return (os.path.isabs(directory) and os.path.normpath(directory) == directory
-                and any(roots.within(directory, root) for root in write_roots))
+    """The one argv an engine may start before seal() (DESIGN.md I-5): /usr/bin/open with the bootstrap URL.
+
+    The git probe that upstream's paths.is_inside_git_worktree runs (git -C <dir> rev-parse --is-inside-work-tree)
+    was allowed here until round 6, with no check of its environment: with DEVELOPER_DIR set it ran a planted xcrun,
+    and with GIT_TRACE it wrote a file outside the roots (Nuance's review of #2 at 4fa5835, N5-1). No Phase 0 path
+    runs it, so it is refused. write_roots stays in the signature for the callers on the later branches."""
     if len(argv) == 2 and argv[0] == OPEN:
         match = _URL_RE.fullmatch(argv[1])
         return bool(match) and int(match.group(1)) != 0 and int(match.group(1)) in ports
