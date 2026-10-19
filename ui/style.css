@@ -140,6 +140,10 @@ body {
   color: var(--suspended);
 }
 
+.chip.readonly {
+  color: var(--accent);
+}
+
 .countdown {
   margin-left: auto;
   font: 600 18px/1 ui-monospace, Menlo, monospace;

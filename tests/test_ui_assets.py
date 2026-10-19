@@ -39,7 +39,7 @@ TYPES = {
     ".json": "application/json",
 }
 ROUTES = frozenset({"/api/v1/bootstrap", "/api/v1/stream", "/api/v1/query", "/api/v1/command"})
-NODE_TESTS = ("app", "format", "grid", "keys", "stream", "ticks")
+NODE_TESTS = ("app", "control", "format", "grid", "keys", "stream", "ticks")
 TEXT_SUFFIXES = (".html", ".js", ".mjs", ".css", ".json")
 PATH_RE = re.compile(r"[a-z0-9][a-z0-9_.-]*(?:/[a-z0-9][a-z0-9_.-]*)*")
 
@@ -321,6 +321,11 @@ class PageTests(unittest.TestCase):
         for element_id in ("market-name", "market-status", "countdown", "play", "seed", "open", "grid-body", "ladder"):
             self.assertIn('id="%s"' % element_id, self.html)
         self.assertIn('<canvas id="ladder"', self.html)
+
+    def test_the_read_only_tab_parts(self):
+        # Phase 0c, DESIGN.md 9.2 item 8: the read-only chip and the claim button, both hidden until needed.
+        self.assertRegex(self.html, r'<span id="role" class="chip readonly" hidden>READ-ONLY: [^<]+</span>')
+        self.assertIn('<button id="claim" type="button" class="claim" hidden disabled>Take control</button>', self.html)
 
 
 class NodeTests(unittest.TestCase):

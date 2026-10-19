@@ -21,10 +21,12 @@ What the hook refuses, in every mode and phase:
        inside that root's real path where its text says);
   I-3  socket connect, sendto and sendmsg, and every name or address lookup; the one exception is a connect
        to an absolute, normalised Unix socket path in the run directory permitted before seal() with
-       permit_unix_connect (the control socket, which stop and open use to reach a running engine;
-       DESIGN.md 9.1), matched exactly while the run directory still resolves where it did at arm() and the
-       socket path is not itself a link (connect follows one); a path with a NUL in it (the kernel ends the
-       socket name at the first NUL) is never permitted. TCP connects and every other address stay refused.
+       permit_unix_connect (the control socket, which stop and the takeovers by open and ssh-session use to
+       reach a running engine, and which an attached ssh-session keeps using after its seal(), with the permit
+       it got before; DESIGN.md 9.1), matched exactly while the run directory still resolves where it did at
+       arm() and the socket path is not itself a link (connect follows one); a path with a NUL in it (the
+       kernel ends the socket name at the first NUL) is never permitted. TCP connects and every other address
+       stay refused.
        The check reads the name, not the socket behind it, so a hard link at the permitted name to a socket
        that another process of this user made passes. Astra's re-review of #4 keeps that residual, in
        Astra's terms "acceptable within the documented same-uid/pre-existing-hard-link limit. The 0700 run
@@ -74,16 +76,18 @@ What the hook refuses, in every mode and phase:
        link (both paths: a hard link would alias an outside inode inside the roots), symlink, truncate,
        chmod, chown, chflags, utime, mkfifo, mknod and sqlite3.connect. The write roots are the state
        root in every mode; the suite root only in engine mode, and only while roots.STATE_ROOT_AGREED is
-       True (never in test, vendor, uisnap or stop mode); and in vendor mode also the share directory and
-       this checkout's pin/. So the test runner itself never writes under ~/betangel-data, whatever the flag
-       says, nor reads there (below). Its children are another matter (Nuance's re-review of #2, F2): any
-       child that imports betangel_suite arms its own guard from the HOME it is given, whatever its argv (a
-       launcher, or -c code that calls arm() itself), and an engine-mode guard armed with the runner's real
-       HOME has the real suite root. So the runner checks the HOME and TMPDIR of every interpreter and
-       launcher child when it starts one (runner_argv_ok; lab-Claude's round-5 review found the check on
-       launcher children only, which left -c code with env None open). What a child does with its own
-       environment after it starts, and an interpreter child that does not import betangel_suite, are
-       unguarded: conduct. While the flag is False a write under
+       True (never in test, vendor, uisnap, release or stop mode); in vendor mode also the deps clone and
+       this checkout's pin/; and in release mode also the release copies (app/). So the test runner itself,
+       uisnap and release never write under ~/betangel-data, whatever the flag says, nor read there (below).
+       The test runner's children are another matter (Nuance's re-review of #2, F2): any child that imports
+       betangel_suite arms its own guard from the HOME it is given, whatever its argv (a launcher, or -c code
+       that calls arm() itself), and an engine-mode guard armed with the runner's real HOME has the real suite
+       root. So the runner checks the HOME and TMPDIR of every interpreter and launcher child when it starts
+       one (runner_argv_ok; lab-Claude's round-5 review found the check on launcher children only, which left
+       -c code with env None open), except its own -j workers (TEST_WORKER_CODE), which inherit its
+       environment and arm test mode. What a child does with its own environment after it starts, and an
+       interpreter child that does not import betangel_suite, are unguarded: conduct. While the flag is False
+       a write under
        ~/betangel-data is refused as state_root_not_agreed, judged on the path text alone. A relative path
        in a write open is refused too: the open event does not say which dir_fd it is relative to (the
        other events do, and a dir_fd is resolved with F_GETPATH). The roots check
@@ -125,17 +129,17 @@ What the hook refuses, in every mode and phase:
        unless the setting then reads 2, and the hook refuses connect("") (sqlite_connect_refused), whose
        private database is such a temporary file. Rollback journals and WAL files sit beside the database.
 
-And in every mode but engine (test, vendor, uisnap and stop), reads in ~/betangel-data (data_home_read_refused;
-Nuance's re-review of #2, Q2 condition 1, which lab-Claude took as fail closed): an open without a write flag, a
-listing (os.listdir and os.scandir, a descriptor judged by its F_GETPATH path and no argument as the cwd) and
-os.chdir, of the data home or anything in it, judged by text, realpath and (st_dev, st_ino), stat calls only
-(roots.lies_in_for_read). A relative path is judged against the cwd. Engine mode reads as before: Phase 1a reads
-the data roots there. Not covered: os.open with a dir_fd and a relative path (the open event carries no dir_fd, so
-the path is judged against the cwd; a listing of that descriptor is refused), a descriptor opened before arm() or
-inherited, a hard link made elsewhere to a file in the data home, and stat-level calls (os.stat, os.lstat,
-os.readlink), which raise no audit event and which the guard's own checks use. Because such a name is judged
-against the cwd, the outcome depends on it: run from HOME, shutil.rmtree of a temporary HOME holding a
-betangel-data/ was refused (data_home_read_refused), since that name, read against the cwd, is the runner's own
+And in every mode but engine (test, vendor, uisnap, release and stop), reads in ~/betangel-data
+(data_home_read_refused; Nuance's re-review of #2, Q2 condition 1, which lab-Claude took as fail closed): an open
+without a write flag, a listing (os.listdir and os.scandir, a descriptor judged by its F_GETPATH path and no
+argument as the cwd) and os.chdir, of the data home or anything in it, judged by text, realpath and (st_dev,
+st_ino), stat calls only (roots.lies_in_for_read). A relative path is judged against the cwd. Engine mode reads as
+before: Phase 1a reads the data roots there. Not covered: os.open with a dir_fd and a relative path (the open event
+carries no dir_fd, so the path is judged against the cwd; a listing of that descriptor is refused), a descriptor
+opened before arm() or inherited, a hard link made elsewhere to a file in the data home, and stat-level calls
+(os.stat, os.lstat, os.readlink), which raise no audit event and which the guard's own checks use. Because such a
+name is judged against the cwd, the outcome depends on it: run from HOME, shutil.rmtree of a temporary HOME holding
+a betangel-data/ was refused (data_home_read_refused), since that name, read against the cwd, is the runner's own
 data home (Nuance's review of #2 at 4fa5835, N5-3). So cli._test runs the tests from its TMPDIR.
 
 Subprocesses by mode (the launcher picks the mode from the command name; nothing else can):
@@ -148,9 +152,28 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           permits one.
   vendor  before seal(), exactly the five git argvs tools/vendor_research.py runs, each with exactly the
           environment VENDOR_GIT_ENV plus HOME, and a partial clone path that is not in the deploy clone by
-          name or identity (roots.lies_in); after, none.
-  uisnap, stop
-          none, in either phase. They are modes of their own only so that neither is given the suite root.
+          name or identity (roots.lies_in); after, none. Its writes may
+          also go under ~/.local/share/betangel-suite/deps and this checkout's pin/, plus one os.mkdir of the
+          share dir itself; nowhere else in the share dir (its app/ belongs to release).
+  release (bin/suite release, betangel_suite/release.py; I-18) before seal(), only git with RELEASE_GIT_PREFIX and
+          -C this checkout's own root (never the deploy clone or a release copy): the filter-driver config query,
+          the index listing, status (never entering a submodule), rev-parse of <id>^{commit},
+          refs/remotes/origin/main^{commit}, <id>^{tree} or <id>^2, merge-base --is-ancestor, rev-list
+          --first-parent <id> and archive --format=tar <id>, with no user or system git config and no replace refs
+          or grafts, and an environment of exactly release_git_env (RELEASE_GIT_ENV, HOME and TMPDIR the armed ones,
+          PATH, LANG and the network switch; no DEVELOPER_DIR, SDKROOT or other key: Astra's review of #5 at
+          52a9edc, item 1) (release_argv_ok); after, none. A release names its commit by full object id, never a tag
+          or other name (release.py). Its writes may also go under ~/.local/share/betangel-suite/app (the release
+          copies) and nowhere else in the share dir.
+  uisnap  (bin/suite uisnap, DESIGN.md 11) before seal(), exactly one argv: the Command Line Tools' swiftc with
+          the fixed build flags of uisnap_build_argv, compiling <state>/uisnap/build/<sha256>/uisnap.swift to
+          uisnap in the same directory; after seal(), exactly one: the binary registered before seal() with
+          permit_uisnap_binary (that path in the build layout, with no arguments), still a regular file of this
+          user that nobody else can write and still with the sha256 it had then, so a binary swapped, replaced
+          by a symlink or by a script afterwards is never started. Both need an explicit environment of HOME,
+          LANG, TMPDIR, PATH=/usr/bin:/bin and the network switch only (uisnap_argv_ok). No git, no
+          /usr/bin/open, nothing else, in either phase.
+  stop    none, in either phase. A mode of its own only so that it is not given the suite root.
   test    the test runner never seals. It may start /opt/homebrew/bin/python3.13 or 3.11 (or this
           interpreter) with -I -S -B, /bin/sh on this checkout's bin/suite, and /usr/bin/git only as
           git -C <dir under TMPDIR> [-c <test identity key>=...] <local subcommand> with relative operands,
@@ -158,8 +181,9 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           GIT_* variable and no DEVELOPER_DIR or any other key; HOME and TMPDIR under TMPDIR). Every
           interpreter child and every bin/suite child needs an explicit environment whose HOME, roots under it
           and TMPDIR stay out of, and do not contain, the runner's data home, judged by realpath and
-          (st_dev, st_ino) (_runner_child_env_ok), whatever options or script follow -I -S -B. Tests of the
-          engine policy run in fresh engine-mode subprocesses, because a hook cannot be taken back.
+          (st_dev, st_ino) (_runner_child_env_ok), whatever options or script follow -I -S -B, except the
+          runner's own -j worker (TEST_WORKER_CODE, env None), which arms test mode. Tests of the engine
+          policy run in fresh engine-mode subprocesses, because a hook cannot be taken back.
 
 Every child must keep BETANGEL_BETFAIR_FORBID_NETWORK=1 and carry no stray BETFAIR variable.
 
@@ -178,27 +202,28 @@ mode, an isolated interpreter the runner starts is unguarded unless it imports b
 checks only the environment it is started with), a file
 descriptor or hard link made before a check, a reference to os.mkfifo or _posixsubprocess.fork_exec taken
 before arm(), subprocess's private _fork_exec or _socket.socket.listen called directly, or
-sqlite3.Connection.setlimit called on a connection directly. Nor does it close check-then-use gaps on the
-paths in a child's argv (lab-Claude's reading, not a reviewer's finding): runner_git_ok and vendor_argv_ok
-judge a path, links resolved, when the child is started, and git resolves it again when it runs, so a process
-of this user that changes a link on that path in between is not covered. Also left, as same-process routes: a
-fresh instance of the built-in posix module (importlib.util.module_from_spec on its spec), whose mkfifo and
-mknod are the unwrapped originals, since a built-in module raises no import event and the hook never sees the
-load (Astra's re-review of #2); and an extension module refused above that was loaded before arm() and then
-taken out of sys.modules, since CPython then serves a single-phase one (_ctypes on 3.11, _testcapi) from its
-extension cache with no import event (lab-Claude's probe, round 5). In engine mode the guard judges a child's
-argv, not its environment: /usr/bin/open runs with whatever environment it is handed, env None included, and
-os.putenv is refused only for the pinned keys and stray BETFAIR ones, so DEVELOPER_DIR or GIT_TRACE can still be
-set (Nuance's review of #2 at 4fa5835, N5-1: through the git probe this mode then allowed, they ran a planted
-xcrun and wrote a file outside the roots). If Phase 1b needs that probe, it comes back with an exact environment,
-with env None and any other putenv refused in engine mode, with its directory judged as text and with its links
-resolved against the roots' real paths from arm(), as runner_git_ok judges its -C directory (Astra's re-review
-of #4, which this mode checked until round 6), and with an engine-mode test like the test runner's DEVELOPER_DIR
-test. Refusals raise GuardRefusal, whose str() is the code only, never the path or address.
+sqlite3.Connection.setlimit called on a connection directly. Nor does it close check-then-use gaps on the paths in
+a child's argv (lab-Claude's reading, not a reviewer's finding): runner_git_ok, vendor_argv_ok and release_argv_ok
+judge a path, links resolved, when the child is started, and git resolves it again when it runs, so a process of
+this user that changes a link on that path in between is not covered. Also left, as same-process routes: a fresh
+instance of the built-in posix module (importlib.util.module_from_spec on its spec), whose mkfifo and mknod are
+the unwrapped originals, since a built-in module raises no import event and the hook never sees the load (Astra's
+re-review of #2); and an extension module refused above that was loaded before arm() and then taken out of
+sys.modules, since CPython then serves a single-phase one (_ctypes on 3.11, _testcapi) from its extension cache
+with no import event (lab-Claude's probe, round 5). In engine mode the guard judges a child's argv, not its
+environment: /usr/bin/open runs with whatever environment it is handed, env None included, and os.putenv is
+refused only for the pinned keys and stray BETFAIR ones, so DEVELOPER_DIR or GIT_TRACE can still be set (Nuance's
+review of #2 at 4fa5835, N5-1: through the git probe this mode then allowed, they ran a planted xcrun and wrote a
+file outside the roots). If Phase 1b needs that probe, it comes back with an exact environment, with env None and
+any other putenv refused in engine mode, with its directory judged as text and with its links resolved against the
+roots' real paths from arm(), as runner_git_ok judges its -C directory (Astra's re-review of #4, which this mode
+checked until round 6), and with an engine-mode test like the test runner's DEVELOPER_DIR test. Refusals raise
+GuardRefusal, whose str() is the code only, never the path or address.
 Standard library only.
 """
 
 import fcntl
+import hashlib
 import os
 import re
 import stat
@@ -214,11 +239,15 @@ PINNED_ENV = (FORBID_NETWORK_ENV, "TMPDIR", "SQLITE_TMPDIR")
 ALLOWED_VERSIONS = ((3, 11), (3, 13))                # I-14; bin/_launch.py holds the same tuple
 # uisnap and stop have modes of their own, whose only write root is the state root, as test's is: neither ever gets
 # the suite root (Nuance's re-review of #2, Q2 conditions 2 and 3; Astra's re-review of #2: cli.py mapped uisnap to
-# engine mode, "which can write its synthetic suite root").
-MODES = ("engine", "test", "vendor", "uisnap", "stop")
+# engine mode, "which can write its synthetic suite root"). release's mode (phase0/viewing) adds the release copies.
+MODES = ("engine", "test", "vendor", "uisnap", "release", "stop")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LAUNCHER = os.path.join(REPO_ROOT, "bin", "suite")
 GIT = "/usr/bin/git"
+# The parallel test run's worker (cli._run_workers): this checkout on sys.path, then cli.test_worker, which imports tests
+# and so arms test mode. The runner starts it with its own environment; runner_argv_ok allows that for this code only.
+TEST_WORKER_CODE = ("import sys\nsys.path.append(sys.argv[1])\nfrom betangel_suite import cli\n"
+                    "sys.exit(cli.test_worker(sys.argv[2], int(sys.argv[3]), sys.argv[4] or None, sys.argv[5]))\n")
 OPEN = "/usr/bin/open"
 SEARCH_DIRS = ("/usr/bin", "/bin")                   # where a bare program name may be found
 TEST_INTERPRETERS = ("/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3.11")
@@ -253,6 +282,46 @@ TEST_GIT_ENV_FIXED = {"PATH": "/usr/bin:/bin", "GIT_TERMINAL_PROMPT": "0"}
 TEST_GIT_ENV_DIRS = frozenset({"HOME", "TMPDIR"})
 TEST_GIT_ENV_EXTRA = frozenset({"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"})
 _LANG_RE = re.compile(r"[A-Za-z0-9_.@-]{1,64}")
+# bin/suite uisnap (uisnap_argv_ok): the Command Line Tools' swiftc and SDK, the build directory layout under the
+# state root, and the only environment keys its two children may get.
+SWIFTC = "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+SWIFT_SDK = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+UISNAP_TARGET = "arm64-apple-macos14.0"
+UISNAP_BUILD_PARTS = ("uisnap", "build")             # <state>/uisnap/build/<source sha256>/{uisnap.swift,uisnap}
+UISNAP_SOURCE_NAME = "uisnap.swift"
+UISNAP_BINARY_NAME = "uisnap"
+UISNAP_MODULE_CACHE = "module-cache"                 # <state>/uisnap/build/module-cache, shared by every build
+UISNAP_ENV_KEYS = frozenset({"HOME", "LANG", "TMPDIR", "PATH", FORBID_NETWORK_ENV})
+MAX_BINARY_BYTES = 256 << 20                         # the registered uisnap binary is hashed at every spawn
+_UISNAP_DIR_RE = re.compile(r"[0-9a-f]{64}")
+# bin/suite release (release_argv_ok): local git on this checkout only, no hooks, fsmonitor, attributes file,
+# transport or index write; revisions only as full object ids, plus refs/remotes/origin/main (GitHub's main as the
+# operator last fetched it; release.py says why never the local main).
+RELEASE_GIT_PREFIX = (GIT, "-c", "protocol.allow=never", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                      "-c", "core.attributesFile=/dev/null", "--no-optional-locks")
+# The whole GIT_* part of every release git child's environment, exactly (release_argv_ok): no user or system config,
+# no prompt, and neither replace refs nor grafts. A refs/replace/ entry or an info/grafts line in this checkout would
+# make git archive copy another commit's tree under the id given, rev-parse <id>^{tree} name that tree (so the tree
+# check passes and RELEASE.json records it beside the id), and merge-base --is-ancestor and rev-list --first-parent
+# count a commit main does not contain as on main. GIT_NO_REPLACE_OBJECTS=1 and GIT_GRAFT_FILE=/dev/null switch both
+# off, as for vendor (round 4b, after phase0/foundation's fix for vendor).
+RELEASE_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
+                   "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": "/dev/null"}
+# And the rest of it, exactly too (release_git_env): until round 6 only the GIT_* part was judged, so an allowed argv
+# with DEVELOPER_DIR=<dir> made /usr/bin/git run <dir>/usr/bin/xcrun outside the hook (Astra's review of #5 at
+# 52a9edc, item 1), as SDKROOT, TOOLCHAINS or a DYLD_* key could steer it. As for vendor and the test runner, every
+# key and value is fixed, and HOME and TMPDIR are the ones the guard was armed with.
+RELEASE_CHILD_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C", FORBID_NETWORK_ENV: "1"}
+# release.py refuses a repository whose own config (includes too) defines a filter driver: git status would run its
+# clean command and git archive its smudge command, as this user and outside the guard (release_git_filter).
+RELEASE_FILTER_QUERY = ("config", "--includes", "--null", "--get-regexp", r"^filter\.")
+# A nested repository's own config is not in that query, and git status enters a gitlink's repository (its clean
+# filter would run there): release.py refuses any gitlink in the index first, by this read-only index listing,
+# and its status never enters a submodule (--ignore-submodules=dirty) (release_gitlink).
+RELEASE_INDEX_QUERY = ("ls-files", "--stage", "-z")
+RELEASE_MAIN_REF = "refs/remotes/origin/main"     # the one ref release resolves (release.MAIN_REF), in full
+RELEASE_STATUS = ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty")
+_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 _NETWORK = {
     "socket.connect": "network_refused", "socket.connect_ex": "network_refused",
@@ -337,8 +406,14 @@ class _State:
         home = roots.home()
         # The suite root holds licensed derivatives and belongs to the engine alone (DESIGN.md 3.7).
         found = list(roots.write_roots(home)) if mode == "engine" else [roots.state_dir(home)]
-        if mode == "vendor":
-            found += [roots.share_dir(home), os.path.join(REPO_ROOT, "pin")]
+        if mode == "vendor":                # deps/ and the pin, not the share dir: its app/ is release's alone
+            found += [roots.deps_root(home), os.path.join(REPO_ROOT, "pin")]
+        # vendor may also create the share dir itself, with one os.mkdir of exactly that path (_check).
+        self.mkdir_only = (roots.share_dir(home),) if mode == "vendor" else ()
+        self.uisnap_binary = None           # (path, sha256) from permit_uisnap_binary, uisnap mode only
+        self.app_root = roots.app_dir(home)
+        if mode == "release":
+            found.append(self.app_root)
         self.mode = mode
         self.home = home
         self.sealed = False
@@ -372,6 +447,7 @@ class _State:
         self.research = roots.research_clone(home)
         self.deps_root = roots.deps_root(home)
         self.interpreters = frozenset(TEST_INTERPRETERS + (sys.executable,))
+        self.uisnap_build = os.path.join(roots.state_dir(home), *UISNAP_BUILD_PARTS)
         self.ports = set()
         self.unix_paths = set()
         self.unix_connects = set()
@@ -414,9 +490,11 @@ def arm(mode):
 
 
 def seal():
-    """End the startup phase: from now on no subprocess and no new bind or connect permit (engine, vendor).
+    """End the startup phase (engine, vendor, release, uisnap; the test runner never seals).
 
-    Permits given before seal() stay in force. The test runner never seals.
+    From now on no new bind, connect or uisnap-binary permit is accepted, and no subprocess starts except, in
+    uisnap mode, the binary registered with permit_uisnap_binary before seal(), still unchanged. Permits given
+    before seal() stay in force: an attached ssh-session keeps connecting to the control socket with its own.
     """
     with _LOCK:
         _require_armed().sealed = True
@@ -468,10 +546,13 @@ def permit_unix_socket(path):
 def permit_unix_connect(path):
     """Allow connecting to the Unix socket at path: normalised, directly in the run directory. Only before seal().
 
-    This is how stop and open reach a running engine's control socket (DESIGN.md 9.1); the engine itself never
-    asks for it. A relative path is never permitted, and nothing but socket.connect on an AF_UNIX socket uses it.
-    Nor is a path with a NUL in it: the kernel ends sun_path at the first NUL, so the connect would reach a
-    different name from the one permitted, and os.path.islink cannot look at such a path (it says False).
+    This is how stop and the takeovers by open and ssh-session reach a running engine's control socket (DESIGN.md
+    9.1, api/control.request). A permit outlives seal(): an attached ssh-session seals after its takeover and its
+    viewer keeps connecting (codes, heartbeats, away) with the permit it got before. The engine itself never asks
+    for it: an ssh-session that hosts the engine reaches it in-process. Nothing but socket.connect on an AF_UNIX
+    socket uses it. A relative path is never permitted, and nor is a path with a NUL in it: the kernel ends
+    sun_path at the first NUL, so the connect would reach a different name from the one permitted, and
+    os.path.islink cannot look at such a path (it says False).
     """
     with _LOCK:
         state = _require_unsealed()
@@ -479,6 +560,26 @@ def permit_unix_connect(path):
                 or os.path.normpath(path) != path or os.path.dirname(path) != state.run_dir):
             raise SuiteError("connect_permit_invalid")
         state.unix_connects.add(path)
+
+
+def permit_uisnap_binary(path):
+    """uisnap mode, before seal(), once: the one binary the sealed guard may start, pinned by its sha256 now.
+
+    path must have the build layout (<build root>/<64 hex>/uisnap, uisnap_argv_ok) and be a regular file (not a
+    symlink) owned by this user, executable by it and writable by nobody else. At each spawn after seal() the
+    file at path must still be such a file with the same sha256 (_uisnap_binary_ok).
+    """
+    with _LOCK:
+        state = _require_unsealed()
+        if state.mode != "uisnap":
+            raise SuiteError("guard_mode_conflict")
+        if (state.uisnap_binary is not None or not isinstance(path, str)
+                or not _uisnap_path_ok(path, state.uisnap_build)):
+            raise GuardRefusal("subprocess_refused")
+        digest = _binary_digest(path)
+        if digest is None:
+            raise GuardRefusal("subprocess_refused")
+        state.uisnap_binary = (path, digest)
 
 
 def _require_armed():
@@ -511,8 +612,9 @@ def _tmp_root_ok(state, tmp):
     and TMPDIR may be a link either (_no_link_below; links above the root stay allowed): the slots keep each of
     those directories where it is named, and a link would leave where it resolves to free to be moved, or put
     TMPDIR behind a name no slot holds (the guard-paths review). cli.main's ensure_dir already refused a linked
-    TMPDIR for every command but stop and vendor. Whether the directory exists is not checked here: cli.main
-    creates it (0700) before every handler but those two, which make no temporary files.
+    TMPDIR for every command but stop, vendor and release. Whether the directory exists is not checked here:
+    cli.main creates it (0700) before every handler but those three (cli.NO_TMPDIR), which make no temporary
+    files.
     """
     if any(part in (os.curdir, os.pardir) for part in tmp.split(os.sep)):
         return False
@@ -817,6 +919,8 @@ def _check(state, event, args):
         if _import_refused(args[0]):
             raise GuardRefusal("import_refused")
     else:
+        if event == "os.mkdir" and _single_mkdir_ok(state, args[0], args[2]):
+            return
         for path_index, fd_index, follow, slot in _MUTATIONS[event]:
             _check_write(state, args[path_index], -1 if fd_index is None else args[fd_index], follow, slot)
 
@@ -905,10 +1009,17 @@ def _check_spawn(state, event, args):
     if state.mode == "test":
         if runner_argv_ok(argv, names, state.interpreters, LAUNCHER, state.tmp_root, state.home):
             return
+    elif state.mode == "uisnap":
+        if uisnap_argv_ok(argv, names, state.uisnap_build, state.sealed) and (
+                not state.sealed or _uisnap_binary_ok(state, argv[0])):
+            return
     elif not state.sealed:
         if state.mode == "engine" and engine_argv_ok(argv, state.roots, state.ports):
             return
         if state.mode == "vendor" and vendor_argv_ok(argv, names, state.research, state.deps_root, state.home):
+            return
+        if state.mode == "release" and release_argv_ok(argv, names, REPO_ROOT, state.research, state.app_root,
+                                                       state.home, state.tmp_root):
             return
     raise GuardRefusal("subprocess_refused")
 
@@ -963,6 +1074,73 @@ def engine_argv_ok(argv, write_roots, ports):
     return False
 
 
+def uisnap_build_argv(directory):
+    """The one swiftc argv bin/suite uisnap runs: directory/uisnap.swift to directory/uisnap (DESIGN.md 11).
+
+    directory is <state>/uisnap/build/<sha256 of the source>; the clang module cache is shared beside it.
+    """
+    return [SWIFTC, "-swift-version", "5", "-O", "-target", UISNAP_TARGET, "-sdk", SWIFT_SDK,
+            "-module-cache-path", os.path.join(os.path.dirname(directory), UISNAP_MODULE_CACHE),
+            "-o", os.path.join(directory, UISNAP_BINARY_NAME), os.path.join(directory, UISNAP_SOURCE_NAME)]
+
+
+def uisnap_argv_ok(argv, env, build_root, sealed):
+    """bin/suite uisnap's children: before seal() only the swiftc build argv, after it only the built binary.
+
+    Both name a directory <build_root>/<64 hex> (normalised, absolute, its real path inside build_root's) and
+    need an explicit environment with only UISNAP_ENV_KEYS and PATH=/usr/bin:/bin; the binary takes no argument
+    (its URL arrives on stdin). This is the shape only: after seal() the hook also requires the file that
+    permit_uisnap_binary registered, unchanged (_uisnap_binary_ok).
+    """
+    if env is None or not set(env) <= UISNAP_ENV_KEYS or env.get("PATH") != "/usr/bin:/bin":
+        return False
+    if sealed:
+        return len(argv) == 1 and _uisnap_path_ok(argv[0], build_root)
+    directory = os.path.dirname(argv[-1])
+    return argv == uisnap_build_argv(directory) and _uisnap_dir_ok(directory, build_root)
+
+
+def _uisnap_path_ok(path, build_root):
+    """<build_root>/<64 hex>/uisnap, by its text and its directory's real path."""
+    return os.path.basename(path) == UISNAP_BINARY_NAME and _uisnap_dir_ok(os.path.dirname(path), build_root)
+
+
+def _uisnap_dir_ok(directory, build_root):
+    return (os.path.isabs(directory) and os.path.normpath(directory) == directory
+            and os.path.dirname(directory) == build_root and bool(_UISNAP_DIR_RE.fullmatch(os.path.basename(directory)))
+            and roots.within(os.path.realpath(directory), os.path.realpath(build_root)))
+
+
+def _uisnap_binary_ok(state, path):
+    """After seal(): path is the binary permit_uisnap_binary registered, still the same file content."""
+    return (state.uisnap_binary is not None and path == state.uisnap_binary[0]
+            and _binary_digest(path) == state.uisnap_binary[1])
+
+
+def _binary_digest(path):
+    """sha256 (hex) of a regular file owned by this user, executable by it and writable by nobody else, opened
+    without following a final symlink; None otherwise. Reads only (the hook passes its own read-only open)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022
+                or not info.st_mode & stat.S_IXUSR or info.st_size > MAX_BINARY_BYTES):
+            return None
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def vendor_argv_ok(argv, env, research, deps_root, home):
     """The five git argvs of tools/vendor_research.py: cat-file -e and merge-base --is-ancestor <sha>
     refs/heads/main in the deploy clone (both read only), then clone, checkout --detach and remote remove.
@@ -1001,6 +1179,61 @@ def vendor_argv_ok(argv, env, research, deps_root, home):
     return False
 
 
+def release_git_env(home, tmp_root):
+    """The whole environment of every release git child: RELEASE_GIT_ENV, RELEASE_CHILD_ENV, HOME and TMPDIR.
+
+    release._Git builds it with its HOME and TMPDIR, and release_argv_ok accepts nothing else, with the HOME and
+    TMPDIR the guard was armed with (TMPDIR is where /usr/bin/git's xcrun shim may keep its cache)."""
+    return dict(RELEASE_GIT_ENV, **RELEASE_CHILD_ENV, HOME=home, TMPDIR=tmp_root)
+
+
+def release_argv_ok(argv, env, repo, research, app_root, home, tmp_root):
+    """The git argvs of bin/suite release (release.py), on repo (this checkout's own root) only.
+
+    RELEASE_GIT_PREFIX -C <repo>, then exactly one of: RELEASE_STATUS (status --porcelain=v1 -z
+    --untracked-files=all --ignore-submodules=dirty: it never enters a submodule); RELEASE_FILTER_QUERY (config
+    --includes --null --get-regexp ^filter\\., read only); RELEASE_INDEX_QUERY (ls-files --stage -z, read only,
+    never --recurse-submodules);
+    rev-parse --verify --quiet <id>^{commit} | refs/remotes/origin/main^{commit} | <id>^{tree} | <id>^2 (the second
+    parent, which a merge commit has: release takes no other; round 6), <id> a full object id;
+    merge-base --is-ancestor <id> <id>; rev-list --first-parent <id> (main's first-parent line, which release
+    needs as well as ancestry: Nuance's answer of 2026-10-18); archive --format=tar <id>. Every subcommand is local
+    (no fetch, no remote archive). The environment must be explicit and exactly release_git_env(home, tmp_root), home
+    and tmp_root the guard's own: its GIT_* variables RELEASE_GIT_ENV (no user or system git config, no replace refs
+    or grafts), and no other key, so no DEVELOPER_DIR, SDKROOT or TOOLCHAINS, which pick what /usr/bin/git runs
+    (Astra's review of #5 at 52a9edc, item 1). repo must not lie in the deploy clone or the app root (a release copy
+    is never a source).
+    """
+    if env is None or not tmp_root or env != release_git_env(home, tmp_root):
+        return False
+    if not (isinstance(repo, str) and os.path.isabs(repo) and os.path.normpath(repo) == repo):
+        return False
+    forbidden = (research, os.path.realpath(research), app_root, os.path.realpath(app_root))
+    if any(roots.within(place, other) for place in (repo, os.path.realpath(repo)) for other in forbidden):
+        return False
+    prefix = list(RELEASE_GIT_PREFIX) + ["-C", repo]
+    if argv[:len(prefix)] != prefix:
+        return False
+    rest = argv[len(prefix):]
+    if rest in (list(RELEASE_STATUS), list(RELEASE_FILTER_QUERY), list(RELEASE_INDEX_QUERY)):
+        return True
+    if len(rest) == 4 and rest[:3] == ["rev-parse", "--verify", "--quiet"]:
+        revision = rest[3]
+        if revision == RELEASE_MAIN_REF + "^{commit}":
+            return True
+        for peel in ("^{tree}", "^{commit}", "^2"):
+            if revision.endswith(peel):
+                return bool(_OBJECT_ID_RE.fullmatch(revision[:-len(peel)]))
+        return False
+    if len(rest) == 4 and rest[:2] == ["merge-base", "--is-ancestor"]:
+        return all(_OBJECT_ID_RE.fullmatch(item) for item in rest[2:])
+    if len(rest) == 3 and rest[:2] == ["rev-list", "--first-parent"]:
+        return bool(_OBJECT_ID_RE.fullmatch(rest[2]))
+    if len(rest) == 3 and rest[:2] == ["archive", "--format=tar"]:
+        return bool(_OBJECT_ID_RE.fullmatch(rest[2]))
+    return False
+
+
 def runner_argv_ok(argv, env, interpreters, launcher, tmp_root, home):
     """What the test runner may start: isolated interpreters, this checkout's launcher, and local git.
 
@@ -1010,9 +1243,17 @@ def runner_argv_ok(argv, env, interpreters, launcher, tmp_root, home):
     interpreter option, and so does -c code that calls guard.arm itself, as every engine-policy test child does. Until
     lab-Claude's round-5 review only a launcher child was checked, and only when argv[4] named _launch.py, so a -c
     child with env None armed engine mode with the real HOME, and "-X utf8" before the script skipped the check.
+
+    The one exception is the runner's own -j worker (cli._run_workers): exactly TEST_WORKER_CODE with this checkout's
+    root and its four arguments, started with env None. It inherits the runner's HOME and TMPDIR, and its fixed code
+    arms test mode, which never has the suite root as a write root, as the runner's own guard does.
     """
     if argv[0] in interpreters:
-        return argv[1:4] == ["-I", "-S", "-B"] and _runner_child_env_ok(env, home)
+        if argv[1:4] != ["-I", "-S", "-B"]:
+            return False
+        if env is None and len(argv) == 11 and argv[4:7] == ["-c", TEST_WORKER_CODE, REPO_ROOT]:
+            return True
+        return _runner_child_env_ok(env, home)
     if argv[0] == "/bin/sh":
         return len(argv) >= 2 and argv[1] == launcher and _runner_child_env_ok(env, home)
     return argv[0] == GIT and runner_git_ok(argv, env, tmp_root)
@@ -1151,6 +1392,15 @@ def _check_sqlite(state, database):
         # on, and without SQLITE_USE_URI, uri=False opens "file::memory:" as a file in the cwd.
         raise GuardRefusal("write_outside_roots")
     _check_write(state, text, -1, True)
+
+
+def _single_mkdir_ok(state, path, dir_fd):
+    """vendor only: os.mkdir of exactly the share dir (absolute, no dir_fd). Nothing may be written in it then
+    except under its deps/, a write root of that mode."""
+    if not state.mkdir_only or isinstance(path, int) or dir_fd not in (None, -1):
+        return False
+    text = os.fsdecode(os.fspath(path))
+    return os.path.isabs(text) and os.path.normpath(text) == text and text in state.mkdir_only
 
 
 def _check_write(state, path, dir_fd, follow, slot=False):

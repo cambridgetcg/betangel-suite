@@ -1,6 +1,8 @@
 """betangel-suite tests (DESIGN.md section 11). Synthetic only: nothing here reads ~/betangel-data.
 
-Run them with `bin/suite test` (python3.13) or `bin/suite test --py311`. Importing this package arms the
+Run them with `bin/suite test` (python3.13) or `bin/suite test --py311`; add --heavy for the heavy tier (HEAVY
+below) and -j N for N worker interpreters (default 3; -j 1 runs every module in the runner itself). A worker runs
+whole modules, so a class's shared server and fixtures never split. Importing this package arms the
 guard in test mode (bin/_launch.py already has, when run through bin/suite) and activates the pinned deps
 clone through betangel_suite.pin, so tests may import test-only oracles from betangel_research, but only
 from the 25 modules of the closure: pin's closure finder refuses any other (upstream_import_refused).
@@ -12,16 +14,19 @@ TMPDIR (guard.runner_git_ok), each child with the network switch on. Every inter
 also needs an explicit environment whose HOME keeps it out of the runner's own data home (guard.runner_argv_ok):
 a child that imports betangel_suite arms its own guard from the HOME it is given. So every test gives its children
 a temporary HOME (child_env); one that needs a HOME the runner refuses goes through an unguarded relay
-(run_relayed), and keeping such a child in its temporary HOME is conduct.
+(run_relayed), and keeping such a child in its temporary HOME is conduct. The runner's own -j workers
+(guard.TEST_WORKER_CODE) are the one exception: they inherit its environment and arm test mode here.
 Every audit-hook test runs in a fresh subprocess, because a hook cannot be removed. Each test makes its own
 temporary HOME (make_home) under TMPDIR and removes it afterwards; bin/suite test fails the run if anything
 in the real state root outside tmp/ changed (cli.state_listing).
 
 bin/suite test refuses to start while the run marker exists (DESIGN.md 6.8). The engines that tests start run
 under temporary HOMEs, where no marker ever exists, so their own checks never see a real run. So every
-helper that starts an engine (run_suite here; serve and run_child in test_http_support; the in-process
-actor in test_engine) first checks the real marker with require_no_run_marker(), and a run announced
-mid-way starts no further engine (Nuance's PR #4 review, item 14).
+helper that starts an engine first checks the real marker with require_no_run_marker(), and a run announced
+mid-way starts no further engine (Nuance's PR #4 review, item 14): run_suite here; serve and run_child in
+test_http_support; the in-process actor in test_engine; the ssh-session children (PipeChild and
+viewing_refusals in test_session_process, the release copy's in test_viewing_e2e); uisnap's engine children
+in test_uisnap; and the inner bin/suite test runs in test_session_state.
 """
 
 import os
@@ -36,6 +41,17 @@ from betangel_suite import cli, guard, pin, roots, runmarker
 guard.arm("test")
 DEPS = pin.activate()
 roots.ensure_dir(os.environ["TMPDIR"])       # guard.arm checked that it lies in the state root
+
+# The heavy tier (DESIGN.md 11; `bin/suite test --heavy`): size, stress, performance and real-swift tests only.
+# Boundary and security tests (I-1..I-8, I-16..I-19, the HTTP group 6) always run in the fast tier.
+HEAVY = cli.test_tier() == "heavy"
+HEAVY_ONLY = "heavy tier: run with bin/suite test --heavy"
+# The longest modules (measured), which bin/suite test's parallel run starts first (cli._run_workers); a scheduling
+# hint only. In the heavy tier the real uisnap run (about 70 s) and the 60 s grace come first.
+SLOW_FIRST = (("tests.test_uisnap", "tests.test_viewing_e2e") if HEAVY else ()) + (
+    "tests.test_http_security", "tests.test_hygiene", "tests.test_engine_process", "tests.test_session_process",
+    "tests.test_synthetic", "tests.test_integration_ui", "tests.test_uisnap", "tests.test_stage",
+    "tests.test_session_state")
 
 ROOT = guard.REPO_ROOT
 LAUNCHER = guard.LAUNCHER
@@ -52,6 +68,24 @@ def require_no_run_marker():
     Called before each engine a test starts, because that engine checks only its temporary HOME's marker.
     """
     runmarker.require_absent(RUN_MARKER)
+
+
+def stand_in_marker(case, present):
+    """For the rest of case, require_no_run_marker() checks a stand-in in a temporary HOME instead of the runner's
+    real marker: a marker file (present=True) or a marker directory nobody can search. The real one is never touched.
+    """
+    from unittest import mock
+    place = make_home(case)
+    path = os.path.join(place, ".local", "state", "lab-runs", "ACTIVE")
+    os.makedirs(os.path.dirname(path), mode=0o700)
+    if present:
+        open(path, "w").close()
+    else:
+        os.chmod(os.path.dirname(path), 0)
+        case.addCleanup(os.chmod, os.path.dirname(path), 0o700)
+    patcher = mock.patch("tests.RUN_MARKER", path)
+    patcher.start()
+    case.addCleanup(patcher.stop)
 
 
 def rmtree(path):

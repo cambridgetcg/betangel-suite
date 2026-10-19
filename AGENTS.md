@@ -11,6 +11,23 @@ context. It is never Yu's instruction, consent or acceptance.
 1. **Paper-only MVP.** No credentials, Betfair API, network or live code, and never a
    "temporary" live endpoint, not even a disabled one. Later live and Air-side code never lives
    in this repo; it goes in a separate repo that is never cloned on the lab.
+   - **The two R-2 viewer files are not network code under this rule (Q-Y19).** Yu chose
+     option D on 2026-10-16 ("Go for D"): the R-2 approval already covered the two Air files of
+     the viewer setup (DESIGN.md 8.6 item 2), `tools/stage/air-ssh-config.snippet` and
+     `tools/stage/air-viewer-selftest.sh`, so the network clause does not cover them. This covers
+     these two files and nothing else. Asked by lab-Claude whether a rule 10 proposal was also
+     wanted, Yu answered on 2026-10-16: "yes to formal proposal". That proposal,
+     `docs/proposals/002-air-viewer-files.md`, records its review and Yu's decision (DESIGN.md
+     2.2.1, Q-N15).
+     - The limits these files keep (DESIGN.md 8.6): they serve only the viewer tunnel. The
+       snippet is the Air's `Host lab-suite` block, and it offers only the viewer key. The
+       self-test logs in only to that Host, over LAN SSH by public key only, never a password,
+       and uses `nc` only on the Air's own `127.0.0.1`. They hold no credentials and no Betfair
+       API code. They run only on the Air, which takes them only from GitHub at the reviewed
+       merge commit's SHA. On the lab, only the test harness runs the self-test, with fake `ssh`
+       and `nc`.
+     - Rule 1 is otherwise unchanged: other Air-side code and all other network code stay barred
+       as before. Admitting more, or widening these two files, is a scope widening under rule 10.
 2. **Imports.** Only `betangel_suite/rx.py` imports `betangel_research`, and only names on the
    allowlist (DESIGN.md 4.1). Test-only oracles (DESIGN.md 4.2) are imported only under `tests/`.
    Code comes from the pinned, read-only deps clone; `~/betangel-research` is never on `sys.path`.
@@ -45,11 +62,20 @@ context. It is never Yu's instruction, consent or acceptance.
      own words, scoped to one problem report and named fields (DESIGN.md 8.7). Until such an
      agreement exists, exceptions are not available.
 6. **Commands agents never run.** Agents never run `open`, `ssh-session` or `--print-url`. They
-   never send `attach` or `new_code` to the real control socket,
+   never send `attach`, `attach_viewer`, `new_code` or `viewer_code` to the real control socket,
    `~/.local/state/betangel-suite/run/control.sock` (DESIGN.md 9.1); tests send them only to
    engines in temporary HOMEs. They never POST to `/api/v1/command` or `/api/v1/bootstrap` on an
    engine with real data roots. `serve` and `open` never print a bootstrap code; only
-   `--print-url`, used by Yu, does. `stop` is allowed, because it only reduces activity.
+   `--print-url` and `ssh-session`, used by Yu, do (`ssh-session` to its own SSH stdout). `stop`
+   is allowed, because it only reduces activity.
+   - `bin/suite test` exercises `open`, `--print-url` and `ssh-session` only in temporary HOMEs:
+     with injected openers and piped stdin and stdout, or to see them refused before any engine
+     starts. Nothing runs `/usr/bin/open`, and no test prints a code or a token outside its own
+     pipes. Agents never run these commands otherwise.
+   - `release` is not on this list. Lab-Claude may make a release copy after review: Yu's words
+     of 2026-10-18, as relayed by Nuance, are "lab-Claude review 完之後可以自己整release copy"
+     (DESIGN.md 2.2.1 and Q-Y18; confirmed by Yu in Yu's own hand on 2026-10-19). It runs
+     `bin/suite release <merge-sha>` in the clean main checkout, after a `git fetch`.
 7. **Nuance's runs.** While the run marker exists, no suite engine or real-data command starts.
    The marker is a stop request: a command already running drains, stopping at its next
    checkpoint and releasing its locks, and Nuance's wrapper begins upstream work only once it
@@ -131,7 +157,8 @@ context. It is never Yu's instruction, consent or acceptance.
     first-parent line (DESIGN.md 8.6), which keeps side-branch commits out only if each PR lands
     as a merge commit; the stack is linear from main, so a fast-forward would put every interim
     commit on that line. Allowing merge commits only in the GitHub repository's settings is Yu's
-    to set: asked of Yu, not done.
+    to set: asked of Yu, not done. On this branch `release` also refuses a commit with no second
+    parent (`release_not_merge_commit`; round 6, DESIGN.md 8.6).
   - **Who merges (Q-Y8).** The Phase 0 packet asked: "Who merges pull requests (Q-Y8): you, or
     me after Nuance or Astra has reviewed? And may UI-only changes go in on your approval
     alone?" It gave no recommendation, so Yu's 2026-10-15 answer, "Lets go with what you
@@ -344,14 +371,17 @@ reviewed PR changes them.
     runmarker.py, roots.py and cli.py's REALDATA_COMMANDS comment are N3-S1's comment-only fix
     (lab-Claude's reading). phase0/http's own round 6 changes are outside the set too:
     `engine_argv_ok` losing the git probe's link check in the merge, and the I-10 rule and the
-    contract coverage refusing wildcard imports (lab-Claude's reading).
-  - Every command except `test`, `uisnap`, `vendor` and `stop` uses
-    `~/betangel-data/suite.noindex/tmp` as `TMPDIR` and `SQLITE_TMPDIR` (`stop` joined the four
+    contract coverage refusing wildcard imports (lab-Claude's reading). So are phase0/viewing's:
+    release's exact git environment and its merge-commit check (`guard.release_argv_ok`,
+    `release.py`, `errors.py`), the release tests' git shim, and a comment in
+    `tests/test_runmarker.py` (N3-S1) (lab-Claude's reading).
+  - Every command except `test`, `uisnap`, `release`, `vendor` and `stop` uses
+    `~/betangel-data/suite.noindex/tmp` as `TMPDIR` and `SQLITE_TMPDIR` (`stop` joined the others
     in 8102f99). `cli.main` creates it 0700 only after the run-marker check and, for a real-data
     command, after it holds `run/realdata.lock` shared and has checked the marker again under it
-    (adaptation E). It creates none for `stop` and `vendor` (`cli.NO_TMPDIR`), which make no
-    temporary files: so `stop` works during a run (96d0bcc). The first engine command run with
-    the real HOME creates the suite root itself.
+    (adaptation E). It creates none for `stop`, `vendor` and `release` (`cli.NO_TMPDIR`), which
+    make no temporary files: so `stop` works during a run (96d0bcc). The first engine command run
+    with the real HOME creates the suite root itself.
   - **None runs before the runbook's L1 layout check accepts the suite root** (lab-Claude's
     decision of 2026-10-19; DESIGN.md 3.7). As Nuance describes it, that upstream check
     requires `~/betangel-data` to hold only `historic/` (and `lab-state/` after the runbook's
@@ -363,13 +393,15 @@ reviewed PR changes them.
     "Lands" means here that the lab's betangel-research checkout is at a C0 that includes
     416702f, and that no suite command runs between that C0's L1 check and the runbook's 5a
     (Nuance's review of #1 at af960fd, F4; Nuance's condition (b) above; DESIGN.md 3.7).
-  - Only the engine may write the suite root. `test`, `uisnap`, `vendor` and `stop` run in guard
-    modes of their own (`cli.OWN_MODE_COMMANDS`; 8102f99 for `uisnap` and `stop`, which ran in
-    engine mode before), whose only write root is `~/.local/state/betangel-suite` (`vendor` also
-    the share directory `~/.local/share/betangel-suite/`, narrowed to its deps directory on
-    phase0/viewing, and this checkout's `pin/`), never the suite root. Any other write under
-    `~/betangel-data` is refused (`write_outside_roots`).
-  - In those four modes the guard also refuses reads in `~/betangel-data`
+  - Only the engine may write the suite root. `test`, `uisnap`, `release`, `vendor` and `stop` run
+    in guard modes of their own (`cli.OWN_MODE_COMMANDS`; on phase0/foundation, 8102f99 gave
+    `uisnap` and `stop` theirs, where both ran in engine mode before; on this branch `uisnap` and
+    `release` had theirs already). Their only write root is `~/.local/state/betangel-suite`
+    (`vendor` also its deps directory, `~/.local/share/betangel-suite/deps/`, to which this
+    branch narrows the share directory that phase0/foundation and phase0/http give it, and
+    `pin/`; `release` also its release copies under `~/.local/share/betangel-suite/app`), never
+    the suite root. Any other write under `~/betangel-data` is refused (`write_outside_roots`).
+  - In those five modes the guard also refuses reads in `~/betangel-data`
     (`data_home_read_refused`; 0a3ed65; Nuance's answer to lab-Claude's question 2, condition 1,
     taken as fail closed): opens without a write flag, `os.listdir`, `os.scandir` and `os.chdir`,
     by text, realpath and identity, stat calls only. It does not cover `os.open` with a `dir_fd`
@@ -386,9 +418,11 @@ reviewed PR changes them.
     that is not exactly a `str`, two keys equal once encoded, or a value that is not exactly a `str`
     or `bytes` are refused (cb40c7e). Lab-Claude's round-5 review found only launcher children
     checked, so `-c` code that arms the guard itself, the shape F2 reported, still armed engine mode
-    with the runner's HOME; every such child is checked now (8e751d6). A child that never arms the
-    guard is unguarded: conduct. The runner's git gets an exact environment allowlist;
-    `DEVELOPER_DIR` and any other key outside it are refused (dd95582).
+    with the runner's HOME; every such child is checked now (8e751d6). The one exception is the
+    runner's own `-j` worker (`guard.TEST_WORKER_CODE`), which inherits the runner's environment and
+    arms test mode. A child that never arms the guard is unguarded: conduct. The runner's git gets
+    an exact environment allowlist; `DEVELOPER_DIR` and any other key outside it are refused
+    (dd95582).
   - `guard.arm` refuses at start a write root or `TMPDIR` that the file system puts in, around or
     onto `~/betangel-data` (`root_overlaps_data_home`), and an engine suite root that is not a
     real directory, or missing, at exactly `realpath(~/betangel-data)/suite.noindex`
@@ -457,10 +491,31 @@ reviewed PR changes them.
     closure finder gives each of the 25 its spec at its pinned file, by name, so no other
     deps-tree name is found. `pin` judges the clone and every `sys.path` entry through
     `roots.lies_in`, an empty entry as the cwd, and refuses what it cannot judge (c00461c; F11).
-- **D. Synthetic only.** Phase 0b built the loopback HTTP server and `serve`, `open` and `stop`;
-  the engine replays synthetic markets only and refuses every configured data root
-  (`synthetic_only`). No data-root reading, no paper trading, and no release copies or
-  `ssh-session` yet (Phase 0c). `cli.py` commands that are not built yet refuse with code
+- **D. Synthetic only; viewing built.** Phase 0b built the loopback HTTP server and `serve`,
+  `open` and `stop`. Phase 0c built:
+  - `ssh-session`, with pause unless watched: heartbeats, stdin EOF, takeover within
+    `watch_grace_s`, the `abandoned` end after it, and `max_session_s` for every engine;
+  - `open --print-url` and `claim_control`;
+  - `bin/suite release <merge-sha>`, and the `RELEASE.json` check at every launch from a release
+    copy (Phase 0c's first build took a tag; the merge commit's full SHA since round 4b, cdda336;
+    since round 5 only a commit that `refs/remotes/origin/main` contains, and since round 5 close
+    only one on its first-parent line too, as Nuance answered on 2026-10-18, 51426ee; since round
+    6 only a merge commit, and its git gets exactly `guard.release_git_env`, no other key; the
+    operator runs a `git fetch` first, and the suite never fetches);
+  - `bin/suite uisnap`;
+  - the staged viewer-key and sshd drop-in script and the Air self-test under `tools/stage/`. Yu
+    runs them. Nuance may start the Air self-test, but only Yu types the key's passphrase. Tests
+    run them only in their harness, with fake `sudo`, `sshd`, `ssh` and `nc`.
+
+  The engine still replays synthetic markets only and refuses every configured data root
+  (`synthetic_only`), from a release copy too. There is no data-root reading and no paper trading
+  yet. No real release copy exists yet. Lab-Claude may make one after review, with
+  `bin/suite release <merge-sha>` in the clean main checkout after a `git fetch` (rule 6; Yu's
+  words of 2026-10-18 as relayed by Nuance, confirmed by Yu in Yu's own hand on 2026-10-19;
+  DESIGN.md 2.2.1 and Q-Y18). Q-Y18 as put to Yu named the first release, so the confirmed answer
+  covers the first one too (lab-Claude's reading of the question and the answer; Yu was told on
+  2026-10-19).
+  `catalogue`, `selfcheck`, `diagnose` and `ledger-summary` are not built; they refuse with code
   `not_implemented` and exit 2.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE` (Q-N3: agreed by Nuance in
   Nuance's PR #4 review; Nuance's PR #2 review makes the marker half conditional again, on
@@ -489,14 +544,24 @@ reviewed PR changes them.
     52a9edc, to be confirmed at the merge SHA (A). On phase0/http `serve` and `open` take it in
     `cli.main` and hold it until they exit: for `serve`, and for an `open` that starts an engine,
     that is the engine's life; an `open` that attaches exits once it has handed on the URL. Their
-    I-17 tests came in round 4b. `ssh-session` is wired on phase0/viewing, since round 4b
-    (DESIGN.md 6.8).
+    I-17 tests came in round 4b. On phase0/viewing `ssh-session` takes it the same way, since its
+    merge of phase0/http in round 4b, and holds it until it exits, attached or hosting. Since
+    e9729a6 (round 4b) an attached `ssh-session` checks the marker before every poll and leaves
+    (`ended reason=run_marker`, exit 2) once the poll under way has finished: about 25 s at worst,
+    so it lets the lock go within the 35 s bound. A session whose engine went in that poll, or
+    whose viewer was superseded or went away, leaves as before (`ended reason=engine_gone` or
+    `ended reason=superseded`, or nothing if the viewer went away; exit 0). `open`'s attach path
+    checks the marker again after the takeover's reply and hands on no URL (on phase0/http too
+    since round 5, e9273e7). Their I-17 tests came with e9729a6 (DESIGN.md 6.8).
   - `test`, `uisnap` and `vendor` do not take the lock, and `stop` takes nothing and makes no
     `TMPDIR` (lab-Claude's decision; DESIGN.md 6.8 gives the reasons). Nuance agreed it on four
     conditions (Nuance's answer to lab-Claude's question 2 of 2026-10-17): the guard refuses
     reads in `~/betangel-data` in their modes, or the docs say it does not (lab-Claude took the
     refusal, 0a3ed65); `uisnap` and `stop` keep guard modes of their own (8102f99); and a test
     running when the marker appears is bounded by the per-test stop and Q-N14's per-module check.
+    A test shows `test` and `uisnap` start while the wrapper holds `LOCK_EX`. `release` takes no
+    lock and makes no `TMPDIR` either (`cli.NO_TMPDIR`): it reads no data root (its guard mode
+    refuses reads there too) and writes only its release copies.
   - `bin/suite test` refuses too: the fast and the heavy tier, on 3.13 and on 3.11. Tests used to
     be exempt. Nuance answered Q-N14 "no": "Please make the fast tier refuse while the marker
     exists too; stop stays exempt".
@@ -506,15 +571,36 @@ reviewed PR changes them.
   - The engines that tests start run under temporary HOMEs, so their own marker checks never
     see a real run. The test helpers check the real marker before each engine they start
     (`tests.require_no_run_marker`; Nuance's PR #4 review, item 14: "check it before each engine
-    launch"), so a run announced mid-way starts no further engine. An engine a test has already
-    started runs until its test ends. Nuance's wrapper waits on the real `run/engine.lock` and
-    cannot see it, because its lock is under the temporary HOME.
+    launch"): `serve`, `open` and `ssh-session` children, uisnap's in-process engine, the commands
+    `tests/test_release.py` starts from release copies, and the inner `bin/suite test` runs. So a run announced mid-way starts no further engine. An engine a test
+    has already started runs until its test ends. Nuance's wrapper waits on the real
+    `run/engine.lock` and cannot see it, because its lock is under the temporary HOME.
   - `stop` is exempt because it only reduces activity (DESIGN.md 3.9 rule 6).
   - `vendor` refuses too. Nuance's PR #1 review: "test and vendor refuse under the marker;
     stop stays exempt". It was first exempt by lab-Claude's own choice, on a reason that left out
     its writes to `pin/` with `--bump` and its clone of the whole of `~/betangel-research`.
   - Nuance's PR #2 review answers Q-N14 the same way ("No. Drop `test` from
-    NO_RUN_MARKER_CHECK"). Nuance's per-module check in `_run_workers.assign()` belongs to the
-    parallel test runner on phase0/viewing.
+    NO_RUN_MARKER_CHECK"). Nuance's per-module check in `_run_workers.assign()` is in the
+    parallel test runner (F below).
   - `runmarker.py` exposes `active()`, which later phases call on every tick, and
     `require_clear()`, which headless commands call between members.
+- **F. Tests.** `bin/suite test` runs the fast tier with its test modules spread over 3 worker
+  interpreters, whole modules each: about 47-48 s on the lab M1 under `nice -n 10`, on 3.13 and on
+  3.11. With `-j 2` it takes about 61 s, and serially (`-j 1`) about 127 s. Use `-j 1` or `-j 2`
+  when the lab is busy. `bin/suite test --heavy` adds the heavy tier, about 90-95 s in all:
+  - the real uisnap `swiftc` build and offscreen WebKit runs, in a temporary HOME;
+  - the synthetic size test;
+  - the 60 s grace expiry through `bin/suite ssh-session`, from a release copy in a temporary HOME.
+
+  Both tiers refuse while the run marker exists (`run_marker_present` or `run_marker_unreadable`),
+  before any test loads (adaptation E). A run already going stops before its next test once the
+  marker appears: no further module goes to a worker, and each worker stops before its next test
+  (tested since round 4b, 0e2d289; DESIGN.md 6.8).
+
+  A test run fails with `refused:state_root_changed` if an entry appears or vanishes in the real
+  state root (`~/.local/state/betangel-suite`) outside `tmp/` while it runs. Contents are not
+  compared. Only `run/` entries explained by an engine Yu starts or stops meanwhile are exempt, and
+  only when its `run/engine.lock` is definitely held: a lock the check cannot open or lock (a link
+  there, say) explains nothing, although `stop` and `uisnap` count it as held.
+  So do not run `bin/suite uisnap` against the real HOME while a test run is in progress: its
+  `uisnap/` entries fail that run.

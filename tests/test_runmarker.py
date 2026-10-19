@@ -151,14 +151,16 @@ class StartTimeTests(unittest.TestCase):
         self.assertEqual(self.suite(home, "stop"), (0, ""))          # no engine running: prints not_running
 
     def test_test_refuses_while_the_marker_exists(self):
-        # Q-N14, Nuance: "no". Both interpreters refuse, before the arguments are read, any test is loaded or
-        # anything is created. Every run names no test or bad arguments, so a regression cannot start a
-        # nested full run.
+        # Q-N14, Nuance: "no". Both interpreters and both tiers refuse, before the arguments are read, any test
+        # is loaded or anything is created. Every run names no test or bad arguments, so a regression cannot
+        # start a nested full run.
         home = make_home(self, deps=True)
         path = marker(home)
         os.makedirs(os.path.dirname(path))
         open(path, "w").close()
-        runs = (("test", "-k", "zzz_no_such_test"), ("test", "--py311", "-v", "-k", "zzz_no_such_test"))
+        runs = (("test", "-k", "zzz_no_such_test"), ("test", "--py311", "-v", "-k", "zzz_no_such_test"),
+                ("test", "--heavy", "-j", "1", "-k", "zzz_no_such_test"),
+                ("test", "--py311", "-j", "2", "--heavy", "-k", "zzz_no_such_test"))
         bad = (("test", "--no-such-flag"), ("test", "--py311", "--no-such-flag"))
         before = tree_listing(home)
         for args in runs + bad:
@@ -421,9 +423,9 @@ class RealDataLockTests(unittest.TestCase):
         self.assertEqual(cli.REALDATA_COMMANDS,
                          ("serve", "open", "ssh-session", "catalogue", "selfcheck", "diagnose", "ledger-summary"))
         self.assertLessEqual(set(cli.REALDATA_COMMANDS), set(cli.COMMANDS))
-        for command in ("test", "uisnap", "vendor", "stop"):
+        for command in ("test", "uisnap", "vendor", "stop", "release"):
             self.assertNotIn(command, cli.REALDATA_COMMANDS)
-        self.assertEqual(cli.NO_TMPDIR, ("stop", "vendor"))
+        self.assertEqual(cli.NO_TMPDIR, ("stop", "vendor", "release"))     # release is phase0/viewing's
         self.assertFalse(set(cli.NO_TMPDIR) & set(cli.REALDATA_COMMANDS))
         self.assertEqual(self.lock, os.path.join(self.home, ".local", "state", "betangel-suite", "run", "realdata.lock"))
 
@@ -555,6 +557,29 @@ sys.exit(run(["stop"]))
         finally:
             os.close(fd)
         self.assertEqual(os.listdir(roots.data_home(self.home)), [])        # no suite root, no tmp/
+
+    def test_test_and_uisnap_neither_take_nor_wait_for_the_lock(self):
+        # lab-Claude's decision, which Nuance agreed on four conditions in the answer to lab-Claude's question 2 of
+        # 2026-10-17 (AGENTS.md, Phase 0 status E, and DESIGN.md 6.8 record it): test and uisnap refuse
+        # under the marker at start (StartTimeTests) but never take run/realdata.lock. So while the wrapper holds
+        # LOCK_EX (with no marker), both still start: bin/suite test runs and finds no test, and bin/suite uisnap gets
+        # past cli.main to its own refusal of a configured data root. Neither makes anything under ~/betangel-data.
+        os.makedirs(os.path.dirname(self.lock), 0o700)
+        fd = os.open(self.lock, os.O_RDONLY | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            tested = run_suite(["test", "-k", "zzz_no_such_test"], self.home)
+            config_path = roots.config_path(self.home)
+            with open(config_path, "w", encoding="ascii") as handle:
+                json.dump({"data_roots": ["~/betangel-data/historic-pro"]}, handle)
+            os.chmod(config_path, 0o600)
+            snapped = run_suite(["uisnap"], self.home)
+        finally:
+            os.close(fd)
+        self.assertEqual(tested.returncode, 0, tested.stderr[-2000:])
+        self.assertIn("Ran 0 tests", tested.stderr)
+        self.assertEqual((snapped.returncode, snapped.stdout, snapped.stderr), (2, "", "refused:synthetic_only\n"))
+        self.assertEqual(os.listdir(roots.data_home(self.home)), [])
 
     def test_no_tmpdir_under_the_data_home_without_the_lock(self):
         # A command that may touch real data but is missing from REALDATA_COMMANDS refuses before its TMPDIR.

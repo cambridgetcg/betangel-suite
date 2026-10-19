@@ -3,7 +3,8 @@
 // Authorization header, frames render into the header, grid and ladder, controls and keys send
 // commands, hiding the page while the clock runs sends one pause (DESIGN.md 8.6, I-19), and a 401 ends
 // the session. While hidden, any later message that shows the clock running asks for a pause again (a Play
-// accepted just before hiding, a pause refused), one request at a time, and never after not_controller.
+// accepted just before hiding, a pause refused), one request at a time, never after not_controller and
+// never from a read-only tab.
 // No browser and no network: everything here is in memory.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -242,6 +243,11 @@ test('boot: strip the fragment, bootstrap, stream, render, command, and end on 4
     if (url === '/api/v1/command') {
       return json(200, { ok: true });
     }
+    if (url === '/api/v1/query') {                   // the controller role (control.test.mjs covers read-only)
+      assert.deepEqual(JSON.parse(init.body), { query: 'session', args: {} });
+      assert.equal(init.headers.Authorization, 'Bearer ' + TOKEN);
+      return json(200, { ok: true, controller: true, market: null });
+    }
     if (url === '/api/v1/stream') {
       streams += 1;
       if (streams > 1 || shutdown) {
@@ -307,6 +313,9 @@ test('boot: strip the fragment, bootstrap, stream, render, command, and end on 4
     assert.ok(byId.get('ladder').drawCalls > 0, 'the ladder was drawn');
     assert.ok(byId.get('help-list').children.length > 0);
     assert.equal(byId.get('play').disabled, false);
+    assert.ok(requests.some((r) => r.url === '/api/v1/query'), 'the tab asked for its role');
+    assert.equal(byId.get('role').hidden, true, 'the controller tab is not read-only');
+    assert.equal(byId.get('claim').hidden, true);
     assert.equal(byId.get('conn').textContent, 'connected');
     const visible = () => [...byId.values()].map((el) => el.textContent).join(' ');
     assert.equal(/\blive\b/i.test(visible()), false, 'the page never says live (DESIGN.md 8.4)');
@@ -390,10 +399,13 @@ const settle = async () => {
 
 // A fresh app.js instance (its own module URL, so its own session) booted against a new fake document and
 // server, showing frame 1 (paused). answer(body) gives each command's [status, reply], or a promise of one
-// to hold the reply back.
-async function bootApp(tag, answer) {
+// to hold the reply back. The session query says whether this tab is the controller (DESIGN.md 9.2 item 8):
+// controller at first unless told otherwise, read-only after a not_controller answer, the controller again
+// after an accepted claim_control.
+async function bootApp(tag, answer, { controller = true } = {}) {
   const { doc, byId } = fakeDocument();
   const requests = [];
+  let role = controller;
   const chunks = [encode([frame(1, true)])];
   let wake = null;
   let waiting = false;
@@ -417,8 +429,17 @@ async function bootApp(tag, answer) {
       return json(200, { ok: true, token: TOKEN });
     }
     if (url === '/api/v1/command') {
-      const [status, body] = await answer(JSON.parse(init.body));
+      const sent = JSON.parse(init.body);
+      const [status, body] = await answer(sent);
+      if (body.code === 'not_controller') {
+        role = false;
+      } else if (sent.command === 'claim_control' && body.ok) {
+        role = true;
+      }
       return json(status, body);
+    }
+    if (url === '/api/v1/query') {
+      return json(200, { ok: true, controller: role, market: null });
     }
     if (url === '/api/v1/stream') {
       streams += 1;
@@ -523,21 +544,44 @@ test('hidden: a refused pause is asked again on the next running frame, but neve
     await until(() => app.note() === 'pause: ok', 'the second pause');
     assert.deepEqual(app.commands(), ['pause', 'pause']);
 
-    // A read-only tab: not_controller. Asking at frame rate would only spend the command rate limit.
+    // A read-only tab: not_controller. Asking at frame rate would only spend the command rate limit, and the
+    // tab turns read-only at once (DESIGN.md 9.2 item 8).
     app.show('visible');
     answers.push([409, { ok: false, code: 'not_controller' }]);
     app.show('hidden');
     await until(() => app.note() === 'pause: not_controller', 'the not_controller reply');
+    assert.equal(app.byId.get('role').hidden, false, 'read-only after not_controller');
     await app.push([frame(4, false)]);
     await app.push([{ t: 'hb', seq: 4, paused: false }, frame(5, false)]);
     await settle();
     assert.deepEqual(app.commands(), ['pause', 'pause', 'pause'], 'no pause after not_controller while hidden');
     app.show('visible');
     assert.deepEqual(app.commands(), ['pause', 'pause', 'pause'], 'showing the page sends nothing');
-    app.show('hidden');                                 // hidden again: ask once more
-    await until(() => app.commands().length === 4, 'the pause on hiding again');
+    app.show('hidden');                                 // still read-only: hiding asks nothing
+    await app.push([frame(6, false)]);
     await settle();
-    assert.deepEqual(app.commands(), ['pause', 'pause', 'pause', 'pause']);
+    assert.deepEqual(app.commands(), ['pause', 'pause', 'pause'], 'a read-only tab never asks');
+    app.show('visible');
+    app.byId.get('claim').fire('click');                // the controller again
+    await until(() => app.byId.get('role').hidden === true, 'control claimed');
+    app.show('hidden');                                 // hidden again: ask once more
+    await until(() => app.commands().length === 5, 'the pause on hiding again');
+    await settle();
+    assert.deepEqual(app.commands(), ['pause', 'pause', 'pause', 'claim_control', 'pause']);
+  } finally {
+    await app.close();
+  }
+});
+
+test('hidden: a read-only tab asks nothing, on hiding or on a later running frame', async () => {
+  const app = await bootApp('read-only', () => [200, { ok: true }], { controller: false });
+  try {
+    await until(() => app.byId.get('role').hidden === false, 'the read-only chip');
+    app.show('hidden');
+    await app.push([frame(2, false)]);                  // another tab's Play: the clock runs
+    await app.push([{ t: 'hb', seq: 2, paused: false }, frame(3, false)]);
+    await settle();
+    assert.deepEqual(app.commands(), [], 'a read-only tab sent no pause');
   } finally {
     await app.close();
   }

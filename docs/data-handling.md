@@ -17,7 +17,7 @@ clone, and is never uploaded or shared. A model context counts as an upload.
 | **git** (commits, branches, PRs, issues) | Source, docs, the pin file, synthetic fixtures *generators*, synthetic screenshots under `docs/synthetic/` | `*.bz2`, `*.tar`, any archive, `*.sqlite*`, `*.jsonl`, CSV and other exports, `run/`, `exports/`, `ledger/`, `private/` and other state directories, any file over 512 KiB (one exception, DESIGN.md, approved by Yu on 2026-10-19, DESIGN.md 2.2.1: up to 2 MiB, still content-scanned, and every change to it reviewed by Nuance and Astra; every other file stays under 512 KiB), real market, event or selection ids, runner names, prices, member paths, keys, tokens |
 | **Logs, stdout, stderr, HTTP errors** | Error codes, counts, timings, salted identifier hashes (pseudonymous, not anonymous; DESIGN.md 9.2 item 9) | Tracebacks (Phase 0 writes none anywhere; later, only 0600 files under `private/`, which agents never read), request bodies, data rows, member paths, ids, names, prices, the bootstrap code or session token |
 | **Model context, Collab, the mailbox** (lab-Claude, Nuance, Astra) | Codes, counts, timings and salted hashes, as printed by `bin/suite selfcheck`, `catalogue`, `diagnose` and `ledger-summary`; synthetic fixtures; uisnap screenshots of synthetic markets | Real rows, runner names, prices, market ids, per-market results; anything under `~/betangel-data`, read, searched or listed (the ledger, `sessions/` and `private/` included); the install salt; screenshots of real races |
-| **Screenshots** | uisnap PNGs of synthetic-only engines, kept under `docs/synthetic/` | Any screenshot of a real market. On the lab, agents have no Screen Recording permission, and `screencapture` is never used on the lab screen. On the Air an agent's shell passes the screen-capture preflight with no prompt, so no agent captures the screen there while a suite page or an `ssh lab-suite` window is open (DESIGN.md 8.6; Nuance's PR #1 review, item 6). A line saying so in the Air's CLAUDE.md (Q-Y10) was approved by Yu on 2026-10-17 and is in (Nuance confirmed it on 2026-10-17): a CLAUDE.md rule for Claude Code sessions on the Air; for Astra and other tools it is conduct only |
+| **Screenshots** | uisnap PNGs of synthetic-only engines. `bin/suite uisnap` writes them (0600) by default under `~/.local/state/betangel-suite/uisnap/out/<UTC stamp>/`, or in a missing or empty `--out DIR` inside the suite's write roots; either way outside every clone. Any kept in git are copied to `docs/synthetic/` by hand | Any screenshot of a real market. On the lab, agents have no Screen Recording permission, and `screencapture` is never used on the lab screen. On the Air an agent's shell passes the screen-capture preflight with no prompt, so no agent captures the screen there while a suite page or an `ssh lab-suite` window is open (DESIGN.md 8.6; Nuance's PR #1 review, item 6). A line saying so in the Air's CLAUDE.md (Q-Y10) was approved by Yu on 2026-10-17 and is in (Nuance confirmed it on 2026-10-17): a CLAUDE.md rule for Claude Code sessions on the Air; for Astra and other tools it is conduct only |
 | **The browser** | A Safari Private window, on both machines (Q-Y11, answered by Yu on 2026-10-17); UI preferences in `localStorage` | The session token in storage, cookies, external requests; a page title that names a race (it is always `betangel-suite`) |
 | **Disk** | Derivatives under the suite root (0700); data roots are read-only to the suite | Decompressed members anywhere; any derivative outside `~/betangel-data`; temp files outside the suite's own `TMPDIR` |
 
@@ -34,12 +34,14 @@ decision of 2026-10-19; Nuance's condition (b); AGENTS.md, Phase 0 status A; DES
 before anything is written (62c39c6).
 
 The test runner itself is confined: its guard mode refuses writes under `~/betangel-data`, and
-reads there too, as `vendor`'s, `uisnap`'s and `stop`'s do (0a3ed65). Every interpreter child it
-starts and every `bin/suite` child need an explicit environment whose HOME, the roots under it and
-`TMPDIR` keep out of the runner's data home, checked at spawn by realpath and identity (96f8a90,
-8e751d6; Nuance's re-review of #2, F2): a child that imports `betangel_suite` arms its own guard
-from the HOME it is given. So tests give every child a temporary HOME. What a child does with its
-environment after it starts, and a child that never imports `betangel_suite`, are conduct.
+reads there too, as `vendor`'s, `uisnap`'s, `release`'s and `stop`'s do (0a3ed65). Every
+interpreter child it starts and every `bin/suite` child need an explicit environment whose HOME,
+the roots under it and `TMPDIR` keep out of the runner's data home, checked at spawn by realpath
+and identity (96f8a90, 8e751d6; Nuance's re-review of #2, F2): a child that imports
+`betangel_suite` arms its own guard from the HOME it is given. The runner's own `-j` workers, which
+inherit its environment and arm test mode, are the one exception. So tests give every child a
+temporary HOME. What a child does with its environment after it starts, and a child that never
+imports `betangel_suite`, are conduct.
 
 The suite never writes `~/.local/state/lab-runs/`, where Nuance's run wrapper keeps its marker and
 lock, and refuses a root in, around or onto it (`root_overlaps_lab_runs`; c3b0c61).
@@ -116,6 +118,10 @@ In synthetic mode the engine refuses non-synthetic ids and every configured real
   (`FAIL <rule code> <path withheld>: +<k> more line(s) (entry <n>)`), and a last line gives the
   totals per code. The message and history scans name their items in place of `(entry <n>)`:
   `(message)`, `(commit <sha> message)`, `(tag <sha> message)` and `(commit <sha> entry <k>)`.
+  - No URL is exempt. The event-id rule treats a digit run inside a link like one anywhere
+    else (Astra's answer to DESIGN.md Q-A2).
+  - uisnap PNGs are synthetic only and live outside the repo (see the table above). The scanner
+    fails on any image outside `docs/synthetic/`.
 - **Finding the file.** The entry number is the entry's position, from 1, in the list the scan
   worked through. Yu maps it to a file locally, from the repository root, with git (replace `N`):
   - after `--staged` run by hand:

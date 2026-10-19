@@ -5,6 +5,7 @@ Roots, under the home directory taken from $HOME (bin/suite passes the caller's 
     ~/.local/state/betangel-suite/            0700  config, prefs, run/ (realdata.lock), tmp/, install-salt and
                                                     salt-provisioned (Phase 0)
     ~/.local/share/betangel-suite/deps/       read-only pinned upstream code (written only by the vendor tool)
+    ~/.local/share/betangel-suite/app/        release copies <sha12>/ and the current symlink (written only by release)
     ~/betangel-data/suite.noindex/            0700  the suite root, ONLY while STATE_ROOT_AGREED is True
 
 STATE_ROOT_AGREED is True: Yu agreed the suite root (R-4), and Nuance agreed it on three conditions in Nuance's
@@ -13,9 +14,10 @@ item 1, which check_placement answers. Nuance's re-review of #2 agreed both halv
 findings, and Nuance's review of #5 agrees them as built at 52a9edc, on conditions, to be confirmed at the merge SHA
 (AGENTS.md, Phase 0 status A; DESIGN.md 3.7). The flag stays True meanwhile (lab-Claude's call). So the suite root
 is writable (by the engine only: guard.py gives it to no other mode), and its tmp/ is the TMPDIR of every command
-except test, uisnap, vendor and stop, whose guard modes have only the state root (cli.OWN_MODE_COMMANDS). The flag
-and bin/suite's default TMP branch, which a shell script cannot read from here, change together. The launcher
-refuses any mismatch between them (tmpdir_mismatch), so a half-done change fails closed.
+except test, uisnap, release, vendor and stop, whose guard modes never have the suite root
+(cli.OWN_MODE_COMMANDS). The flag and bin/suite's default TMP branch, which a shell script cannot read from here,
+change together. The launcher refuses any mismatch between them (tmpdir_mismatch), so a half-done change fails
+closed.
 
 With the flag False (tests still cover it, under temporary HOMEs) nothing may be created or written
 anywhere under ~/betangel-data: the writer helper refuses with state_root_not_agreed on the path text
@@ -49,7 +51,8 @@ SHARE_DIR_PARTS = (".local", "share", "betangel-suite")
 # The directory of the run marker, ~/.local/state/lab-runs/ACTIVE (config's run_marker accepts only that path), which
 # holds Nuance's wrapper's lab-runs/LOCK too. No write root and no TMPDIR may lie in, on or around it (check_placement).
 LAB_RUNS_PARTS = (".local", "state", "lab-runs")
-STATE_TMP_COMMANDS = ("test", "uisnap", "vendor", "stop")   # commands whose TMPDIR is always the state root's tmp/
+# Commands whose TMPDIR is always the state root's tmp/: their guard modes never get the suite root (guard.py).
+STATE_TMP_COMMANDS = ("test", "uisnap", "release", "vendor", "stop")
 REALDATA_LOCK_NAME = "realdata.lock"                 # in run/; never unlinked (runmarker.hold_shared)
 _MAX_ANCESTORS = 256                                 # deeper than any real tree: past it, fail closed
 
@@ -84,6 +87,11 @@ def share_dir(home_dir=None):
 
 def deps_root(home_dir=None):
     return os.path.join(share_dir(home_dir), "deps")
+
+
+def app_dir(home_dir=None):
+    """The read-only release copies (DESIGN.md 3.7, 8.6); not in write_roots(): only guard mode release writes here."""
+    return os.path.join(share_dir(home_dir), "app")
 
 
 def run_dir(home_dir=None):

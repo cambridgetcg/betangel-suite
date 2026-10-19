@@ -7,6 +7,7 @@ ssh-session get theirs; no client script prints a code or a token.
 """
 
 import os
+import re
 import unittest
 
 from tests import test_http_support as support
@@ -322,6 +323,7 @@ results["first_controller"] = query(first)[1]["controller"]
 results["second_command"] = command(second, "pause")
 results["second_unimplemented"] = command(second, "claim_control")
 results["first_command"] = command(first, "set_speed", {"speed_x100": 200})
+command(first, "claim_control")                     # back to the watching tab, for the checks below
 watching.close()
 time.sleep(0.8)
 third = bootstrap()
@@ -331,8 +333,8 @@ results["first_after"] = command(first, "set_speed", {"speed_x100": 100})
         self.assertEqual(results["first_stream"], 200)
         self.assertEqual((results["first_controller"], results["second_controller"]), (True, False))
         self.assertEqual(results["second_command"], [409, {"ok": False, "code": "not_controller"}])
-        self.assertEqual(results["second_unimplemented"], [200, {"ok": False, "code": "not_implemented"}])
-        self.assertEqual(results["first_command"], [200, {"ok": True}])
+        self.assertEqual(results["second_unimplemented"], [200, {"ok": True}])     # claim_control (Phase 0c) ...
+        self.assertEqual(results["first_command"], [409, {"ok": False, "code": "not_controller"}])   # ... took it
         self.assertTrue(results["third_controller"])        # the old controller tab stopped watching
         self.assertEqual(results["first_after"], [409, {"ok": False, "code": "not_controller"}])
 
@@ -564,19 +566,46 @@ results["other_route"] = request("POST", "/api/v1/query", {"query": "session", "
 
 class SlowClientTests(unittest.TestCase):
     """Connections are bounded: a client over the cap gets a code-only 503 with the 9.3 headers, and a request
-    head trickled in a byte at a time is cut off at the head deadline, so slow clients cannot hold every slot."""
+    head trickled in a byte at a time is cut off at the head deadline, and a trickled body at the body deadline
+    (Phase 0c), so slow clients cannot hold every slot.
 
-    def test_over_cap_gets_503_and_trickled_heads_are_cut_off(self):
-        home = support.short_home(self)
-        # A small cap and deadline for the test; the shipped values are server.MAX_CONNECTIONS (32) and
-        # server.HEAD_DEADLINE_S (10 s).
-        child = support.run_child(self, home, """
+    One server for the class, with a small cap and small deadlines; the shipped values are server.MAX_CONNECTIONS
+    (32), server.HEAD_DEADLINE_S and server.BODY_DEADLINE_S (10 s each). Each test checks only the log lines its
+    own requests added, and the server's clean exit is checked once, at the end of the class."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._cleanup = support._Cleanup()
+        try:
+            cls.home = support.short_home(cls._cleanup)
+            cls.child = support.run_child(cls._cleanup, cls.home, """
 server.MAX_CONNECTIONS = 3
 server.Handler.head_deadline_s = 1.5
+server.Handler.body_deadline_s = 1.5
 def main():
     return server.run(cfg, command="serve", port=0)
 """)
-        port = child.wait_ready()
+            cls.port = cls.child.wait_ready()
+        except BaseException:
+            cls._cleanup.run()
+            raise
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            status = cls.child.terminate()
+            lines = cls.child.stderr().splitlines()
+        finally:
+            cls._cleanup.run()
+        if status != 0 or any(not re.fullmatch(r"http:[0-9]{3}:[a-z_]+", line) for line in lines):
+            raise AssertionError("the slow-client server did not exit cleanly with code-only log lines")
+
+    def new_log_lines(self, before):
+        return self.child.stderr()[len(before):].splitlines()
+
+    def test_over_cap_gets_503_and_trickled_heads_are_cut_off(self):
+        home, port, child = self.home, self.port, self.child
+        before = child.stderr()
         results = support.client(self, home, port, r'''
 import select
 holders = []
@@ -626,10 +655,63 @@ results["after"] = request("GET", "/", headers={"Host": "127.0.0.1:%d" % PORT})[
         for seconds in results["closed_after_s"]:
             self.assertTrue(1.0 <= seconds < 4.0, results["closed_after_s"])
         self.assertEqual(results["after"], 200)
-        self.assertEqual(child.terminate(), 0, child.stderr())
-        self.assertIn("http:503:too_many_connections", child.stderr().splitlines())
-        for line in child.stderr().splitlines():
+        added = self.new_log_lines(before)
+        self.assertIn("http:503:too_many_connections", added)
+        for line in added:
             self.assertRegex(line, r"\Ahttp:[0-9]{3}:[a-z_]+\Z")
+
+    def test_trickled_bodies_are_cut_off_at_the_body_deadline(self):
+        # A body (bootstrap's included, which needs no token) must arrive within the body deadline from the start
+        # of its read, however it trickles in; then the connection is closed with no response. The shipped value
+        # is server.BODY_DEADLINE_S (10 s); 1.5 s here.
+        home, port, child = self.home, self.port, self.child
+        before = child.stderr()
+        results = support.client(self, home, port, r'''
+import select
+token = bootstrap()
+def trickle(path, with_token):
+    sock = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+    head = ("POST %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nOrigin: http://127.0.0.1:%d\r\n"
+            "Content-Type: application/json\r\nContent-Length: 64\r\n" % (path, PORT, PORT))
+    if with_token:
+        head += "Authorization: Bearer " + token + "\r\n"
+    sock.sendall((head + "\r\n").encode() + b"{")
+    started, got, closed = time.monotonic(), b"", None
+    while time.monotonic() - started < 8:
+        try:
+            sock.sendall(b" ")                     # one byte every 0.4 s: no single read ever times out
+        except OSError:
+            closed = time.monotonic() - started
+            break
+        if select.select([sock], [], [], 0.4)[0]:
+            try:
+                part = sock.recv(65536)
+            except OSError:
+                part = b""
+            if not part:
+                closed = time.monotonic() - started
+                break
+            got += part
+    sock.close()
+    return [closed, len(got)]
+import threading
+def run(name, path, with_token):
+    results[name] = trickle(path, with_token)
+threads = [threading.Thread(target=run, args=case)
+           for case in (("bootstrap", "/api/v1/bootstrap", False), ("query", "/api/v1/query", True))]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join(15)
+results["after"] = query(token)[0]
+''')
+        for name in ("bootstrap", "query"):
+            closed_after_s, answered = results[name]
+            self.assertIsNotNone(closed_after_s, name)
+            self.assertTrue(1.0 <= closed_after_s < 4.0, (name, closed_after_s))
+            self.assertEqual(answered, 0, name)               # closed with no response
+        self.assertEqual(results["after"], 200)               # the server still answers whole requests
+        self.assertEqual(self.new_log_lines(before), [])       # a cut-off body is closed with no log line either
 
 
 def assert_integers(case, value, where="frame"):

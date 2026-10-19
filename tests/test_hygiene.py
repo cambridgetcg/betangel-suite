@@ -486,6 +486,12 @@ class ContentRuleTests(_RepoCase):
     def test_event_id(self):
         self.plant("pkg/c.json", f'{{"eventId": "{EVENT}"}}\n', EVENT, code="event_id")
 
+    def test_event_id_in_a_help_centre_article_url(self):
+        # No URL is exempt: the article-number exemption was dropped until a real documentation need exists
+        # (Astra's re-review of #5, Q-A2).
+        self.plant("docs/sources.md", f"https://privacy.claude.com/en/articles/{EVENT}-how-long\n", EVENT,
+                   code="event_id")
+
     def test_selection_id_outside_namespace(self):
         self.plant("pkg/d.py", f"SELECTION = {SELECTION}\n", SELECTION, code="event_id")
 

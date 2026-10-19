@@ -49,8 +49,9 @@ class RootPathTests(unittest.TestCase):
         with mock.patch.object(roots, "STATE_ROOT_AGREED", True):
             self.assertEqual(roots.write_roots("/h"), ("/h/.local/state/betangel-suite", "/h/betangel-data/suite.noindex"))
             for command in cli.COMMANDS:
-                expected = "/h/.local/state/betangel-suite/tmp" if command in ("test", "uisnap", "vendor", "stop") else (
-                    "/h/betangel-data/suite.noindex/tmp")
+                # release, like uisnap and stop, never gets the suite root (guard.py), so its TMPDIR cannot lie there.
+                expected = "/h/.local/state/betangel-suite/tmp" if command in (
+                    "test", "uisnap", "release", "vendor", "stop") else "/h/betangel-data/suite.noindex/tmp"
                 self.assertEqual(roots.tmp_dir(command, "/h"), expected, command)
 
     def test_place_is_text_only(self):

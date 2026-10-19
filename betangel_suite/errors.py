@@ -57,12 +57,21 @@ CODES = frozenset({
     "control_bad_request", "control_peer_refused", "manifest_invalid",
     # engine command results (DESIGN.md 9.1); the run marker's run_marker_present is listed below
     "no_market", "not_watched", "end_of_market", "engine_stopping", "engine_busy",
+    # session lifetime and viewing (Phase 0c; DESIGN.md 8.6 item 2, I-19): viewer and session end reasons
+    "superseded", "abandoned", "max_session", "engine_gone", "stopped", "run_marker",
+    # ssh-session's forced command serves and attaches only on the viewer key's port (DESIGN.md 8.6 item 2)
+    "viewer_port_mismatch",
     # the local API (DESIGN.md 9.1-9.3): code-only HTTP error bodies
     "bad_request", "bad_json", "bad_args", "bad_host", "bad_origin", "unsupported_media_type",
     "body_too_large", "length_required", "unauthorized", "bad_code", "not_found", "method_not_allowed",
     "rate_limited", "not_controller", "uri_too_long", "headers_too_large", "expectation_failed",
     "http_version_not_supported", "unsupported_method", "internal_error", "too_many_connections",
     "unknown_query",
+    # bin/suite uisnap (DESIGN.md 11): the build, the output directory, and the snapshot binary's exit codes
+    "uisnap_toolchain_missing", "uisnap_source_invalid", "uisnap_build_failed", "uisnap_out_not_empty",
+    "uisnap_bad_input", "uisnap_navigation_refused", "uisnap_load_failed", "uisnap_not_connected",
+    "uisnap_step_failed", "uisnap_snapshot_failed", "uisnap_window_onscreen", "uisnap_timeout",
+    "uisnap_page_errors", "uisnap_failed", "uisnap_bad_output",
     # the run marker and the realdata lock (I-17)
     "run_marker_present", "run_marker_unreadable", "run_lock_busy", "run_lock_invalid", "run_lock_not_held",
     # suite config
@@ -73,6 +82,12 @@ CODES = frozenset({
     "research_clone_on_path", "upstream_imported_early", "upstream_origin_mismatch", "upstream_import_refused",
     "commit_not_present", "commit_not_on_main", "partial_exists", "git_failed", "deps_link_present",
     "launcher_required",
+    # release copies (I-18): bin/suite release, and the RELEASE.json check at every launch from a copy
+    "release_commit_invalid", "release_not_a_checkout", "release_current_invalid", "release_exists",
+    "release_dirty_tree", "release_commit_unknown", "release_main_missing", "release_not_on_main",
+    "release_archive_invalid", "release_tree_mismatch", "release_layout_invalid", "release_manifest_invalid",
+    "release_writable", "release_file_missing", "release_file_extra", "release_file_modified",
+    "release_git_filter", "release_gitlink", "release_not_first_parent", "release_not_merge_commit",
     # roots and the writer helper
     "path_not_absolute", "already_exists", "not_a_directory", "symlink_refused", "wrong_owner",
     "root_parent_missing", "write_failed", "salt_invalid", "suite_root_invalid", "suite_root_misplaced",

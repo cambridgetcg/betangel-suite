@@ -7,17 +7,24 @@ refusal is reached before anything newer is needed.
 
 import ast
 import importlib.util
+import io
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
+import time
 import types
 import unittest
 from unittest import mock
 
 from betangel_suite import cli, guard, pin, roots
 from betangel_suite.errors import SuiteError
-from tests import PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_relayed, run_suite, tree_listing
+import tests
+from tests import (PRELUDE, PYTHON, ROOT, child_env, make_home, run_python, run_relayed, run_suite, stand_in_marker,
+                   tree_listing)
+from tests import test_runmarker
 
 LAUNCH_PY = os.path.join(ROOT, "bin", "_launch.py")
 CWD_PROBE_SENTINEL = "cwd-probe"               # made only in a temporary HOME, by LauncherTests
@@ -84,13 +91,14 @@ class InterpreterPolicyTests(unittest.TestCase):
             returncode, _out, err = run_relayed([PYTHON, *flags, LAUNCH_PY, "selfcheck"], child_env(home), home)
             self.assertEqual((returncode, err), (2, "refused:launch_flags\n"), flags)
 
-    def test_guard_mode_is_engine_for_every_command_but_test_vendor_uisnap_and_stop(self):
+    def test_guard_mode_is_engine_for_every_command_but_test_vendor_uisnap_release_and_stop(self):
         # uisnap and stop have modes of their own, so that neither is given the suite root (Nuance's re-review of #2,
-        # Q2 conditions 2 and 3; Astra's re-review of #2 found uisnap mapped to engine mode).
-        self.assertEqual(cli.OWN_MODE_COMMANDS, ("test", "vendor", "uisnap", "stop"))
+        # Q2 conditions 2 and 3; Astra's re-review of #2 found uisnap mapped to engine mode); release (phase0/viewing)
+        # has its own, which writes only the release copies.
+        self.assertEqual(cli.OWN_MODE_COMMANDS, ("test", "vendor", "uisnap", "release", "stop"))
         self.assertLessEqual(set(cli.OWN_MODE_COMMANDS), set(guard.MODES))
         for command in cli.COMMANDS:
-            expected = command if command in ("test", "vendor", "uisnap", "stop") else "engine"
+            expected = command if command in ("test", "vendor", "uisnap", "release", "stop") else "engine"
             self.assertEqual(cli.guard_mode(command), expected, command)
         for other in ("", "frobnicate", "Test", "vendor ", "STOP", "uisnap "):
             self.assertEqual(cli.guard_mode(other), "engine", other)
@@ -110,11 +118,16 @@ class InterpreterPolicyTests(unittest.TestCase):
                                  ast.unparse(node))
 
     def test_py311_flag_must_match_the_interpreter(self):
-        self.assertEqual(cli.parse_test_args(["--py311", "-v", "-k", "guard"], (3, 11, 17)), (2, "guard"))
-        self.assertEqual(cli.parse_test_args([], (3, 13, 16)), (1, None))
+        self.assertEqual(cli.parse_test_args(["--py311", "-v", "-k", "guard"], (3, 11, 17)),
+                         (2, "guard", "fast", cli.TEST_JOBS))
+        self.assertEqual(cli.parse_test_args([], (3, 13, 16)), (1, None, "fast", cli.TEST_JOBS))
+        self.assertEqual(cli.parse_test_args(["--heavy", "-j", "1"], (3, 13, 16)), (1, None, "heavy", 1))
+        self.assertEqual(cli.parse_test_args(["--py311", "-j", "4", "--heavy"], (3, 11, 0)), (1, None, "heavy", 4))
         for args, version in ((["--py311"], (3, 13, 16)), ([], (3, 11, 17)), (["-k"], (3, 13, 0)),
                               (["-x"], (3, 13, 0)), (["-v", "-v"], (3, 13, 0)), (["-v", "--py311"], (3, 11, 0)),
-                              (["-k", "-v"], (3, 13, 0))):
+                              (["-k", "-v"], (3, 13, 0)), (["--heavy", "--heavy"], (3, 13, 0)), (["-j"], (3, 13, 0)),
+                              (["-j", "0"], (3, 13, 0)), (["-j", "5"], (3, 13, 0)), (["-j", "2", "-j", "2"], (3, 13, 0)),
+                              (["-j", "x"], (3, 13, 0)), (["--heavy=1"], (3, 13, 0))):
             with self.assertRaises(SuiteError, msg=args) as caught:
                 cli.parse_test_args(args, version)
             self.assertEqual(caught.exception.code, "bad_arguments")
@@ -132,10 +145,12 @@ class LauncherTests(unittest.TestCase):
         home = make_home(self)
         before = tree_listing(home)
         for command in cli.COMMANDS:
-            if command in ("test", "vendor", "serve", "open", "stop"):
-                continue
+            if command in ("test", "vendor", "serve", "open", "stop", "release", "ssh-session", "uisnap"):
+                continue                # ssh-session (Phase 0c): tests/test_session_process.py; uisnap: tests/test_uisnap.py
             env = {"SSH_CONNECTION": SSH} if command == "ssh-session" else {}
             self.assertEqual(self.suite(home, command, **env), (2, "", "refused:not_implemented\n"), command)
+        # release is built (Phase 0c, tests/test_release.py): without its tag it refuses before anything else.
+        self.assertEqual(self.suite(home, "release"), (2, "", "refused:bad_arguments\n"))
         self.assertEqual(tree_listing(home), before)
 
     def test_unknown_and_missing_commands(self):
@@ -277,13 +292,108 @@ class StateRootFlagTests(unittest.TestCase):
         self.assertEqual(os.listdir(roots.data_home(home)), [])
 
     def test_bin_suite_matches_the_flag(self):
-        # The shell cannot read roots.py, so its default TMP branch is pinned here; _launch.py refuses a mismatch.
+        # The shell cannot read roots.py, so its TMP branches are pinned here; _launch.py refuses a mismatch.
+        state = "|".join(roots.STATE_TMP_COMMANDS) + ")"
         with open(os.path.join(ROOT, "bin", "suite"), encoding="utf-8") as handle:
-            lines = [line.strip() for line in handle if line.strip().startswith(("test|uisnap|vendor|stop)", "*)"))]
-        self.assertEqual(lines, ['test|uisnap|vendor|stop) TMP="$HOME/.local/state/betangel-suite/tmp" ;;',
-                                 '*)                       TMP="$HOME/betangel-data/suite.noindex/tmp" ;;'])
-        self.assertEqual(roots.STATE_TMP_COMMANDS, ("test", "uisnap", "vendor", "stop"))
+            lines = [line.strip() for line in handle if line.strip().startswith((state, "*)"))]
+        self.assertEqual(lines, [state + ' TMP="$HOME/.local/state/betangel-suite/tmp" ;;',
+                                 '*)                               TMP="$HOME/betangel-data/suite.noindex/tmp" ;;'])
+        self.assertEqual(roots.STATE_TMP_COMMANDS, ("test", "uisnap", "release", "vendor", "stop"))
         self.assertIs(roots.STATE_ROOT_AGREED, True)
+
+
+class ParallelRunnerTests(unittest.TestCase):
+    """bin/suite test's worker interpreters (cli._run_workers, cli.test_worker): whole modules in children of the
+    runner (the guard's runner_argv_ok), each module's output, then one summary in unittest's words. The workers
+    check the runner's real marker (tests.RUN_MARKER), or a stand-in for it (tests.stand_in_marker)."""
+
+    def run_workers(self, modules, count, pattern=None):
+        """(passed, output); the run must not have stopped for the marker."""
+        passed, stopped, output = self.run_workers_with_marker(modules, count, pattern)
+        self.assertIsNone(stopped, output)
+        return passed, output
+
+    def run_workers_with_marker(self, modules, count, pattern=None):
+        saved = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            passed, stopped = cli._run_workers(modules, count, 1, pattern, tests.RUN_MARKER)
+            return passed, stopped, sys.stderr.getvalue()
+        finally:
+            sys.stderr = saved
+
+    def test_no_module_goes_to_a_worker_while_the_marker_exists(self):
+        # Nuance's PR #4 review, item 14: a run announced while the tests run starts no further module.
+        for present, state in ((True, "present"), (False, "unreadable")):
+            with self.subTest(present=present):
+                stand_in_marker(self, present)
+                passed, stopped, output = self.run_workers_with_marker(["tests.test_layout", "tests.test_roots"], 2)
+                self.assertEqual((passed, stopped), (False, state))
+                self.assertRegex(output, r"\nRan 0 tests in [0-9.]+s \(2 modules, 2 workers\)\n\nFAILED\n\Z")
+                self.assertNotIn("worker_failed", output)
+
+    def test_a_worker_checks_the_marker_before_each_module(self):
+        # A module sent just before the marker appeared is answered without running a test.
+        stand_in_marker(self, True)
+        worker = subprocess.run([PYTHON, "-I", "-S", "-B", "-c", cli._WORKER, ROOT, "fast", "1", "", tests.RUN_MARKER],
+                                input=b"tests.test_layout\n", capture_output=True, timeout=120)
+        self.assertEqual(worker.returncode, 0, worker.stderr[-2000:])
+        answer = json.loads(worker.stdout.decode("utf-8"))
+        self.assertEqual((answer["module"], answer["run"], answer["ok"], answer["run_marker"]),
+                         ("tests.test_layout", 0, False, "present"))
+
+    def test_a_worker_stops_a_module_before_its_next_test_once_the_marker_appears(self):
+        # Nuance's answers to Q-N14 in a worker: a module that is running when the marker appears starts no further
+        # test (cli.marker_stop_result, which test_worker uses), and its answer says why. The worker runs under a
+        # temporary HOME holding test_runmarker's probe sentinel, with that HOME's marker: the first probe test waits
+        # for the marker, which this test makes once the probe has started; the second must never start.
+        home = make_home(self, deps=True)
+        open(os.path.join(home, test_runmarker.PROBE_SENTINEL), "w").close()
+        marker = test_runmarker.marker(home)
+        os.makedirs(os.path.dirname(marker))
+        tmp = roots.tmp_dir("test", home)
+        argv = [PYTHON, "-I", "-S", "-B", "-c", cli._WORKER, ROOT, "fast", "1", "mid_run_probe", marker]
+        worker = subprocess.Popen(argv, env=child_env(home), cwd=home, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
+        self.addCleanup(lambda: worker.poll() is None and (worker.kill(), worker.communicate()))
+        worker.stdin.write(b"tests.test_runmarker\n")
+        worker.stdin.flush()                    # communicate() closes stdin below (3.11's flushes it first)
+        deadline = time.monotonic() + 60
+        while not os.path.exists(os.path.join(tmp, "probe-1-started")):
+            if worker.poll() is not None or time.monotonic() > deadline:
+                self.fail("the first probe never started: exit=%r" % worker.poll())
+            time.sleep(0.05)
+        open(marker, "w").close()
+        out, err = worker.communicate(timeout=120)
+        self.assertEqual(worker.returncode, 0, err[-2000:])
+        answer = json.loads(out.decode("utf-8"))
+        self.assertEqual((answer["module"], answer["run"], answer["ok"], answer["run_marker"]),
+                         ("tests.test_runmarker", 1, False, "present"))
+        self.assertEqual((answer["failures"], answer["errors"]), (0, 0))
+        self.assertFalse(os.path.exists(os.path.join(tmp, "probe-2-started")))
+
+    def test_modules_run_whole_in_workers_with_one_summary(self):
+        modules = ["tests.test_layout", "tests.test_roots"]
+        count = unittest.TestLoader().loadTestsFromNames(modules).countTestCases()
+        passed, output = self.run_workers(modules, 2)
+        self.assertTrue(passed, output)
+        self.assertRegex(output, r"\nRan %d tests in [0-9.]+s \(2 modules, 2 workers\)\n\nOK\n\Z" % count)
+
+    def test_a_failing_module_fails_the_run_and_a_pattern_narrows_it(self):
+        passed, output = self.run_workers(["tests.test_layout", "tests.test_no_such_module"], 2)
+        self.assertFalse(passed)
+        self.assertRegex(output, r"\nFAILED \(errors=1\)\n\Z")
+        passed, output = self.run_workers(["tests.test_layout", "tests.test_roots"], 2, pattern="zzz_no_such_test")
+        self.assertTrue(passed, output)
+        self.assertRegex(output, r"\nRan 0 tests in [0-9.]+s \(2 modules, 2 workers\)\n\nOK\n\Z")
+
+    def test_the_modules_of_a_suite(self):
+        loader = unittest.TestLoader()
+        suite = loader.loadTestsFromNames(["tests.test_roots", "tests.test_layout"])
+        self.assertEqual(cli._test_modules(suite), ["tests.test_roots", "tests.test_layout"])
+        self.assertEqual(cli._test_modules(unittest.TestSuite()), [])
+        stray = unittest.FunctionTestCase(lambda: None)        # a test from outside tests.*: the run stays serial
+        self.assertIsNone(cli._test_modules(unittest.TestSuite([suite, stray])))
 
 
 if __name__ == "__main__":

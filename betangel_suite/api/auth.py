@@ -1,16 +1,17 @@
 """Bootstrap codes, session tokens and the controller tab (DESIGN.md 9.2 items 1 and 8).
 
 - A bootstrap code is secrets.token_urlsafe(16), valid for CODE_TTL_S seconds and invalidated on first use.
-  open, ssh-session, a takeover (control attach) and new_code each issue one. A code leaves the engine only
-  in open's /usr/bin/open argv at startup or through the control socket to a same-uid peer; nothing here
-  prints or logs one.
+  open, ssh-session, a takeover (control attach or attach_viewer), new_code and viewer_code each issue one. A
+  code leaves the engine only in open's /usr/bin/open argv at startup, on the stdout of open --print-url or
+  ssh-session (Yu's), or through the control socket to a same-uid peer; nothing here prints or logs one.
 - POST /api/v1/bootstrap exchanges a code for a session token, secrets.token_urlsafe(32). Tokens live in
   this object only (never on disk) and are compared with hmac.compare_digest.
 - Both values go through upstream secret.register (passed in as `register`), so any upstream journal or
   receipt write that contains one is refused.
 - A takeover (issue_code(takeover=True)) invalidates every earlier code and token.
-- One controller tab: the token that bootstrapped while no controller tab was watching (no live stream)
-  becomes the controller; any other token is read-only. claim_control arrives with a later phase.
+- One controller tab (9.2 item 8): the token that bootstrapped while no controller tab was watching (no live
+  stream) becomes the controller; any other token is read-only until it claims control (claim), which makes
+  the previous controller read-only in turn.
 
 Standard library only.
 """
@@ -111,6 +112,14 @@ class Auth:
         with self._lock:
             return token in self._tokens
 
+    def claim(self, token):
+        """claim_control: token becomes the controller (the previous one is read-only from now on); False if invalid."""
+        with self._lock:
+            if token not in self._tokens:
+                return False
+            self._controller = token
+            return True
+
     def is_controller(self, token):
         with self._lock:
             return token is not None and token == self._controller and token in self._tokens
@@ -138,6 +147,11 @@ class Auth:
         """True while the controller tab has a live stream (the clock may run only then; section 8.6)."""
         with self._lock:
             return self._controller is not None and self._streams.get(self._controller, 0) > 0
+
+    def streams_open(self):
+        """True while any tab's stream is connected (somebody is watching; api/lifetime.py)."""
+        with self._lock:
+            return any(count > 0 for count in self._streams.values())
 
     def counts(self):
         """(live codes, tokens, live streams): counts only, for diagnostics and tests."""

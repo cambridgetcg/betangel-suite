@@ -18,14 +18,15 @@ esac
 for a in "$@"; do
   [ "$a" != "--print-url" ] || [ -z "${SSH_CONNECTION:-}" ] || { echo "refused:print_url_over_ssh" >&2; exit 2; }
 done
-# betangel_suite/roots.py has STATE_ROOT_AGREED = True (R-4, Q-N3), so every command but test, uisnap, vendor
-# and stop uses the suite root's tmp/, which cli.main creates 0700 after the run-marker check (those four run in
-# guard modes of their own, none of which has the suite root as a write root; stop makes no TMPDIR). With the flag
-# False this branch would be the state root's tmp/. _launch.py refuses a TMPDIR that does not match
+# betangel_suite/roots.py has STATE_ROOT_AGREED = True (R-4, Q-N3), so every command but test, uisnap, release,
+# vendor and stop uses the suite root's tmp/, which cli.main creates 0700 after the run-marker check (those five run
+# in guard modes of their own, none of which has the suite root as a write root; stop, vendor and release make
+# no TMPDIR).
+# With the flag False this branch would be the state root's tmp/. _launch.py refuses a TMPDIR that does not match
 # roots.tmp_dir() (tmpdir_mismatch), so the two cannot drift apart.
 case "${1:-}" in
-  test|uisnap|vendor|stop) TMP="$HOME/.local/state/betangel-suite/tmp" ;;
-  *)                       TMP="$HOME/betangel-data/suite.noindex/tmp" ;;
+  test|uisnap|release|vendor|stop) TMP="$HOME/.local/state/betangel-suite/tmp" ;;
+  *)                               TMP="$HOME/betangel-data/suite.noindex/tmp" ;;
 esac
 # Python 3.13 is primary; `bin/suite test --py311` runs the same tests on the 3.11 floor.
 PY=/opt/homebrew/bin/python3.13

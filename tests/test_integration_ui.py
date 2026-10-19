@@ -1,9 +1,10 @@
 """Phase 0b end to end: a real synthetic `bin/suite serve`, the UI it serves, its frame stream, and the UI's own
 frame code run on what the engine sent (DESIGN.md 6.1, 6.5, 8.5, 8.6 item 1, 9.1-9.3; the shared interfaces 2-4).
 
-One `bin/suite serve --port 0` child runs under a temporary HOME on an ephemeral 127.0.0.1 port; nothing opens a
-browser and /usr/bin/open is never run. An unguarded client child (tests/test_http_support.py) then does what the
-page does, in order:
+One serve child (server.run as `bin/suite serve --port 0` runs it, with markets shortened to SHORT through the
+engine's synthetic seam: the size of the market is not the point here) runs under a temporary HOME on an ephemeral
+127.0.0.1 port; nothing opens a browser and /usr/bin/open is never run. An unguarded client child
+(tests/test_http_support.py) then does what the page does, in order:
 
   1. GET / and every file of ui/manifest.json, as a page load would (module scripts with and without Origin);
   2. takes a bootstrap code through the control socket (new_code: the same-uid, test-only path; never
@@ -469,15 +470,34 @@ def is_int(value):
     return type(value) is int
 
 
+SHORT = {"pre_off_s": 120, "inplay_s": 40}     # the market's size is not the point here, its whole lifecycle is
+
+# The class's serve child: server.run as `bin/suite serve --port 0` runs it, but every market it opens is SHORT
+# (through the engine's synthetic seam), so the replay reaches CLOSED at 60x in about 2 s, not 11 s. bin/suite
+# serve itself runs in UiClientLiveTests below and in tests/test_http_security.py.
+SHORT_SERVE = """
+from betangel_suite import synthetic
+class Short:
+    generate = staticmethod(synthetic.generate)
+    is_synthetic_market_id = staticmethod(synthetic.is_synthetic_market_id)
+    @staticmethod
+    def Spec(seed):
+        return synthetic.Spec(seed=seed, **%r)
+def main():
+    return server.run(cfg, command="serve", port=0, synthetic=Short)
+""" % (SHORT,)
+
+
 class EndToEndTests(unittest.TestCase):
     """One serve child and one client session for the whole class; each test checks one side of what happened."""
 
     @classmethod
     def setUpClass(cls):
         scope = _ClassScope(cls)
-        cls.market = synthetic.generate(synthetic.Spec(seed=SEED))      # the generator's own oracle, test side only
+        cls.market = synthetic.generate(synthetic.Spec(seed=SEED, **SHORT))   # the generator's own oracle, test side
         cls.home = support.short_home(scope)
-        cls.child, cls.port = support.serve(scope, cls.home)
+        cls.child = support.run_child(scope, cls.home, SHORT_SERVE, name="serve")
+        cls.port = cls.child.wait_ready()
         prefix = "UI_DIR = %r\nLAUNCHER_PATH = %r\nSEED = %d\nTEN_X_S = %r\n" % (UI, LAUNCHER, SEED, TEN_X_S)
         cls.results = support.client(scope, cls.home, cls.port, prefix + CLIENT_SCRIPT, timeout=240)
         cls.exit_status = cls.child.wait_exit(30)

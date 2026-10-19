@@ -16,6 +16,7 @@ class DefaultsTests(unittest.TestCase):
             "data_roots": [], "state_root": "~/betangel-data/suite.noindex", "port": 8765, "frame_hz": 10,
             "cap_profile": "v1-live-mirror", "commission_source": "user_package_unverified",
             "research_months_ruling": None, "run_marker": "~/.local/state/lab-runs/ACTIVE", "watch_grace_s": 600,
+            "max_session_s": 14400,                     # Phase 0c: DESIGN.md 8.6's maximum session time, 4 h
         })
 
     def test_commission_labels_are_upstream_labels(self):
@@ -45,7 +46,7 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(config.DEFAULTS["data_roots"], [])
 
     def test_valid_overrides(self):
-        values = {"port": 8766, "frame_hz": 5, "cap_profile": "practice", "watch_grace_s": 60,
+        values = {"port": 8766, "frame_hz": 5, "cap_profile": "practice", "watch_grace_s": 60, "max_session_s": 600,
                   "run_marker": "~/.local/state/lab-runs/ACTIVE", "research_months_ruling": None,
                   "commission_source": "user_package_verified", "data_roots": ["~/betangel-data/historic-pro"]}
         self.write(values)
@@ -63,6 +64,8 @@ class LoadTests(unittest.TestCase):
                            ("run_marker", "~/decoy-never-created/ACTIVE"), ("run_marker", "/Users/x/.local/state/lab-runs/ACTIVE"),
                            ("data_roots", "~/x"),
                            ("data_roots", ["~/x", "~/x"]), ("data_roots", ["relative"]), ("watch_grace_s", 0),
+                           ("max_session_s", 599), ("max_session_s", 86401), ("max_session_s", 3600.0),
+                           ("max_session_s", True),
                            ("research_months_ruling", "has space"), ("research_months_ruling", 7)):
             self.write({key: value})
             self.refused("config_invalid_value")

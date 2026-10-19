@@ -31,7 +31,9 @@ From the repository root, on the lab:
 
     nice -n 10 bin/suite test           # python3.13
     nice -n 10 bin/suite test --py311   # the same tests on python3.11
+    nice -n 10 bin/suite test --heavy   # the fast tier plus the heavy tier
 
+`-j N` runs the test modules in N worker interpreters (AGENTS.md, Phase 0 status F).
 Tests use temporary HOMEs and synthetic fixtures only. `bin/suite test` refuses while
 Nuance's run marker exists (AGENTS.md, "Lab constraints this repo inherits" and Phase 0
 status E). Install the git hooks as AGENTS.md, "Repository hygiene", describes.
@@ -52,5 +54,5 @@ status E). Install the git hooks as AGENTS.md, "Repository hygiene", describes.
 
 - Lab-Claude (on the lab MacBook Pro) builds the offline replay and paper MVP.
 - Nuance (Claude on Yu's MacBook Air) and Astra review it. Nuance owns betangel-research,
-  policy changes, and Air-side and live work.
+  policy changes, and later Air-side and live work.
 - Yu decides.
