@@ -40,18 +40,23 @@ What the hook refuses, in every mode and phase:
          refuses (call_replaced_early) unless both are the C original when it runs. The wrapper is on one module
          instance, so once it is in place the hook refuses every fresh load of the extension (import_refused):
          an import after the module was taken out of sys.modules, importlib.util.module_from_spec,
-         _imp.create_dynamic, and a load under a dotted name such as "x._posixsubprocess" (CPython finds an
-         extension's init function by the last part of the name). The import that arm() itself makes, and the
-         cached, wrapped module, are untouched; arm() refuses (module_loaded_early) a second instance already
-         in sys.modules under a dotted name (Astra's re-review of #2, finding 1; Nuance's, F4);
+         _imp.create_dynamic, and a load under any other name CPython reads as the extension's. CPython finds an
+         extension's init function as PyInit_<last part of the name>, with every "-" read as "_", and C ends the
+         name at a NUL, so "x._posixsubprocess", "x.-posixsubprocess" and "-posixsubprocess" all load it, and on
+         3.11 so does "x._posixsubprocess" followed by a NUL and more (Astra's review of #2 at 4fa5835, item 1).
+         The hook refuses every name with a NUL in it, and judges the last part with "-" read as "_". The import
+         that arm() itself makes, and the cached, wrapped module, are untouched; arm() refuses
+         (module_loaded_early) a second instance already in sys.modules under any such name (Astra's re-review
+         of #2, finding 1; Nuance's, F4);
        - importing multiprocessing (any submodule) or concurrent.futures.process, which start children through
          fork_exec, and ctypes or _ctypes (any submodule), since _ctypes reaches libc through dlsym and
          call_function with no dlopen (import_refused); and the modules that run code in a subinterpreter, whose
          audit hooks are its own, not this one: _interpreters (3.13), _xxsubinterpreters (3.11), interpreters and
          concurrent.interpreters (where present), and CPython's test modules _testcapi (run_in_subinterp) and
          _testinternalcapi. Each extension among them (_ctypes, _interpreters, _xxsubinterpreters, _testcapi,
-         _testinternalcapi) is refused under a dotted name too. arm() refuses (module_loaded_early) if one of them
-         is already loaded: the import event fires only for a module that is not loaded yet;
+         _testinternalcapi) is refused under any such name too. arm() refuses (module_loaded_early) if one of
+         them is already loaded, under any such name: the import event fires only for a module that is not
+         loaded yet;
        - ctypes.dlopen, plus ctypes.dlsym and ctypes.call_function as a backstop, and SQLite extension loading.
        Threads are unaffected;
   I-6  writes outside the write roots: open with a write flag, mkdir, rmdir, remove, rename (both paths),
@@ -244,10 +249,12 @@ _SPAWN = frozenset({"subprocess.Popen", "os.posix_spawn", "os.system", "os.exec"
 # on both interpreters by lab-Claude) and _testinternalcapi.
 _REFUSED_IMPORTS = ("multiprocessing", "concurrent.futures.process", "ctypes", "_ctypes", "_interpreters",
                     "_xxsubinterpreters", "interpreters", "concurrent.interpreters", "_testcapi", "_testinternalcapi")
-# Extension modules refused under any name whose last part is theirs: CPython finds an extension's init function as
-# PyInit_<last part of the name>, so ExtensionFileLoader("x._ctypes", <the _ctypes file>) loads _ctypes itself
-# (Nuance's re-review of #2, F4). _posixsubprocess is here too, but only for loads after arm(): arm() imports it and
-# wraps fork_exec on that instance, and any fresh instance would carry the C original (Astra's re-review, finding 1).
+# Extension modules refused under any name whose last part CPython reads as theirs: it finds an extension's init
+# function as PyInit_<last part of the name>, with every "-" read as "_" and the name ended at a NUL, so
+# ExtensionFileLoader("x._ctypes", <the _ctypes file>) loads _ctypes itself (Nuance's re-review of #2, F4), and so do
+# "x.-ctypes" and, on 3.11, "x._ctypes" followed by a NUL (Astra's review of #2 at 4fa5835, item 1; _extension_part).
+# _posixsubprocess is here too, but only for loads after arm(): arm() imports it and wraps fork_exec on that
+# instance, and any fresh instance would carry the C original (Astra's re-review, finding 1).
 _REFUSED_EXTENSIONS = frozenset({"_posixsubprocess", "_ctypes", "_interpreters", "_xxsubinterpreters", "_testcapi",
                                  "_testinternalcapi"})
 _FORK_EXEC_MODULE = "_posixsubprocess"
@@ -519,23 +526,31 @@ def _no_link_below(root, path):
 
 
 def _import_refused(name):
-    """True for a module in _REFUSED_IMPORTS or a submodule of one, and for any name whose last part names an
-    extension in _REFUSED_EXTENSIONS ("_posixsubprocess" itself included: the hook sees only loads after arm()).
+    """True for a module in _REFUSED_IMPORTS or a submodule of one; for any name whose last part, read as CPython
+    reads it, names an extension in _REFUSED_EXTENSIONS ("_posixsubprocess" itself included: the hook sees only loads
+    after arm()); and for any name with a NUL in it, which no module needs and which C would end early.
 
-    The name is judged as an exact str: a str subclass could answer startswith or rpartition for itself, while
-    CPython loads by the characters it holds."""
+    The name is judged as an exact str: a str subclass could answer startswith, rpartition or replace for itself,
+    while CPython loads by the characters it holds."""
     if not isinstance(name, str):
         return False
     name = str.__str__(name)
-    return (any(name == top or name.startswith(top + ".") for top in _REFUSED_IMPORTS)
-            or name.rpartition(".")[2] in _REFUSED_EXTENSIONS)
+    return ("\0" in name or any(name == top or name.startswith(top + ".") for top in _REFUSED_IMPORTS)
+            or _extension_part(name) in _REFUSED_EXTENSIONS)
+
+
+def _extension_part(name):
+    """The last part of an exact str module name as CPython reads it to find an extension's init function,
+    PyInit_<part>: with every "-" read as "_" (Python/importdl.c; Astra's review of #2 at 4fa5835, item 1)."""
+    return name.rpartition(".")[2].replace("-", "_")
 
 
 def _refuse_loaded_modules():
     """module_loaded_early if a refused module is already loaded: the import event fires only for a module that is
     not in sys.modules yet, so the hook could not stop it, and fail closed is the only safe answer. The one module
     that may be loaded is _posixsubprocess under its own name, whose fork_exec arm() wraps next; a second instance
-    under a dotted name would keep the C original."""
+    under any other name CPython reads as its own (a dotted name, a "-" for its "_", a NUL) would keep the C
+    original."""
     if any(_import_refused(name) and str.__str__(name) != _FORK_EXEC_MODULE for name in list(sys.modules)):
         raise SuiteError("module_loaded_early")
 
@@ -639,7 +654,7 @@ def _wrap_fork_exec():
     hook could judge, and nothing the suite or the pinned closure runs calls fork_exec directly.
 
     The wrapper sits on this one module instance. A fresh instance (the module taken out of sys.modules and
-    imported again, module_from_spec, _imp.create_dynamic, or a dotted name ending in _posixsubprocess) would
+    imported again, module_from_spec, _imp.create_dynamic, or any other name CPython reads as its own) would
     carry the C original, so the hook refuses every such load (_REFUSED_EXTENSIONS; Astra's re-review of #2,
     finding 1). importlib.reload of this instance raises no import event and keeps the wrapper: the extension
     sets its functions when the module is made, not when it is executed again.

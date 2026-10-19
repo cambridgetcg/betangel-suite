@@ -11,6 +11,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -35,6 +36,12 @@ def attempt(name, fn):
     except Exception as exc:
         results[name] = "other:" + type(exc).__name__
 """
+
+
+# Loads extension `name` under `alias` and puts that second instance in sys.modules as `key`, before arm().
+EARLY_ALIAS = ("import importlib.machinery, importlib.util, sys\n"
+               "loader = importlib.machinery.ExtensionFileLoader(%r, importlib.util.find_spec(%r).origin)\n"
+               "sys.modules[%r] = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))\n")
 
 
 def checks(case, home, body, *, setup="", mode="engine", env=None):
@@ -783,7 +790,7 @@ results["outside"] = sorted(os.listdir(outside))
     # /usr/bin/touch outside the roots after seal(). A dotted "x._ctypes" loads _ctypes, and a subinterpreter (its own
     # audit hooks, none of ours) ran os.mkdir outside the roots. Each helper uses what it loaded, so a load that got
     # through leaves a name in outside/.
-    FRESH = """
+    FRESH_HELPERS = """
 import _imp, importlib, importlib.machinery, importlib.util, subprocess, sys
 outside = os.path.join(os.environ["HOME"], "outside")
 SUBINTERPRETERS = [name for name in ("_interpreters", "_xxsubinterpreters") if importlib.util.find_spec(name)]
@@ -834,6 +841,8 @@ def run_inside(module, name):
         module.run_in_subinterp(code)
     else:
         module.run_string(module.create(), code)
+"""
+    FRESH = FRESH_HELPERS + """
 def phase(suffix):
     for label, load in (("reimport", reimport), ("from_spec", from_spec), ("create_dynamic", create_dynamic),
                         ("dotted", lambda: dotted("_posixsubprocess", "zz._posixsubprocess")),
@@ -874,6 +883,52 @@ results["outside"] = sorted(os.listdir(outside))
                     self.assertEqual(results.pop("cached_import" + suffix), "ok", suffix)
                 self.assertEqual(results, {"still_wrapped": True, "loaded": [], "outside": []})
 
+    # Names the dotted-name check missed (Astra's review of #2 at 4fa5835, item 1). CPython finds an extension's init
+    # function as PyInit_<last part of the name> with every "-" read as "_", and C ends the name at a NUL. So
+    # "zz.-posixsubprocess" and "-posixsubprocess" gave a _posixsubprocess whose fork_exec started /usr/bin/touch
+    # outside the roots after arm() and seal(), in every mode, 3.11 did the same for "zz._posixsubprocess" followed by a
+    # NUL, and the _ctypes, subinterpreter and test-module aliases got through too. As in FRESH, each helper uses what
+    # it loaded, so a load that got through leaves a name in outside/.
+    ALIASES = FRESH_HELPERS + r"""
+def spellings(name):
+    return (("dash", "zz.-" + name[1:]), ("bare_dash", "-" + name[1:]), ("nul", "zz." + name + "\0x"))
+def phase(suffix):
+    for spelling, alias in spellings("_posixsubprocess"):
+        label = "_posixsubprocess_" + spelling + suffix
+        attempt(label, lambda: spawn_with(dotted("_posixsubprocess", alias), label))
+    for spelling, alias in spellings("_ctypes"):
+        attempt("_ctypes_" + spelling + suffix, lambda: dotted("_ctypes", alias).dlsym)
+    for name in SUBINTERPRETERS + ["_testcapi"]:
+        for spelling, alias in spellings(name):
+            label = name + "_" + spelling + suffix
+            attempt(label, lambda: run_inside(dotted(name, alias), label))
+    for spelling, alias in spellings("_testinternalcapi"):
+        attempt("_testinternalcapi_" + spelling + suffix, lambda: dotted("_testinternalcapi", alias))
+phase("")
+guard.seal()
+phase("_sealed")
+results["still_wrapped"] = type(sys.modules["_posixsubprocess"].fork_exec) is not type(len)
+results["loaded"] = sorted(name for name in sys.modules if name.startswith(("zz", "-")))
+results["outside"] = sorted(os.listdir(outside))
+"""
+
+    def test_extension_aliases_with_a_dash_or_a_nul_are_refused_in_every_mode(self):
+        self.maxDiff = None
+        home = make_home(self)
+        for mode in MODES:
+            results = checks(self, home, setup=self.CHILDREN_SETUP, mode=mode, body=self.ALIASES)
+            with self.subTest(mode=mode):
+                names = [name for name in ("_interpreters", "_xxsubinterpreters") if name + "_dash" in results]
+                self.assertEqual(len(names), 1)             # _interpreters (3.13) or _xxsubinterpreters (3.11)
+                # 3.13 itself refuses a NUL in the name (ValueError) before any import event; 3.11 loads the
+                # extension, so there the hook must refuse it.
+                nul = "import_refused" if sys.version_info[:2] == (3, 11) else "other:ValueError"
+                expected = {name + "_" + spelling + suffix: nul if spelling == "nul" else "import_refused"
+                            for suffix in ("", "_sealed")
+                            for name in ["_posixsubprocess", "_ctypes", "_testcapi", "_testinternalcapi"] + names
+                            for spelling in ("dash", "bare_dash", "nul")}
+                self.assertEqual(results, dict(expected, still_wrapped=True, loaded=[], outside=[]))
+
     def test_arm_fails_closed_when_a_child_route_is_already_open(self):
         # The import event fires only for a module not loaded yet, and subprocess binds fork_exec when it is
         # imported, so arm() refuses rather than trust either.
@@ -896,6 +951,20 @@ results["outside"] = sorted(os.listdir(outside))
                  " importlib.util.find_spec('_posixsubprocess').origin)\n"
                  "sys.modules['zz._posixsubprocess'] = importlib.util.module_from_spec("
                  "importlib.util.spec_from_loader('zz._posixsubprocess', loader))\n", "module_loaded_early"),
+                # The same under a name CPython reads as the extension's, with a "-" for its "_" or a NUL after it
+                # (Astra's review of #2 at 4fa5835, item 1).
+                (EARLY_ALIAS % ("zz.-posixsubprocess", "_posixsubprocess", "zz.-posixsubprocess"),
+                 "module_loaded_early"),
+                (EARLY_ALIAS % ("-posixsubprocess", "_posixsubprocess", "-posixsubprocess"), "module_loaded_early"),
+                (EARLY_ALIAS % ("zz.-posixsubprocess", "_posixsubprocess", "zz._posixsubprocess\0x"),
+                 "module_loaded_early"),
+                (EARLY_ALIAS % ("zz.-ctypes", "_ctypes", "zz.-ctypes"), "module_loaded_early"),
+                (EARLY_ALIAS % ("zz.-testcapi", "_testcapi", "zz.-testcapi"), "module_loaded_early"),
+                ("import importlib.machinery, importlib.util, sys\n"
+                 "NAME = next(name for name in ('_interpreters', '_xxsubinterpreters') if importlib.util.find_spec(name))\n"
+                 "loader = importlib.machinery.ExtensionFileLoader('zz.-' + NAME[1:], importlib.util.find_spec(NAME).origin)\n"
+                 "sys.modules[loader.name] = importlib.util.module_from_spec("
+                 "importlib.util.spec_from_loader(loader.name, loader))\n", "module_loaded_early"),
                 ("import _posixsubprocess\n", "ok"),
                 ("import subprocess, concurrent.futures\n", "ok")):
             code = ATTEMPT + setup + "attempt('arm', lambda: guard.arm('engine'))\nprint(json.dumps(results))\n"
