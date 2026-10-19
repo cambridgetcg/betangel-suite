@@ -155,16 +155,16 @@ Subprocesses by mode (the launcher picks the mode from the command name; nothing
           name or identity (roots.lies_in); after, none. Its writes may
           also go under ~/.local/share/betangel-suite/deps and this checkout's pin/, plus one os.mkdir of the
           share dir itself; nowhere else in the share dir (its app/ belongs to release).
-  release (bin/suite release, betangel_suite/release.py; I-18) before seal(), only git with RELEASE_GIT_PREFIX
-          and -C this checkout's own root (never the deploy clone or a release copy): the filter-driver
-          config query, the index listing, status (never entering a submodule), rev-parse of <id>^{commit},
-          refs/remotes/origin/main^{commit} or <id>^{tree}, merge-base --is-ancestor, rev-list --first-parent <id>
-          and archive --format=tar <id>, with no user or system git config and no replace refs or grafts, and
-          an environment of exactly release_git_env (RELEASE_GIT_ENV, HOME and TMPDIR the armed ones, PATH, LANG
-          and the network switch; no DEVELOPER_DIR, SDKROOT or other key: Astra's review of #5 at 52a9edc,
-          item 1) (release_argv_ok); after, none. A release names its commit by full object id, never
-          a tag or other name (release.py). Its writes may also go under ~/.local/share/betangel-suite/app (the
-          release copies) and nowhere else in the share dir.
+  release (bin/suite release, betangel_suite/release.py; I-18) before seal(), only git with RELEASE_GIT_PREFIX and
+          -C this checkout's own root (never the deploy clone or a release copy): the filter-driver config query,
+          the index listing, status (never entering a submodule), rev-parse of <id>^{commit},
+          refs/remotes/origin/main^{commit}, <id>^{tree} or <id>^2, merge-base --is-ancestor, rev-list
+          --first-parent <id> and archive --format=tar <id>, with no user or system git config and no replace refs
+          or grafts, and an environment of exactly release_git_env (RELEASE_GIT_ENV, HOME and TMPDIR the armed ones,
+          PATH, LANG and the network switch; no DEVELOPER_DIR, SDKROOT or other key: Astra's review of #5 at
+          52a9edc, item 1) (release_argv_ok); after, none. A release names its commit by full object id, never a tag
+          or other name (release.py). Its writes may also go under ~/.local/share/betangel-suite/app (the release
+          copies) and nowhere else in the share dir.
   uisnap  (bin/suite uisnap, DESIGN.md 11) before seal(), exactly one argv: the Command Line Tools' swiftc with
           the fixed build flags of uisnap_build_argv, compiling <state>/uisnap/build/<sha256>/uisnap.swift to
           uisnap in the same directory; after seal(), exactly one: the binary registered before seal() with
@@ -1194,8 +1194,8 @@ def release_argv_ok(argv, env, repo, research, app_root, home, tmp_root):
     --untracked-files=all --ignore-submodules=dirty: it never enters a submodule); RELEASE_FILTER_QUERY (config
     --includes --null --get-regexp ^filter\\., read only); RELEASE_INDEX_QUERY (ls-files --stage -z, read only,
     never --recurse-submodules);
-    rev-parse --verify --quiet <id>^{commit} | refs/remotes/origin/main^{commit} | <id>^{tree}, <id> a full object
-    id;
+    rev-parse --verify --quiet <id>^{commit} | refs/remotes/origin/main^{commit} | <id>^{tree} | <id>^2 (the second
+    parent, which a merge commit has: release takes no other; round 6), <id> a full object id;
     merge-base --is-ancestor <id> <id>; rev-list --first-parent <id> (main's first-parent line, which release
     needs as well as ancestry: Nuance's answer of 2026-10-18); archive --format=tar <id>. Every subcommand is local
     (no fetch, no remote archive). The environment must be explicit and exactly release_git_env(home, tmp_root), home
@@ -1221,7 +1221,7 @@ def release_argv_ok(argv, env, repo, research, app_root, home, tmp_root):
         revision = rest[3]
         if revision == RELEASE_MAIN_REF + "^{commit}":
             return True
-        for peel in ("^{tree}", "^{commit}"):
+        for peel in ("^{tree}", "^{commit}", "^2"):
             if revision.endswith(peel):
                 return bool(_OBJECT_ID_RE.fullmatch(revision[:-len(peel)]))
         return False

@@ -21,7 +21,8 @@ make(commit), the release command (guard mode "release"), in this order:
      tracked or untracked (release_dirty_tree); an id that names no commit here, the id of an annotated tag
      or of a tree included: <id>^{commit} must give the id itself (release_commit_unknown); no
      refs/remotes/origin/main (release_main_missing); a commit that refs/remotes/origin/main does not contain
-     (release_not_on_main), or one off its first-parent line (release_not_first_parent; below). That ref is
+     (release_not_on_main), or one off its first-parent line (release_not_first_parent; below), or one with no
+     second parent (release_not_merge_commit; below). That ref is
      GitHub's main as of the last `git fetch`, which the operator runs in the checkout first; the suite never
      fetches (the guard allows no transport). It is named in full, never as main:
      the local main can hold merges nobody has reviewed yet (lab-Claude's own, before a push), and a tag or a
@@ -31,7 +32,11 @@ make(commit), the release command (guard mode "release"), in this order:
      inside a branch merged into main, which main never pointed at; in Nuance's words (answer of 2026-10-18 to
      lab-Claude's round-5 question, which lab-Claude adopts), "Ancestry alone admits side-branch commits inside a
      merge, which were never a reviewed main tip", and first-parent membership is the closest proxy for "main
-     pointed at it" that history alone can show;
+     pointed at it" that history alone can show. Then <id>^2 must name a commit: every PR lands with
+     gh pr merge --merge, never a fast-forward, rebase-merge, squash or direct push (DESIGN.md 3.9), so each
+     reviewed main tip is a merge commit, and only that check keeps out a commit that a fast-forward put on the
+     first-parent line (Nuance's reviews of PR #1 at af960fd, F2, and of PR #5 at 52a9edc, N5-2; lab-Claude's
+     decision in round 6);
   3. git archive of that commit into app/.<sha12>.partial, regular files and directories only; then
      guard.seal(): no subprocess from here on;
   4. the git tree id is recomputed from the copied bytes and must equal the commit's tree
@@ -377,6 +382,8 @@ def make(commit, home_dir=None, *, out=None):
         raise SuiteError("release_not_on_main")
     if not git.on_first_parent_line(commit, main_commit):
         raise SuiteError("release_not_first_parent")
+    if git.object_id(commit + "^2") is None:
+        raise SuiteError("release_not_merge_commit")   # no second parent: no PR landed as a merge here (docstring)
     tree = git.object_id(commit + "^{tree}")
     if tree is None or len(tree) != len(commit):
         raise SuiteError("git_failed")

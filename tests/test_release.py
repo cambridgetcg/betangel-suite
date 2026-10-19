@@ -6,12 +6,14 @@ rev-parse), and in temporary HOMEs; nothing here touches the real ~/.local/share
 its commit by full object id (Nuance's PR #1 review: "`release` takes the merge SHA"), and takes only a commit that
 refs/remotes/origin/main contains: GitHub's main as the operator last fetched it, never the local main (Nuance's
 re-review of PR #1, finding 13). The runner's git cannot fetch, so the tests write that ref by hand, as a fetch
-would leave it (Repo.fetched). The class repository has c1 and, after it on main, c3, which is also the checkout's
-HEAD and origin/main; c2 (side) is a commit main does not contain (main is pointed back at c1 before c3 is made).
-v1 is an annotated tag of c1, a loose tag object written by hand (the runner's git has no tag subcommand), whose own
-id names no commit. OriginMainTests has its own repository, whose local main is ahead of origin/main, and
-FirstParentTests one whose main merges a side branch, the merge commits written by hand as loose objects (the
-runner's git has no merge either).
+would leave it (Repo.fetched). Since round 6 release also takes only a merge commit, one with a second parent
+(release_not_merge_commit): every PR lands with gh pr merge --merge (DESIGN.md 3.9, 8.6). So every commit a test
+releases is landed as such a merge (Repo.land), written by hand as a loose object (the runner's git has no merge).
+The class repository has root, then on main the merges c1 (of an empty branch off root) and c3 (of later, a branch
+off c1), and c3 is also the checkout's HEAD and origin/main; c2 (side) is a commit main does not contain (main is
+pointed back at c1 before later is made). v1 is an annotated tag of c1, a loose tag object written by hand (the
+runner's git has no tag subcommand), whose own id names no commit. OriginMainTests has its own repository, whose
+local main is ahead of origin/main, and FirstParentTests one whose main merges a side branch.
 
 bin/suite release runs as this interpreter on the temporary repository's bin/_launch.py, so the child's guard
 (mode release) holds that repository as its own checkout. Launches from a copy go through the copy's own
@@ -103,6 +105,20 @@ class Repo:
         lines += ["author Synthetic Tester <tester@example.invalid> 86400 +0000",
                   "committer Synthetic Tester <tester@example.invalid> 86400 +0000", "", message, ""]
         return self.loose_object("commit", "\n".join(lines).encode("ascii"))
+
+    def tree_of(self, commit):
+        return self.git("rev-parse", "--verify", "-q", commit + "^{tree}")
+
+    def land(self, onto, message, branch=None):
+        """Land a branch on main as every PR lands (gh pr merge --merge; DESIGN.md 3.9): a merge commit whose first
+        parent is onto, main's tip before the branch, and second the branch's commit, with the branch's tree.
+        branch defaults to one commit off onto with onto's tree (an empty branch). main, and so HEAD, then name the
+        merge, and an index that matched the branch's tree matches it; returns its id."""
+        if branch is None:
+            branch = self.merge_commit(self.tree_of(onto), (onto,), message)
+        merge = self.merge_commit(self.tree_of(branch), (onto, branch), "merge: " + message)
+        self.write_ref("refs/heads/main", merge)
+        return merge
 
     def files(self):
         """{relpath: (sha256, executable)} of the working tree, .git excluded."""
@@ -247,8 +263,9 @@ class ReleaseTestCase(unittest.TestCase):
         cls.addClassCleanup(rmtree, cls.base)
         cls.repo = Repo(os.path.join(cls.base, "repo"))
         copy_sources(cls.repo.path)
-        cls.c1 = cls.repo.commit("first")
-        cls.tree1 = cls.repo.git("rev-parse", "--verify", "-q", cls.c1 + "^{tree}")
+        cls.root = cls.repo.commit("first")                  # main's first commit: no merge, so never released
+        cls.c1 = cls.repo.land(cls.root, "first branch")     # the first merge on main, with root's tree
+        cls.tree1 = cls.repo.tree_of(cls.c1)
         cls.files1 = cls.repo.files()
         cls.tag1 = cls.repo.annotated_tag("v1", cls.c1)    # a tag object: its id is no commit
         with open(os.path.join(cls.repo.path, "side.txt"), "w", encoding="ascii") as handle:
@@ -259,7 +276,8 @@ class ReleaseTestCase(unittest.TestCase):
         cls.repo.git("add", "-A")                            # the index matches c1 again
         with open(os.path.join(cls.repo.path, "later.txt"), "w", encoding="ascii") as handle:
             handle.write("synthetic later commit\n")
-        cls.c3 = cls.repo.commit("later")                    # main and HEAD: c1, then c3; a clean tree
+        cls.later = cls.repo.commit("later")                 # a branch off c1
+        cls.c3 = cls.repo.land(cls.c1, "later", cls.later)  # main and HEAD: c1, then c3; a clean tree
         cls.repo.fetched(cls.c3)                             # and origin/main, as fetched: c1, then c3
         cls.tree3 = cls.repo.git("rev-parse", "--verify", "-q", cls.c3 + "^{tree}")
         cls.name1, cls.name3 = cls.c1[:12], cls.c3[:12]
@@ -300,6 +318,23 @@ class ReleaseCommandTests(ReleaseTestCase):
         self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "refs/remotes/origin/main"), self.c3)
         self.assertEqual(self.repo.git("rev-parse", "--verify", "-q", "HEAD"), self.c3)
         self.assertNotEqual(self.name1, self.name3)
+        git = self.repo.git
+        self.assertEqual([git("rev-parse", "--verify", "-q", self.c3 + suffix) for suffix in ("^1", "^2")],
+                         [self.c1, self.later])
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.c1 + "^1"), self.root)
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.c1 + "^2" + "^1"), self.root)
+        self.assertEqual((self.tree1, self.repo.tree_of(self.c3)), (self.repo.tree_of(self.root), self.tree3))
+
+    def test_a_commit_that_is_not_a_merge_is_refused(self):
+        # Every PR lands with gh pr merge --merge (Nuance's reviews of #1 at af960fd, F2, and of #5 at 52a9edc, N5-2;
+        # lab-Claude's decision), so release takes only a merge commit: <id>^2 must name a commit
+        # (release_not_merge_commit). root is on main's first-parent line but has no second parent; later, c3's
+        # second parent, is off that line and keeps its own code.
+        home = self.fresh_home()
+        before = tree_listing(home)
+        self.assertRefused(self.release(home, self.root), "release_not_merge_commit")
+        self.assertRefused(self.release(home, self.later), "release_not_first_parent")
+        self.assertEqual(tree_listing(home), before)
 
     def test_release_installs_a_read_only_copy_of_the_commit_not_the_checkouts_head(self):
         code, out, err = self.result
@@ -569,7 +604,7 @@ class OriginMainTests(unittest.TestCase):
         cls.addClassCleanup(rmtree, cls.base)
         cls.repo = Repo(os.path.join(cls.base, "repo"))
         copy_sources(cls.repo.path)
-        cls.c1 = cls.repo.commit("reviewed")
+        cls.c1 = cls.repo.land(cls.repo.commit("base"), "reviewed")
         cls.repo.fetched(cls.c1)
         with open(os.path.join(cls.repo.path, "unreviewed.txt"), "w", encoding="ascii") as handle:
             handle.write("synthetic local merge\n")
@@ -632,11 +667,12 @@ class FirstParentTests(unittest.TestCase):
     merge, which were never a reviewed main tip." After the ancestry check, rev-list --first-parent of the id that
     ref gave must list the commit, else release_not_first_parent.
 
-    Here c1 is the base; side is a commit on a side branch off c1, and m1 the main line's next commit after c1. merge
-    has the parents m1 and side, in that order: the main line merging the side branch. HEAD, local main and
-    origin/main name it, and its tree is m1's, so the checkout is clean. back has the same parents the other way
-    round, side first, as when main is moved to a branch that merged main in; origin/main names it only in the test
-    of that case."""
+    Here c1 is the base, itself a merge on main (release takes only a merge commit since round 6); side is a commit
+    on a side branch off c1, itself a merge of its own branch commit so that only the first-parent line decides, and
+    m1 the main line's next merge after c1, of the branch commit later. merge has the parents m1 and side, in that
+    order: the main line merging the side branch. HEAD, local main and origin/main name it, and its tree is m1's, so
+    the checkout is clean. back has the same parents the other way round, side first, as when main is moved to a
+    branch that merged main in; origin/main names it only in the test of that case."""
 
     @classmethod
     def setUpClass(cls):
@@ -644,17 +680,20 @@ class FirstParentTests(unittest.TestCase):
         cls.addClassCleanup(rmtree, cls.base)
         cls.repo = Repo(os.path.join(cls.base, "repo"))
         copy_sources(cls.repo.path)
-        cls.c1 = cls.repo.commit("base")
+        cls.root = cls.repo.commit("root")
+        cls.c1 = cls.repo.land(cls.root, "base")
         with open(os.path.join(cls.repo.path, "side.txt"), "w", encoding="ascii") as handle:
             handle.write("synthetic side branch\n")
-        cls.side = cls.repo.commit("side")
+        cls.side_branch = cls.repo.commit("side")
+        cls.side = cls.repo.land(cls.c1, "side", cls.side_branch)
         cls.repo.write_ref("refs/heads/main", cls.c1)       # back to c1 for the main line
         os.remove(os.path.join(cls.repo.path, "side.txt"))
         cls.repo.git("add", "-A")                            # the index matches c1 again
         with open(os.path.join(cls.repo.path, "later.txt"), "w", encoding="ascii") as handle:
             handle.write("synthetic main line\n")
-        cls.m1 = cls.repo.commit("main line")
-        tree = cls.repo.git("rev-parse", "--verify", "-q", cls.m1 + "^{tree}")
+        cls.later = cls.repo.commit("main line")
+        cls.m1 = cls.repo.land(cls.c1, "main line", cls.later)
+        tree = cls.repo.tree_of(cls.m1)
         cls.merge = cls.repo.merge_commit(tree, (cls.m1, cls.side), "merge the side branch")
         cls.back = cls.repo.merge_commit(tree, (cls.side, cls.m1), "merge main into the side branch")
         cls.repo.write_ref("refs/heads/main", cls.merge)     # local main and HEAD; m1's tree, so a clean checkout
@@ -683,6 +722,9 @@ class FirstParentTests(unittest.TestCase):
         self.assertEqual(git("rev-parse", "--verify", "-q", self.back + "^2"), self.m1)
         self.assertEqual(git("rev-parse", "--verify", "-q", self.m1 + "^1"), self.c1)
         self.assertEqual(git("rev-parse", "--verify", "-q", self.side + "^1"), self.c1)
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.m1 + "^2"), self.later)
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.side + "^2"), self.side_branch)
+        self.assertEqual(git("rev-parse", "--verify", "-q", self.c1 + "^1"), self.root)
 
     def test_a_commit_inside_a_merged_branch_is_refused(self):
         # side is an ancestor of origin/main, so the ancestry check alone released it (before round 5 close)
@@ -695,6 +737,14 @@ class FirstParentTests(unittest.TestCase):
             with self.subTest(commit=commit):
                 home, _before, outcome = self.release(commit)
                 self.assertReleased(commit, outcome, home)
+        # Its first commit has no second parent (release_not_merge_commit, since round 6); a branch's own commit
+        # inside a merge stays off the line.
+        for commit, code in ((self.root, "release_not_merge_commit"), (self.later, "release_not_first_parent"),
+                             (self.side_branch, "release_not_first_parent")):
+            with self.subTest(commit=commit):
+                home, before, outcome = self.release(commit)
+                self.assertEqual(outcome, (2, "", "refused:%s\n" % code))
+                self.assertEqual(tree_listing(home), before)
 
     def test_the_first_parent_decides_not_ancestry_or_the_tree(self):
         self.addCleanup(self.repo.fetched, self.merge)

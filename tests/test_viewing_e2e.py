@@ -69,8 +69,9 @@ class ReleaseViewingTests(unittest.TestCase):
         cls.addClassCleanup(rmtree, cls.base)
         cls.repo = Repo(os.path.join(cls.base, "repo"))
         copy_sources(cls.repo.path)
-        cls.commit = cls.repo.commit("synthetic release")
-        cls.repo.fetched(cls.commit)                          # release takes what origin/main contains
+        # release takes only a merge commit that origin/main contains on its first-parent line (Repo.land)
+        cls.commit = cls.repo.land(cls.repo.commit("synthetic base"), "synthetic release")
+        cls.repo.fetched(cls.commit)
 
     def released_home(self, config=None):
         """A short HOME (deps copy included) with app/<sha12> released from the class's repository; (home, copy)."""

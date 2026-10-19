@@ -2088,6 +2088,9 @@ class ReleaseModeTests(unittest.TestCase):
                      ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"],
                      ["rev-parse", "--verify", "--quiet", self.COMMIT + "^{tree}"],
                      ["rev-parse", "--verify", "--quiet", "e" * 64 + "^{tree}"],
+                     # a merge commit's second parent (release_not_merge_commit; round 6)
+                     ["rev-parse", "--verify", "--quiet", self.COMMIT + "^2"],
+                     ["rev-parse", "--verify", "--quiet", "e" * 64 + "^2"],
                      ["merge-base", "--is-ancestor", self.COMMIT, self.TREE],
                      ["rev-list", "--first-parent", self.COMMIT], ["rev-list", "--first-parent", "e" * 64],
                      ["archive", "--format=tar", self.COMMIT],
@@ -2123,6 +2126,16 @@ class ReleaseModeTests(unittest.TestCase):
                      ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/HEAD^{commit}"],
                      ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"],
                      ["rev-parse", "refs/heads/main^{commit}"],
+                     # the second parent of a full object id only, exactly as ^2
+                     ["rev-parse", "--verify", "--quiet", self.COMMIT + "^1"],
+                     ["rev-parse", "--verify", "--quiet", self.COMMIT + "^3"],
+                     ["rev-parse", "--verify", "--quiet", self.COMMIT + "~1"],
+                     ["rev-parse", "--verify", "--quiet", self.COMMIT + "^2^{commit}"],
+                     ["rev-parse", "--verify", "--quiet", self.COMMIT + "^2^2"],
+                     ["rev-parse", "--verify", "--quiet", self.COMMIT[:12] + "^2"],
+                     ["rev-parse", "--verify", "--quiet", "HEAD^2"],
+                     ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^2"],
+                     ["rev-parse", self.COMMIT + "^2"],
                      ["merge-base", "--is-ancestor", "v1", "main"],
                      # main's first-parent line (Nuance's answer of 2026-10-18): exactly one full object id, the id
                      # refs/remotes/origin/main gave, never a name, a range, an exclusion or another option
