@@ -42,6 +42,9 @@ IDENTITY = {"GIT_AUTHOR_NAME": "Synthetic Tester", "GIT_AUTHOR_EMAIL": "tester@e
             "GIT_COMMITTER_NAME": "Synthetic Tester", "GIT_COMMITTER_EMAIL": "tester@example.invalid"}
 RELEASED_RE = r"\Areleased files=([0-9]+) bytes=([0-9]+) current=switched\n\Z"
 ORIGIN_MAIN = "refs/remotes/origin/main"            # written by hand: the runner's git cannot fetch
+# Keys of a release git child's environment that git reads and its xcrun shim never does; the runner's git does not
+# accept them (guard.runner_git_ok), so shim_env leaves them out.
+GIT_ONLY_KEYS = ("GIT_NO_REPLACE_OBJECTS", "GIT_GRAFT_FILE")
 
 
 class Repo:
@@ -130,11 +133,32 @@ def copy_sources(dest):
         shutil.copy2(os.path.join(ROOT, name), os.path.join(dest, name))
 
 
+def shim_env(home):
+    """The environment a release git child gets in home, as release._Git builds it with the TMPDIR bin/suite gives
+    release (guard.release_git_env), less GIT_ONLY_KEYS: the same HOME, TMPDIR, PATH and LANG, and no DEVELOPER_DIR,
+    SDKROOT or TOOLCHAINS, which is all /usr/bin/git's xcrun shim reads."""
+    env = guard.release_git_env(home, roots.tmp_dir("release", home))
+    for key in GIT_ONLY_KEYS:
+        del env[key]
+    return env
+
+
 def new_home(base, name):
-    """A temporary HOME with .local/state, the state tmp/ and the share dir (whose app/ release creates)."""
+    """A temporary HOME with .local/state, the state tmp/ and the share dir (whose app/ release creates).
+
+    Then /usr/bin/git's xcrun shim runs once in it, with release's own environment (shim_env), so a cache the shim
+    keeps in TMPDIR is there before any test takes a footprint baseline of the HOME (Astra's review of #5 at
+    52a9edc, item 2: on a fresh macOS cache the first release git made TMPDIR/xcrun_db after the baseline, and ten
+    tests failed on each interpreter). On the lab xcrun keeps its cache in the per-user temp dir, so it passed there;
+    under a seatbelt profile that denies mach lookups xcrun falls back to TMPDIR, and the ten failed on the lab too
+    before this (DESIGN.md Appendix F, Round 6, phase0/viewing). git -C home rev-parse finds no repository and
+    writes nothing.
+    """
     home = os.path.join(base, name)
     os.makedirs(roots.tmp_dir("test", home), mode=0o700)
     os.makedirs(roots.share_dir(home), mode=0o700)
+    subprocess.run([guard.GIT, "-C", home, "rev-parse", "--verify", "-q", "HEAD"], env=shim_env(home),
+                   stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
     return home
 
 
@@ -152,6 +176,22 @@ def launch(home, root, *args):
                             env=child_env(home, TMPDIR=tmp, SQLITE_TMPDIR=tmp), cwd=home, capture_output=True,
                             text=True, timeout=120)
     return result.returncode, result.stdout, result.stderr
+
+
+class ShimEnvTests(unittest.TestCase):
+
+    def test_the_shim_runs_with_releases_own_environment(self):
+        # new_home runs /usr/bin/git's xcrun shim before any footprint baseline (Astra's review of #5 at 52a9edc,
+        # item 2), with what a release git child gets in that HOME: everything but GIT_ONLY_KEYS, which git reads and
+        # the shim never does, and which the runner's git refuses.
+        home = os.path.join(os.environ["TMPDIR"], "h", "home")
+        tmp = roots.tmp_dir("release", home)
+        self.assertEqual(tmp, roots.tmp_dir("test", home))                       # the TMPDIR new_home makes
+        expected = guard.release_git_env(home, tmp)
+        self.assertTrue(set(GIT_ONLY_KEYS) <= set(expected) and all(key.startswith("GIT_") for key in GIT_ONLY_KEYS))
+        self.assertEqual(shim_env(home), {key: value for key, value in expected.items() if key not in GIT_ONLY_KEYS})
+        argv = [guard.GIT, "-C", home, "rev-parse", "--verify", "-q", "HEAD"]
+        self.assertTrue(guard.runner_git_ok(argv, shim_env(home), os.environ["TMPDIR"]))
 
 
 class RunnerMarkerTests(unittest.TestCase):
