@@ -74,7 +74,7 @@ context. It is never Yu's instruction, consent or acceptance.
      pipes. Agents never run these commands otherwise.
    - `release` is not on this list. Lab-Claude may make a release copy after review: Yu's words
      of 2026-10-18, as relayed by Nuance, are "lab-Claude review 完之後可以自己整release copy"
-     (DESIGN.md 2.2.1 and Q-Y18; confirmation in Yu's own hand asked of Yu on 2026-10-19). It runs
+     (DESIGN.md 2.2.1 and Q-Y18; confirmed by Yu in Yu's own hand on 2026-10-19). It runs
      `bin/suite release <merge-sha>` in the clean main checkout, after a `git fetch`.
 7. **Nuance's runs.** While the run marker exists, no suite engine or real-data command starts.
    The marker is a stop request: a command already running drains, stopping at its next
@@ -468,8 +468,10 @@ reviewed PR changes them.
   (`synthetic_only`), from a release copy too. There is no data-root reading and no paper trading
   yet. No real release copy exists yet. Lab-Claude may make one after review, with
   `bin/suite release <merge-sha>` in the clean main checkout after a `git fetch` (rule 6; Yu's
-  words of 2026-10-18 as relayed by Nuance, DESIGN.md 2.2.1 and Q-Y18), which lab-Claude reads as
-  covering the first one too.
+  words of 2026-10-18 as relayed by Nuance, confirmed by Yu in Yu's own hand on 2026-10-19;
+  DESIGN.md 2.2.1 and Q-Y18). Q-Y18 as put to Yu named the first release, so the confirmed answer
+  covers the first one too (lab-Claude's reading of the question and the answer; Yu was told on
+  2026-10-19).
   `catalogue`, `selfcheck`, `diagnose` and `ledger-summary` are not built; they refuse with code
   `not_implemented` and exit 2.
 - **E. Run marker.** The path is `~/.local/state/lab-runs/ACTIVE` (Q-N3: agreed by Nuance in
