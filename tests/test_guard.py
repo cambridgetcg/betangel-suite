@@ -1371,6 +1371,99 @@ attempt("control", lambda: engine(control))
         self.assertEqual(os.listdir(os.path.join(roots.data_home(runner), "suite.noindex")), [])
         self.assertEqual(os.listdir(os.path.join(roots.data_home(control), "suite.noindex")), ["written"])
 
+    def test_a_child_gets_exactly_the_environment_the_runner_judged(self):
+        # Lab-Claude's recheck of round 5: _check_spawn judged a collapsed copy of a child's environment,
+        # {fsdecode(k): fsdecode(v) for k, v in dict(env).items()}, while subprocess and os.posix_spawn hand the child
+        # every item and its getenv takes the first of two equal names. A bytes HOME, TMPDIR and SQLITE_TMPDIR put
+        # before a temporary HOME's str keys passed the runner's check, and the child armed engine mode from the
+        # runner's HOME and wrote its suite.noindex; so did a dict subclass whose items() name the runner's HOME; and
+        # a bytes network switch of "0" reached the child. Here a test-mode child with a temporary HOME plays the
+        # runner, every data home is synthetic, and each engine child writes a file named after its attempt.
+        runner, control = make_home(self), make_home(self)
+        for home in (runner, control):
+            os.makedirs(os.path.join(roots.data_home(home), "suite.noindex"), mode=0o700)
+        code = PRELUDE + ("from betangel_suite import guard\nguard.arm('engine')\nimport os, sys\n"
+                          "name = 'written-' + sys.argv[1]\n"
+                          "target = os.path.join(os.environ['HOME'], 'betangel-data', 'suite.noindex', name)\n"
+                          "with open(target, 'x'):\n    pass\n")
+        results = checks(self, runner, mode="test", setup="import subprocess, sys\n", body="""
+code, control, switch = %r, %r, %r
+def argv(name):
+    return [sys.executable, "-I", "-S", "-B", "-c", code, name]
+def engine(name, env):
+    subprocess.run(argv(name), env=env, check=True, capture_output=True, timeout=60)
+def spawn(name, env):
+    if os.waitpid(os.posix_spawn(sys.executable, argv(name), env), 0)[1]:
+        raise RuntimeError(name)
+home, tmp = os.environ["HOME"], os.environ["TMPDIR"]
+runner = [(b"HOME", os.fsencode(home)), (b"TMPDIR", os.fsencode(tmp)), (b"SQLITE_TMPDIR", os.fsencode(tmp))]
+class Items(dict):
+    def items(self):
+        return dict(control, HOME=home, TMPDIR=tmp, SQLITE_TMPDIR=tmp).items()
+class Text(str):
+    pass
+attempt("bytes_home_first", lambda: engine("bytes_home_first", dict(runner + list(control.items()))))
+attempt("bytes_home_first_posix_spawn", lambda: spawn("posix_spawn", dict(runner + list(control.items()))))
+attempt("dict_subclass", lambda: engine("dict_subclass", Items(control)))
+attempt("bytes_switch_first", lambda: engine("switch", dict([(os.fsencode(switch), b"0")] + list(control.items()))))
+attempt("keys_equal_once_encoded", lambda: engine("encoded", {**control, "\\xc9X": "a", "\\udcc3\\udc89X": "b"}))
+attempt("value_not_exactly_str", lambda: engine("value", dict(control, LANG=Text("en_GB.UTF-8"))))
+attempt("bytes_value", lambda: engine("bytes_value", dict(control, LANG=b"en_GB.UTF-8")))
+attempt("control", lambda: engine("control", control))
+""" % (code, child_env(control), FORBID))
+        refused = ("bytes_home_first", "bytes_home_first_posix_spawn", "dict_subclass", "bytes_switch_first",
+                   "keys_equal_once_encoded", "value_not_exactly_str")
+        expected = dict({name: "subprocess_refused" for name in refused}, bytes_value="ok", control="ok")
+        self.assertEqual(results, expected)
+        self.assertEqual(os.listdir(os.path.join(roots.data_home(runner), "suite.noindex")), [])
+        self.assertEqual(sorted(os.listdir(os.path.join(roots.data_home(control), "suite.noindex"))),
+                         ["written-bytes_value", "written-control"])
+
+    def test_git_children_get_exactly_the_environment_the_guard_judged(self):
+        # The same recheck: a bytes GIT_CONFIG_GLOBAL put before the str one passed the exact allowlists of
+        # runner_git_ok and vendor_argv_ok, which saw only the str value, /dev/null, while git read the bytes one. Here
+        # the probe config's init.defaultBranch shows whether git read it; vendor's lookup runs in an empty directory.
+        home = make_home(self)
+        probe = os.path.join(home, "probe.gitconfig")
+        with open(probe, "w", encoding="utf-8") as handle:
+            handle.write("[init]\n\tdefaultBranch = probe\n")
+        results = checks(self, home, mode="test", setup="import subprocess\n", body="""
+probe, tmp = %r, os.environ["TMPDIR"]
+env = {"PATH": "/usr/bin:/bin", "HOME": tmp, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+       guard.FORBID_NETWORK_ENV: "1"}
+def init(name, env):
+    repo = os.path.join(tmp, name)
+    os.mkdir(repo)
+    subprocess.run([guard.GIT, "-C", repo, "init", "-q", "--template="], env=env, check=True, capture_output=True,
+                   timeout=60)
+def head(name):
+    path = os.path.join(tmp, name, ".git", "HEAD")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip()
+dup = dict([(b"GIT_CONFIG_GLOBAL", os.fsencode(probe))] + list(env.items()))
+attempt("bytes_global_first", lambda: init("dup", dup))
+attempt("plain", lambda: init("plain", env))
+results["dup_head"], results["plain_head"] = head("dup"), head("plain")
+""" % probe)
+        self.assertEqual((results["bytes_global_first"], results["plain"], results["dup_head"]),
+                         ("subprocess_refused", "ok", None))
+        self.assertNotEqual(results["plain_head"], "ref: refs/heads/probe")
+        vendor = make_home(self)
+        os.makedirs(roots.research_clone(vendor))
+        results = checks(self, vendor, mode="vendor", body="""
+import subprocess
+env = dict(guard.VENDOR_GIT_ENV, HOME=home)
+lookup = list(guard.VENDOR_GIT_PREFIX) + ["-C", roots.research_clone(), "cat-file", "-e", "0" * 40 + "^{commit}"]
+dup = dict([(b"GIT_CONFIG_GLOBAL", os.fsencode(%r))] + list(env.items()))
+attempt("bytes_global_first", lambda: subprocess.run(lookup, env=dup, capture_output=True, timeout=60))
+attempt("dict_subclass", lambda: subprocess.run(lookup, env=type("Env", (dict,), {})(env), capture_output=True,
+                                                timeout=60))
+attempt("lookup", lambda: subprocess.run(lookup, env=env, capture_output=True, timeout=60))
+""" % probe, setup="home = os.environ['HOME']\n")
+        self.assertEqual(results, {"bytes_global_first": "subprocess_refused", "dict_subclass": "subprocess_refused",
+                                   "lookup": "ok"})
+
     def test_vendor_mode_refuses_other_git_commands(self):
         home = make_home(self)
         os.makedirs(roots.research_clone(home))

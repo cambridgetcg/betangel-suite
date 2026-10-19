@@ -115,8 +115,10 @@ context. It is never Yu's instruction, consent or acceptance.
 - The suite is viewed in a Safari Private window, on both machines (Q-Y11, answered by Yu on
   2026-10-17; DESIGN.md 5.5). The lab's Safari is to hold no Betfair session: signing out of
   historicdata.betfair.com there, and deleting saved betfair.com passwords and betfair.com site
-  data, was agreed by Yu on 2026-10-17; Yu to do, by hand, and not confirmed done (DESIGN.md
-  8.6). Agents never touch browser data or passwords.
+  data, was agreed by Yu on 2026-10-17, for Yu to do by hand, and is done: Yu's words of
+  2026-10-18, as relayed by Nuance, are "Pw deleted too", which Nuance reads as Yu having done
+  the clean-up (DESIGN.md 2.2.1 and 8.6; confirmation in Yu's own hand asked of Yu on
+  2026-10-19). Agents never touch browser data or passwords.
 - Keep load modest on the shared 8 GB M1: tests run under `nice -n 10`, and no test tier starts
   during an announced Nuance run. `bin/suite test` refuses while the run marker exists, and a run
   already going stops before its next test once the marker appears; the test then running
@@ -132,10 +134,11 @@ context. It is never Yu's instruction, consent or acceptance.
 | `betangel_suite/engine.py` and the roots (`betangel_suite/roots.py`) | Astra and Nuance, jointly |
 | `betangel_suite/config.py`, `docs/data-handling.md` and `tests/__init__.py` (Nuance's Q-N12 addition, PR #2 review) | Astra and Nuance, jointly |
 | Rule documents: `AGENTS.md`, `docs/DESIGN.md`, `docs/data-handling.md`, `docs/proposals/`, `tools/stage/` (the governance row, adopted by Yu on 2026-10-17; see below) | Nuance and Astra, at the same named head SHA. A change of meaning goes to Yu (rule 10) unless both say it does not widen. A change to this file's rules or routing also needs Yu's approval |
-| UI-only PRs (defined below) | Yu's acceptance alone (answered by Yu on 2026-10-17; see below) |
-| Proposed, asked of Yu on 2026-10-17, not answered (Nuance's PR #1 re-review, finding 3): `ui/`'s order-sending paths (command call sites, the sender in `ui/stream.js`, command keymap entries, token handling and timer paths to the sender) and `tests/test_ui_assets.py`, taken out of UI-only | Astra, and Nuance as well for paper keys. Until Yu answers: UI-only as defined below |
-| Proposed, asked of Yu on 2026-10-17, not answered: a test file, by the modules it imports (the mechanical form Nuance recommends) | The reviewers of the modules it imports, else Yu. Until Yu answers: the fail-closed row |
-| Any file no other row names (the fail-closed row) | Yu: Yu's ruling of 2026-10-17, which adopted Nuance's PR #1 review, item 9, sending "uncovered diffs" to Yu (see below). Test files that no row names included, until Yu answers the test-file row |
+| UI-only PRs (defined below, as narrowed by the next row) | Yu's acceptance alone (answered by Yu on 2026-10-17; see below) |
+| `ui/`'s order-sending paths, which are not UI-only: the code that sends commands (command call sites and the sender in `ui/stream.js`), the keyboard shortcuts that trigger orders (command keymap entries), the access-token handling, and timer paths that lead to the sender (binding: Yu's answer of 2026-10-17, "ohh understood. Yes lets go with what you recommended", on Nuance's PR #1 re-review, finding 3; see below) | Astra, and Nuance as well for paper-trading keys |
+| `tests/test_ui_assets.py` (the same answer of Yu's) | Astra |
+| A test file, by the modules it imports (binding: Yu's answer of 2026-10-17, "yes lets go with what you recommended", adopting the mechanical form Nuance recommends; see below) | The reviewers of the modules it imports; a test that imports no routed module goes to Yu |
+| Any file no other row names (the fail-closed row) | Yu: Yu's ruling of 2026-10-17, which adopted Nuance's PR #1 review, item 9, sending "uncovered diffs" to Yu (see below) |
 
 - **Merging.** A PR merges only after every reviewer whose rows its diff touches has accepted the
   same head SHA. So a PR that touches `engine.py` or `roots.py` needs both Astra and Nuance, and
@@ -181,13 +184,25 @@ context. It is never Yu's instruction, consent or acceptance.
       whose diff touches only files that change how pages look, the `ui/` static assets, with no
       change to routes, the command enum or `ui/ticks.json`, and no change to `api/`, the engine,
       `guard.py`, `roots.py`, a rule document or a test of any of those. A PR that also touches a
-      rule document is not UI-only; the rule-document row applies to it.
-    - **Narrowing UI-only: asked of Yu on 2026-10-17, not answered** (Nuance's PR #1 re-review,
-      finding 3, which amends Nuance's own answer to Q-N12). The rule against automation lives
-      only in `ui/` JavaScript, so under the definition above a `ui/`-only PR could add an
-      automated order send with only Yu's review. Lab-Claude recommended yes to Nuance's fix,
-      the proposed row in the table above. Until Yu answers, the definition above stands; the
-      node tests for it are owed before Phase 1b (DESIGN.md 8.3, 9.4).
+      rule document is not UI-only; the rule-document row applies to it. Yu narrowed it on
+      2026-10-17 (next item).
+    - **Narrowing UI-only: answered by Yu on 2026-10-17, after lab-Claude explained it: "ohh
+      understood. Yes lets go with what you recommended"** (on Nuance's PR #1 re-review, finding
+      3, which amends Nuance's own answer to Q-N12; DESIGN.md 2.2.1 and 3.9). The rule against
+      automation lives only in `ui/` JavaScript, so under the definition above alone a `ui/`-only
+      PR could add an automated order send with only Yu's review. Lab-Claude recommended Nuance's
+      fix, and it is binding: UI-only excludes the code that sends commands (command call sites
+      and the sender in `ui/stream.js`), the keyboard shortcuts that trigger orders (command
+      keymap entries), the access-token handling, and timer paths that lead to the sender.
+      Changes to those go to Astra, and to Nuance as well for paper-trading keys;
+      `tests/test_ui_assets.py` goes to Astra; everything else in `ui/` that only changes how
+      pages look goes in on Yu's acceptance alone (the rows in the table above). The node tests
+      behind the rule are owed before Phase 1b: a repeated key sends nothing, and with fake
+      timers no timer path reaches an order command (DESIGN.md 8.3, 11). Until they exist, the
+      rule rests on review, the residual DESIGN.md 9.4 gives.
+    - Nuance relayed Yu's words of 2026-10-18 on UI-only ("yes UI-only accept 咗就 merge 得") and
+      on the governance row ("改 AGENTS.md 嘅規則或者 routing要批"). They repeat Yu's answers of
+      2026-10-17 and change nothing here (DESIGN.md 2.2.1).
   - **The governance row for rule documents: answered by Yu on 2026-10-17 ("Lets go with what you
     recommended for all :)"): adopted, as Nuance recommended** (Nuance's PR #1 review, item 9).
     Rule documents go to Nuance and Astra, accepted at a named head SHA; a diff that no row covers
@@ -195,13 +210,14 @@ context. It is never Yu's instruction, consent or acceptance.
     not widen. Also adopted: Nuance's PR #2 addition, "changes to AGENTS.md's rules or routing
     also need Yu". Before the row, rule documents matched no row of their own, so the author
     would judge its own widening (Nuance's PR #1 review, item 9).
-  - **Test files: asked of Yu on 2026-10-17, not answered.** Lab-Claude first proposed a row
-    that sends each test file to the reviewers of the code it tests, so that ordinary test
-    changes do not all go to Yu. Nuance recommends it only in a mechanical form, "a test → the
-    reviewers of the modules it imports, else Yu", and calls the row "Yu's to decide" (Nuance's
-    answer to lab-Claude's question 1 of 2026-10-17). Lab-Claude put that form to Yu on
-    2026-10-17, recommending yes: the proposed row in the table above. Until Yu answers, a test
-    file that no row names goes to Yu, by the fail-closed row.
+  - **Test files: answered by Yu on 2026-10-17, "yes lets go with what you recommended"**
+    (DESIGN.md 2.2.1 and 3.9). Lab-Claude first proposed a row that sends each test file to the
+    reviewers of the code it tests, so that ordinary test changes do not all go to Yu. Nuance
+    recommends it only in a mechanical form, "a test → the reviewers of the modules it imports,
+    else Yu", and calls the row "Yu's to decide" (Nuance's answer to lab-Claude's question 1 of
+    2026-10-17). Lab-Claude put that form to Yu on 2026-10-17, recommending yes, and it is
+    binding: a test file goes to the reviewers of the modules it imports, and a test that imports
+    no routed module goes to Yu (the row in the table above).
   - **Withdrawn.** An earlier version of this file said Yu ruled on Q-Y8 on 2026-10-15, and that
     "Yu can veto or revert any merge". Nuance found no source for either (PR #1 review, item 10).
   - Nuance's answer to Q-N12 was "agree once amended" (PR #4 review). Nuance asked that every
@@ -316,7 +332,9 @@ reviewed PR changes them.
     merge-candidate SHA; any later change to placement/runmarker/root-lock protection reopens the
     re-check; until then no engine command runs on the lab with the real HOME." F4 and F5 are
     fixed here (ff35218, c3b0c61). c3b0c61 changes placement, so by the second condition the
-    re-check is open again, at the merge-candidate SHA (lab-Claude's reading).
+    re-check is open again, at the merge-candidate SHA (lab-Claude's reading); so do the other
+    placement and guard changes made here since 823c194, cb40c7e among them (lab-Claude's
+    reading, round 5 close).
   - Every command except `test`, `uisnap`, `release`, `vendor` and `stop` uses
     `~/betangel-data/suite.noindex/tmp` as `TMPDIR` and `SQLITE_TMPDIR` (`stop` joined the others
     in 8102f99). `cli.main` creates it 0700 only after the run-marker check and, for a real-data
@@ -324,13 +342,22 @@ reviewed PR changes them.
     (adaptation E). It creates none for `stop`, `vendor` and `release` (`cli.NO_TMPDIR`), which
     make no temporary files: so `stop` works during a run (96d0bcc). The first engine command run
     with the real HOME creates the suite root itself.
+  - **None runs before the runbook's L1 layout check accepts the suite root** (lab-Claude's
+    decision of 2026-10-19; DESIGN.md 3.7). As Nuance describes it, that upstream check
+    requires `~/betangel-data` to hold only `historic/` (and `lab-state/` after the runbook's
+    5a), so creating `suite.noindex/` would make the lab fail it. Nuance chose to widen it
+    (Nuance's mailbox note of 2026-10-18): it will also accept `suite.noindex/` and
+    `historic-pro/` as known, optional entries, an upstream runbook change that Astra authors
+    and Nuance reviews in the next tooling round. Until it lands, no engine command runs with
+    the real HOME.
   - Only the engine may write the suite root. `test`, `uisnap`, `release`, `vendor` and `stop` run
     in guard modes of their own (`cli.OWN_MODE_COMMANDS`; on phase0/foundation, 8102f99 gave
     `uisnap` and `stop` theirs, where both ran in engine mode before; on this branch `uisnap` and
     `release` had theirs already). Their only write root is `~/.local/state/betangel-suite`
-    (`vendor` also its deps clone and `pin/`, `release` also its release copies under
-    `~/.local/share/betangel-suite/app`), never the suite root. Any other write under
-    `~/betangel-data` is refused (`write_outside_roots`).
+    (`vendor` also its deps directory, `~/.local/share/betangel-suite/deps/`, to which this
+    branch narrows the share directory that phase0/foundation and phase0/http give it, and
+    `pin/`; `release` also its release copies under `~/.local/share/betangel-suite/app`), never
+    the suite root. Any other write under `~/betangel-data` is refused (`write_outside_roots`).
   - In those five modes the guard also refuses reads in `~/betangel-data`
     (`data_home_read_refused`; 0a3ed65; Nuance's answer to lab-Claude's question 2, condition 1,
     taken as fail closed): opens without a write flag, `os.listdir`, `os.scandir` and `os.chdir`,
@@ -340,7 +367,9 @@ reviewed PR changes them.
   - Every interpreter child of the test runner, whatever follows `-I -S -B`, and every
     `bin/suite` child need an explicit environment whose HOME, the roots under it and `TMPDIR`
     keep out of the runner's data home, judged by realpath and identity at spawn
-    (`subprocess_refused`; Nuance's re-review of #2, F2; 96f8a90). Lab-Claude's round-5 review
+    (`subprocess_refused`; Nuance's re-review of #2, F2; 96f8a90). The environment is judged
+    item by item, as `subprocess` hands it to the child: one that is not exactly a `dict`, a key
+    that is not exactly a `str`, or two keys equal once encoded are refused (cb40c7e). Lab-Claude's round-5 review
     found only launcher children checked, so `-c` code that arms the guard itself, the shape F2
     reported, still armed engine mode with the runner's HOME; every such child is checked now
     (8e751d6). The one exception is the runner's own `-j` worker (`guard.TEST_WORKER_CODE`),
