@@ -2211,3 +2211,12 @@ Round 5 answers Astra's review of PR #1 at 47c403e (items 1-13) and Nuance's re-
 | Item | What changed | Sections |
 |---|---|---|
 | Yu confirmed the relayed answers in Yu's own hand on 2026-10-19 (Yu's words are quoted in section 2.2.1); they cover Q-Y3 (R-3), Q-Y11, Q-Y17 and Q-Y18 (lab-Claude's reading) | Every place that recorded Yu's confirmation as pending now says the answers were confirmed by Yu in Yu's own hand on 2026-10-19. Q-Y3's and Q-Y11's status cells read "relayed by Nuance; confirmed by Yu 2026-10-19". The quotes stay labelled as Yu's words of 2026-10-18 as relayed by Nuance; section 2.2.1 keeps the rule that a relay is context and adds that the confirmation is why they now count as Yu's answers (issue 2 of lab-Claude's recheck of round 5 close). R-3's config default still changes only through a reviewed change before Phase 1b. Q-Y17 and Q-Y18 are recorded on phase0/viewing | Status, 2.2.1, 3.8, 8.6, 12 (Phase 0), Q-Y3, Q-Y11, this appendix (Open after round 5) |
+
+**Round 5 confirm, phase0/foundation** (2026-10-19: Yu's confirmation of the relayed answers in this branch's own documents, and two nits from lab-Claude's recheck of round 5 close)
+
+| Item | What changed | Commits and sections |
+|---|---|---|
+| Yu confirmed the relayed answers in Yu's own hand on 2026-10-19 (Round 5 confirm, design/mvp-draft-0.2), in this branch's own documents | AGENTS.md's Safari line says the clean-up is confirmed by Yu in Yu's own hand on 2026-10-19; nothing else in AGENTS.md, the README or `docs/data-handling.md` recorded the confirmation as pending | docs; AGENTS.md (lab constraints) |
+| Recheck nit: AGENTS.md A's sentence on cb40c7e left out the value check | It now lists a value that is not exactly a `str` or `bytes` among what is refused, as cb40c7e built it and this appendix's row for recheck low item 1 says; text only | docs; AGENTS.md A |
+| Recheck nit: a line of AGENTS.md A and a line of `docs/data-handling.md` ran past the files' wrap of about 100 columns | Re-wrapped; no wording changed apart from the row above | docs; AGENTS.md A, `docs/data-handling.md` |
+| The design branch's round 5 confirm (af960fd) | Merged; the conflicts in this document resolved on this branch's text | dcb73ef |
