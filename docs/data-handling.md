@@ -26,7 +26,9 @@ Nuance's re-review of #2 agrees it as built at 823c194, pending two findings now
 branch, to be recorded at the merge-candidate SHA, and accepts `roots.STATE_ROOT_AGREED` staying
 True meanwhile, on conditions (lab-Claude's call; AGENTS.md, Phase 0 status A). An engine command
 creates `~/betangel-data/suite.noindex/` and its `tmp/` (both 0700), and only the engine may write
-there. A `suite.noindex` that is a link, or a state root that a link puts in `~/betangel-data`, is
+there. No engine command runs with the real HOME before the runbook's L1 layout check accepts
+that root, which Nuance has chosen to widen upstream (lab-Claude's decision of 2026-10-19;
+AGENTS.md, Phase 0 status A; DESIGN.md 3.7). A `suite.noindex` that is a link, or a state root that a link puts in `~/betangel-data`, is
 refused before anything is written (62c39c6).
 
 The test runner itself is confined: its guard mode refuses writes under `~/betangel-data`, and

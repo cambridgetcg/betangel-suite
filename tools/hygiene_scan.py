@@ -36,12 +36,15 @@ entry's position, counted from 1, in the list the scan worked through:
 The message and history modes name their items in place of "entry <n>":
 
   --message        "(message)"
-  --push, --range  "(commit <sha> message)", "(tag <sha> message)", and
+  --push           "(commit <sha> message)", "(tag <sha> message)", and
                    "(commit <sha> entry <k>)" for the k-th record of
                    `git diff-tree -r --no-commit-id --raw --no-renames
                    --root -c <sha>` (deleted paths count, and publish
                    nothing; for a merge, -c lists only the paths that
                    differ from every parent)
+  --range          commits only: "(commit <sha> message)" and
+                   "(commit <sha> entry <k>)", as for --push; it reads no
+                   tag object, so it never names a tag message
 
 docs/data-handling.md shows how Yu maps an entry number to its file
 locally.
@@ -65,6 +68,7 @@ Run it with the fixed interpreter, standard library only:
                    tracking refs for REMOTE are never trusted) and each
                    annotated tag's message; tools/pre-push runs this
   --range RANGE    the same for the commits `git rev-list RANGE` gives
+                   (commits only: no tag object is read)
   --root DIR       repository root (default: the git toplevel of the cwd, else the cwd)
   --list-rules     print the rule codes and exit
 
