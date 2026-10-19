@@ -15,7 +15,10 @@ name brings its contract with it. It reads rx.<namespace>.<name> however rx is r
 it, `from . import rx as r` included, or any .rx attribute, engine.rx included), and also <alias>.<name> where alias
 is bound to a namespace by `from .rx import <namespace> [as alias]` (or `*`) or by a plain `alias = rx.<namespace>`.
 The I-10 rule (tests/test_ast_boundary.py) refuses those last spellings; counting them anyway keeps such a name
-under contract even if one were ever allowlisted (round-3 review of #4). The later-phase names of DESIGN.md 4.5
+under contract even if one were ever allowlisted (round-3 review of #4). A wildcard import of any module, absolute
+or relative, is counted as ("*", <module as written>), which no contract lists, so the coverage fails on one, and a
+bare rx after it is read as rx: a wildcard binds names no statement spells, rx among them when the module holds it
+(Astra's review of #4 at 90adc64; the I-10 rule refuses it as wildcard_import). The later-phase names of DESIGN.md 4.5
 are added as code uses them.
 """
 
@@ -279,9 +282,12 @@ class OtherPhase0NameTests(unittest.TestCase):
 
 def rx_uses(tree):
     """{(namespace, name)} for every upstream name one module's syntax tree uses through rx (see the docstring)."""
-    checker = _Checker(tree)
+    checker = _Checker(tree)                        # a wildcard import makes a bare rx count as rx (_Checker._bindings)
     aliases = {}                                    # a local name -> the rx namespace it is bound to
+    used = set()
     for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+            used.add(("*", "." * node.level + (node.module or "")))     # under no contract: the coverage fails
         if isinstance(node, ast.ImportFrom) and node.module in ("rx", "betangel_suite.rx"):
             for alias in node.names:
                 if alias.name == "*":
@@ -292,7 +298,6 @@ def rx_uses(tree):
               and isinstance(node.value, ast.Attribute) and checker.is_rx(node.value.value)
               and node.value.attr in rx.ALLOWLIST):
             aliases[node.targets[0].id] = node.value.attr
-    used = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Attribute):
             continue
@@ -328,13 +333,33 @@ class CoverageTests(unittest.TestCase):
             "from .rx import ticks\nticks.tick_offset(1, 2)\n": {("ticks", "tick_offset")},
             "from .rx import ticks as t\nt.ticks_between(1, 2)\n": {("ticks", "ticks_between")},
             "from betangel_suite.rx import validate as v\nv.validate_place\n": {("validate", "validate_place")},
-            "from .rx import *\nschemas.validate_book_snapshot(book)\n": {("schemas", "validate_book_snapshot")},
+            "from .rx import *\nschemas.validate_book_snapshot(book)\n":
+                {("schemas", "validate_book_snapshot"), ("*", ".rx")},
             "from . import rx\nt = rx.ticks\nt.parse_money(text)\n": {("ticks", "parse_money")},
             "from . import engine\np = engine.rx.pnl\np.market_realized\n": {("pnl", "market_realized")},
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
                 self.assertEqual(rx_uses(ast.parse(text)), expected)
+
+    def test_a_wildcard_import_fails_the_coverage(self):
+        # Astra's review of #4 at 90adc64 (P3): after `from betangel_suite.synthetic import *`, which binds
+        # synthetic.py's rx, rx.ticks.tick_offset(101, 1) was not counted, though tick_offset has no contract. A
+        # wildcard import of any module, absolute or relative, is now counted as ("*", <module as written>), which
+        # no contract lists, so test_every_upstream_name_suite_code_uses_is_under_contract fails on one; and a bare
+        # rx after one is read as rx.
+        cases = {
+            "from betangel_suite.synthetic import *\nrx.ticks.tick_offset(101, 1)\n":
+                {("*", "betangel_suite.synthetic"), ("ticks", "tick_offset")},
+            "from .synthetic import *\nrx.ticks.tick_offset(101, 1)\n": {("*", ".synthetic"), ("ticks", "tick_offset")},
+            "from .. import *\n": {("*", "..")},
+            "from json import *\n": {("*", "json")},
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                used = rx_uses(ast.parse(text))
+                self.assertEqual(used, expected)
+                self.assertIn(("*", text.split()[1]), used - CONTRACT_NAMES)
 
     def test_contract_names_are_allowlisted(self):
         for namespace, name in sorted(CONTRACT_NAMES):
