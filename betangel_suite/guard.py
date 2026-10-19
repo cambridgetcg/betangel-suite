@@ -122,7 +122,10 @@ os.chdir, of the data home or anything in it, judged by text, realpath and (st_d
 the data roots there. Not covered: os.open with a dir_fd and a relative path (the open event carries no dir_fd, so
 the path is judged against the cwd; a listing of that descriptor is refused), a descriptor opened before arm() or
 inherited, a hard link made elsewhere to a file in the data home, and stat-level calls (os.stat, os.lstat,
-os.readlink), which raise no audit event and which the guard's own checks use.
+os.readlink), which raise no audit event and which the guard's own checks use. Because such a name is judged
+against the cwd, the outcome depends on it: run from HOME, shutil.rmtree of a temporary HOME holding a
+betangel-data/ was refused (data_home_read_refused), since that name, read against the cwd, is the runner's own
+data home (Nuance's review of #2 at 4fa5835, N5-3). So cli._test runs the tests from its TMPDIR.
 
 Subprocesses by mode (the launcher picks the mode from the command name; nothing else can):
 

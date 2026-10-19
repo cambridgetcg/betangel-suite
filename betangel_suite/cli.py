@@ -103,6 +103,11 @@ def parse_test_args(args, version):
 def _test(args):
     import unittest
     from . import config, runmarker
+    # The tests run from TMPDIR, whatever the caller's cwd. The guard judges a name opened relative to a dir_fd
+    # against the cwd (a limit guard.py names), so run from HOME, as a non-interactive ssh is, shutil.rmtree of a
+    # temporary HOME's betangel-data/ was refused as a read in the runner's own data home (Nuance's review of #2 at
+    # 4fa5835, N5-3). main() has made TMPDIR by now.
+    os.chdir(roots.tmp_dir("test"))
     verbosity, pattern = parse_test_args(args, sys.version_info)
     from . import rx    # noqa: F401  (verifies the pin and imports upstream under the armed guard)
     marker = runmarker.marker_path(config.load())
